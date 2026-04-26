@@ -1,3 +1,9 @@
+## [0.7.1](https://github.com/brendangeck/kiro-learn/compare/v0.7.0...v0.7.1) (2026-04-26)
+
+### Bug Fixes
+
+* resolve npx symlink detection and zod peer dep conflict ([#11](https://github.com/brendangeck/kiro-learn/issues/11)) ([c665cae](https://github.com/brendangeck/kiro-learn/commit/c665cae16e9b4ab5c26d44b800382df59759a7c3))
+
 ## [0.7.0](https://github.com/brendangeck/kiro-learn/compare/v0.6.0...v0.7.0) (2026-04-26)
 
 ### Features
