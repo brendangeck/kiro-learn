@@ -28,7 +28,7 @@ import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import type * as nodeOs from 'node:os';
 import { tmpdir } from 'node:os';
-import { join, sep } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import fc from 'fast-check';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
@@ -164,9 +164,12 @@ describe('Feature: project-path-capture, Property 5: Hash-preimage coherence', (
         // Lowercase hex sanity check (64 chars).
         expect(recomputedProjectId).toMatch(/^[0-9a-f]{64}$/);
 
-        // Requirement 6.4: project_path is absolute (starts with the
-        // platform path separator).
-        expect((projectPath as string).startsWith(sep)).toBe(true);
+        // Requirement 6.4: project_path is absolute. Use
+        // `path.isAbsolute` so the assertion is correct on every
+        // platform — on Windows a path like `C:\foo` is absolute but
+        // does not start with `sep` (`\\`), and `startsWith(sep)`
+        // would miss it.
+        expect(isAbsolute(projectPath as string)).toBe(true);
       }),
       { numRuns: 25 },
     );

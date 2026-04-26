@@ -274,7 +274,7 @@ Every task below cites the specific requirement sub-clauses it implements. Every
 - The storage read path is intentionally **not** extended to read the new column. `source.project_path` round-trips via `source_json` only. Tasks 6.2, 6.5, and the design's Interfaces section all restate this to prevent drift.
 - Migration 0003 must land before the insert-path change (Task 5 before Task 6) so the `project_path` column exists by the time `putEvent` binds to it.
 - No `schema_version` bump. The change is purely additive.
-- No new guard tests. No UI. No read API. No environment-variable override. No backfill. No installer/shim dedup refactor. All deliberately out of scope per the requirements doc.
+- No new guard tests, no UI, no read API, no environment-variable override, no backfill, and no installer/shim dedup refactor — all deliberately out of scope per the requirements doc.
 
 ## Execution order summary
 

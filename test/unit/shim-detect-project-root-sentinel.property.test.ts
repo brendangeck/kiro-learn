@@ -90,16 +90,23 @@ function sha256Hex(input: string): string {
 // Feature: project-path-capture, Property 2: Global sentinel fallback
 // for marker-free walks
 describe('detectProjectRoot — property: global sentinel fallback for marker-free walks (P2)', () => {
+  // Tracks every chunk written to stderr across all iterations of the
+  // property so the final assertion can verify the happy path stayed
+  // silent. A logging regression (e.g. a stray warning added to the
+  // sentinel branch) would fail the test instead of polluting stdout.
+  let stderrChunks: string[];
   let stderrSpy: { mockRestore: () => void };
 
   beforeEach(() => {
-    // Swallow any stderr writes — none are expected on the marker-free
-    // happy path this property exercises, but keeping the real stderr
-    // quiet makes regressions surface cleanly as assertion failures
-    // rather than as log noise on the terminal.
+    stderrChunks = [];
     stderrSpy = vi
       .spyOn(process.stderr, 'write')
-      .mockImplementation(() => true);
+      .mockImplementation((chunk: string | Uint8Array) => {
+        stderrChunks.push(
+          typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8'),
+        );
+        return true;
+      });
     realpathSyncMock.mockReset();
     existsSyncMock.mockReset();
     homedirMock.mockReset();
@@ -187,5 +194,10 @@ describe('detectProjectRoot — property: global sentinel fallback for marker-fr
       // the generator still covers a variety of home/cwd depths.
       { numRuns: 25 },
     );
+
+    // Post-property: no stderr writes across every iteration. The
+    // sentinel branch is a normal code path, not a fallback, so any
+    // warning here would signal a logging regression.
+    expect(stderrChunks.join('')).toBe('');
   });
 });

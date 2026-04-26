@@ -14,15 +14,23 @@
  * homedir with a project marker planted at a known depth so the walk
  * has something to find, proving it actually ran.
  *
+ * `homedir()` is mocked directly via `vi.mock('node:os')` rather than
+ * via `process.env['HOME']` so the test behaves identically on POSIX
+ * and Windows. This mirrors the pattern used by
+ * `shim-detect-project-root-walk.property.test.ts` and
+ * `shim-truncation-type.property.test.ts`.
+ *
  * Validates: Requirements 7.2, 7.5
  */
 
 import type * as nodeFs from 'node:fs';
+import type * as nodeOs from 'node:os';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { realpathSyncMock, existsSyncMock } = vi.hoisted(() => ({
+const { realpathSyncMock, existsSyncMock, homedirMock } = vi.hoisted(() => ({
   realpathSyncMock: vi.fn(),
   existsSyncMock: vi.fn(),
+  homedirMock: vi.fn(),
 }));
 
 vi.mock('node:fs', async (importOriginal) => {
@@ -31,6 +39,14 @@ vi.mock('node:fs', async (importOriginal) => {
     ...original,
     realpathSync: realpathSyncMock,
     existsSync: existsSyncMock,
+  };
+});
+
+vi.mock('node:os', async (importOriginal) => {
+  const original = (await importOriginal()) as typeof nodeOs;
+  return {
+    ...original,
+    homedir: homedirMock,
   };
 });
 
@@ -52,6 +68,7 @@ describe('detectProjectRoot — homedir realpathSync throws', () => {
       });
     realpathSyncMock.mockReset();
     existsSyncMock.mockReset();
+    homedirMock.mockReset();
   });
 
   afterEach(() => {
@@ -63,9 +80,12 @@ describe('detectProjectRoot — homedir realpathSync throws', () => {
     const projectRoot = '/Users/alice/code/myrepo';
     const cwd = '/Users/alice/code/myrepo/src';
 
+    // homedir() is mocked directly — no process.env juggling.
+    homedirMock.mockImplementation(() => home);
+
     // realpathSync throws on the homedir input; every other input
-    // passes through. Use `homedir()` as the sentinel because that's
-    // what Phase 1a passes to realpathSync.
+    // passes through. Use `home` as the sentinel because that's what
+    // Phase 1a passes to realpathSync via the mocked homedir().
     realpathSyncMock.mockImplementation((p: nodeFs.PathLike) => {
       const s = typeof p === 'string' ? p : p.toString();
       if (s === home) {
@@ -83,30 +103,19 @@ describe('detectProjectRoot — homedir realpathSync throws', () => {
       return s === `${projectRoot}/.git`;
     });
 
-    const originalHome = process.env['HOME'];
-    process.env['HOME'] = home;
+    const result = detectProjectRoot(cwd);
 
-    try {
-      const result = detectProjectRoot(cwd);
+    // Walk found the marker using the unresolved ceiling; returned
+    // result reflects the discovered project root.
+    expect(result).toEqual({
+      projectRoot,
+      projectPath: projectRoot,
+      isGlobal: false,
+    });
 
-      // Walk found the marker using the unresolved ceiling; returned
-      // result reflects the discovered project root.
-      expect(result).toEqual({
-        projectRoot,
-        projectPath: projectRoot,
-        isGlobal: false,
-      });
-
-      // Exactly one stderr line, and it's the homedir-failure line.
-      const combined = stderrChunks.join('');
-      const lines = combined.split('\n').filter((l) => l.length > 0);
-      expect(lines).toEqual(['[kiro-learn] homedir/realpath failed']);
-    } finally {
-      if (originalHome === undefined) {
-        delete process.env['HOME'];
-      } else {
-        process.env['HOME'] = originalHome;
-      }
-    }
+    // Exactly one stderr line, and it's the homedir-failure line.
+    const combined = stderrChunks.join('');
+    const lines = combined.split('\n').filter((l) => l.length > 0);
+    expect(lines).toEqual(['[kiro-learn] homedir/realpath failed']);
   });
 });

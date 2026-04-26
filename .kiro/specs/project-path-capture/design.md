@@ -43,7 +43,7 @@ graph LR
 
 ### End-to-end sequence (project event)
 
-```
+```text
 Kiro CLI hook          detectProjectRoot          buildEvent         collector         storage
      │                        │                        │                 │                 │
      │──cwd─────────────────▶ │                        │                 │                 │
@@ -77,7 +77,7 @@ Kiro CLI hook          detectProjectRoot          buildEvent         collector  
 
 ### Sequence (global sentinel event — no project marker found)
 
-```
+```text
 detectProjectRoot:
   resolvedCwd = realpath(cwd)        e.g. /Users/alice/scratch
   ceiling = realpath($HOME)          e.g. /Users/alice
@@ -97,7 +97,7 @@ The namespace shape is unchanged — a global event looks structurally identical
 
 ### Module structure
 
-```
+```text
 src/shim/shared/
   index.ts                         ← MODIFIED: buildEvent calls detectProjectRoot
   project-root.ts                  ← NEW: detectProjectRoot, PROJECT_MARKERS
@@ -1068,7 +1068,7 @@ This section lists every exported function, type, or constant this spec introduc
 | `EventSourceSchema` | `src/types/schemas.ts` | Adds optional `project_path: z.string().min(1).max(2048).optional()`. |
 | `EventSource` (type alias) | `src/types/schemas.ts` (via `z.infer`) | Gains optional `project_path?: string` transitively. |
 | `Statements.insertEvent` | `src/collector/storage/sqlite/statements.ts` | Prepared statement gains 13th positional parameter `project_path`; SQL column list extended. |
-| `InsertEventParams` (type) | `src/collector/storage/sqlite/statements.ts` | Tuple gains trailing `projectPath: string | null`. |
+| `InsertEventParams` (type) | `src/collector/storage/sqlite/statements.ts` | Tuple gains trailing `` `projectPath: string \| null` ``. |
 | `putEvent` (inside `openSqliteStorage`) | `src/collector/storage/sqlite/index.ts` | Passes `event.source.project_path ?? null` as the new 13th parameter. |
 | `MIGRATIONS` | `src/collector/storage/sqlite/migrations/index.ts` | Appends `migration0003`. |
 

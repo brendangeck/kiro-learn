@@ -215,7 +215,20 @@ export function detectProjectRoot(cwd: string): ProjectRootResult {
  * `parent`. Uses the platform path separator to avoid false positives
  * on sibling directories that share a prefix (e.g. `/home/alice2`
  * should NOT be considered under `/home/alice`).
+ *
+ * Normalises trailing separators on `parent` before comparing, so
+ * `isUnder('/foo/bar', '/foo/')` still works. Handles the filesystem
+ * root (`/` on POSIX, `C:\` on Windows) as a special case: stripping
+ * the trailing separator would leave an empty string, so we compare
+ * equality and then check the `parent + sep` prefix directly without
+ * normalisation.
  */
 function isUnder(path: string, parent: string): boolean {
-  return path === parent || path.startsWith(parent + sep);
+  if (path === parent) return true;
+  // Strip a single trailing separator from parent unless parent IS the
+  // separator (filesystem root). This makes `parent + sep` a safe
+  // startsWith probe without double-separators at the root.
+  const normalisedParent =
+    parent.length > 1 && parent.endsWith(sep) ? parent.slice(0, -1) : parent;
+  return path.startsWith(normalisedParent + sep);
 }

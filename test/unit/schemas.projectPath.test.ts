@@ -115,8 +115,10 @@ describe('parseEvent — source.project_path backward compatibility (Requirement
 
     const result = parseEvent(input);
     // Under exactOptionalPropertyTypes the key must be absent on the
-    // parsed object, not `project_path: undefined`.
-    expect(result.source.project_path).toBeUndefined();
+    // parsed object, not `project_path: undefined`. Use `in` so a
+    // future regression that materialises the key as `undefined`
+    // is caught here.
+    expect('project_path' in result.source).toBe(false);
   });
 });
 
