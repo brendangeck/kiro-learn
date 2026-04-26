@@ -62,7 +62,7 @@ vi.mock('node:child_process', () => ({
 }));
 
 // Import after mocks so vitest intercepts the modules.
-const { writeKiroLearnAgent, KIRO_LEARN_DESCRIPTION, KIRO_LEARN_TRIGGERS } =
+const { writeKiroLearnAgent, KIRO_LEARN_DESCRIPTION, KIRO_LEARN_TRIGGERS, KIRO_LEARN_PROMPT_SUFFIX } =
   await import('../../src/installer/index.js');
 
 // ── Tmp dir lifecycle ───────────────────────────────────────────────────
@@ -250,8 +250,8 @@ describe('writeKiroLearnAgent', () => {
       expect(merged['name']).toBe('kiro-learn');
       expect(merged['description']).toBe(KIRO_LEARN_DESCRIPTION);
 
-      // Non-owned top-level fields preserved verbatim.
-      expect(merged['prompt']).toBe('You are the default agent.');
+      // Non-owned top-level fields preserved verbatim (prompt has suffix appended).
+      expect(merged['prompt']).toBe('You are the default agent.\n\n' + KIRO_LEARN_PROMPT_SUFFIX);
       expect(merged['tools']).toEqual(['fs_read', 'fs_write']);
       expect(merged['mcpServers']).toEqual({
         example: { command: 'example-mcp' },
