@@ -83,12 +83,22 @@ export const EventBodySchema = z
 
 /**
  * Provenance block — identifies which client surface emitted the event.
- * @see Requirements 1.4, 2.10
+ *
+ * `project_path` is the absolute, symlink-resolved filesystem path of the
+ * project root the shim hashed to derive `project_id`. Optional for
+ * backward compatibility with pre-project-path-capture shims and with
+ * events already in storage; the updated shim always populates it.
+ * Carrier-only — no structural constraint (no absolute-path regex, no
+ * `$HOME` prefix check). The 1–2048 char bound is a DoS guard.
+ *
+ * @see Requirements 1.4, 2.10 (event-schema-and-storage)
+ * @see Requirements 5.1, 5.2, 5.3, 5.6, 11.5 (project-path-capture)
  */
 export const EventSourceSchema = z.object({
   surface: z.enum(['kiro-cli', 'kiro-ide']),
   version: z.string().min(1),
   client_id: z.string().min(1),
+  project_path: z.string().min(1).max(2048).optional(),
 });
 
 /**

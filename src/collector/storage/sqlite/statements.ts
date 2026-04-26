@@ -85,6 +85,7 @@ type Statement<
  *
  * @see Requirements 6.1, 7.1, 11.1, 11.2
  */
+// project_path column exists in the events table (migration 0003) but is intentionally absent from this row shape — the read path reconstitutes source.project_path from source_json. See Requirement 9.5.
 export interface EventRow {
   event_id: string;
   parent_event_id: string | null;
@@ -129,7 +130,8 @@ export interface MemoryRecordRow {
 
 /**
  * Positional parameters bound to {@link Statements.insertEvent}, in SQL
- * order. Matches the column list in migration 0001's `events` table.
+ * order. Matches the column list in migration 0001's `events` table
+ * plus migration 0003's `project_path` column.
  *
  * Tuple positions:
  * 1. `event_id`           — ULID primary key.
@@ -144,6 +146,10 @@ export interface MemoryRecordRow {
  * 10. `transaction_time`  — ISO 8601 UTC, stamped by the backend.
  * 11. `source_json`       — `JSON.stringify(event.source)`.
  * 12. `content_hash`      — optional `sha256:<hex>` digest, or `null`.
+ * 13. `project_path`      — optional resolved project root, or `null`.
+ *                            Denormalised projection of `source.project_path`
+ *                            for indexed aggregation; read path reads from
+ *                            `source_json`, not this column.
  */
 type InsertEventParams = [
   eventId: string,
@@ -158,6 +164,7 @@ type InsertEventParams = [
   transactionTime: string,
   sourceJson: string,
   contentHash: string | null,
+  projectPath: string | null,
 ];
 
 /**
@@ -262,7 +269,7 @@ export interface Statements {
    * dropped so the caller's retry is a safe no-op. `RunResult.changes`
    * reports `0` in that case and `1` on a fresh insert.
    *
-   * @see Requirements 6.1, 6.2, 6.3, 11.1, 11.2, 12.1
+   * @see Requirements 6.1, 6.2, 6.3, 9.1, 9.2, 9.3, 11.1, 11.2, 12.1
    */
   insertEvent: Statement<InsertEventParams>;
 
@@ -346,23 +353,26 @@ export interface Statements {
  */
 export function prepareStatements(db: Database): Statements {
   // Insert an event, idempotent on `event_id` collision. Column order
-  // mirrors migration 0001 exactly; updating one without the other will
-  // bind values to the wrong columns silently.
+  // mirrors migration 0001 + 0003 (project_path appended). Updating one
+  // without the other will bind values to the wrong columns silently.
   //
-  // @see Requirements 6.1, 6.2, 6.3, 11.1, 11.2, 12.1
+  // @see Requirements 6.1, 6.2, 6.3, 9.1, 9.2, 9.3, 11.1, 11.2, 12.1
   const insertEvent = db.prepare<InsertEventParams>(
     `INSERT OR IGNORE INTO events (
        event_id, parent_event_id, session_id, actor_id,
        namespace, schema_version, kind, body_json,
-       valid_time, transaction_time, source_json, content_hash
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       valid_time, transaction_time, source_json, content_hash,
+       project_path
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
 
   // Point lookup by primary key. The column list is spelled out (rather
   // than `SELECT *`) so the `EventRow` row shape is stable against any
   // future additive migrations that reorder or append columns.
   //
-  // @see Requirements 7.1, 7.2
+  // project_path is intentionally NOT in this SELECT list — source.project_path round-trips via source_json. See design § Storage — Read Path (Requirement 9.5).
+  //
+  // @see Requirements 7.1, 7.2, 9.5
   const selectEventById = db.prepare<[eventId: string], EventRow>(
     `SELECT
        event_id, parent_event_id, session_id, actor_id,
