@@ -149,6 +149,7 @@ export function openSqliteStorage(opts: SqliteStorageOptions): StorageBackend {
       transactionTime,
       JSON.stringify(event.source),
       event.content_hash ?? null,
+      event.source.project_path ?? null,
     );
   };
 

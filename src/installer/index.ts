@@ -120,9 +120,17 @@ export const KIRO_LEARN_TRIGGERS: HookTriggerMap = {
  * Checked in order at each directory during the upward walk; the first
  * match at the nearest directory wins.
  *
- * @see Requirements 15.2
+ * Exported for test-only parity enforcement with the shim's copy in
+ * `src/shim/shared/project-root.ts` (see
+ * `test/unit/shim-project-markers-match-installer.test.ts`). Production
+ * code under `src/shim/` MUST NOT import this constant — the modularity
+ * guard `test/unit/no-shim-in-installer.test.ts` enforces that
+ * boundary. Tests live outside the production boundary and are allowed
+ * to import from any production module.
+ *
+ * @see Requirements 15.2, N9
  */
-const PROJECT_MARKERS: readonly string[] = [
+export const PROJECT_MARKERS: readonly string[] = [
   '.kiro',
   '.git',
   'package.json',

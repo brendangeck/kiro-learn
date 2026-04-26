@@ -20,6 +20,8 @@ import { fileURLToPath } from 'node:url';
 import type { EventIngestResponse, KiroMemEvent } from '../../types/index.js';
 import { ulid } from 'ulidx';
 
+import { detectProjectRoot } from './project-root.js';
+
 // ── Package version ─────────────────────────────────────────────────────
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -202,18 +204,28 @@ export interface EventBuildParams {
 /**
  * Build a canonical {@link KiroMemEvent} from the given parameters.
  *
- * Generates `event_id` (ULID via `ulidx`), derives `namespace` from `cwd`
- * (SHA-256 of the resolved path), sets `actor_id` from the OS username,
- * and populates the `source` provenance block.
+ * Generates `event_id` (ULID via `ulidx`), derives `namespace` from the
+ * project root detected under `cwd` (SHA-256 of the resolved project
+ * root path), sets `actor_id` from the OS username, and populates the
+ * `source` provenance block — including `source.project_path`, which
+ * mirrors the hash input so the preimage is observable downstream.
+ *
+ * Project-root detection — including all filesystem error handling and
+ * fallbacks — is delegated to {@link detectProjectRoot}. `buildEvent`
+ * itself adds no try/catch around it; the total function guarantees a
+ * usable result for every input.
  *
  * When `parentEventId` is `undefined` the returned object omits the
  * `parent_event_id` key entirely (required by `exactOptionalPropertyTypes`).
+ * `source.project_path` is always populated by the updated shim — its
+ * optionality in the schema exists only for backward compatibility with
+ * older stored events.
  *
- * @see Requirements 3.1, 3.2, 3.3, 3.4, 3.5, 3.6, 3.7, 3.8, 3.9, 8.1, 8.2, 8.3, 8.4
+ * @see Requirements 3.1, 3.2, 3.3, 3.4, 3.5, 3.6, 3.7, 3.8, 3.9, 4.1, 4.2, 4.5, 6.1, 6.2, 6.3, 6.4, 8.1, 8.2, 8.3, 8.4
  */
 export function buildEvent(params: EventBuildParams): KiroMemEvent {
-  const resolvedCwd = realpathSync(params.cwd);
-  const projectId = createHash('sha256').update(resolvedCwd).digest('hex');
+  const { projectRoot, projectPath } = detectProjectRoot(params.cwd);
+  const projectId = createHash('sha256').update(projectRoot).digest('hex');
 
   let actorId: string;
   try {
@@ -237,6 +249,7 @@ export function buildEvent(params: EventBuildParams): KiroMemEvent {
       surface: 'kiro-cli',
       version: PACKAGE_VERSION,
       client_id: hostname(),
+      project_path: projectPath,
     },
   };
 

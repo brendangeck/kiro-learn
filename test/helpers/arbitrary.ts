@@ -211,6 +211,18 @@ function boundedIdArb(): fc.Arbitrary<string> {
   return fc.string({ minLength: 1, maxLength: 128 }).filter((s) => s.length > 0);
 }
 
+/**
+ * Arbitrary `project_path` value matching the `EventSource.project_path`
+ * schema bounds: any string of length 1–2048. No structural constraint —
+ * the field is a carrier, not a pattern (per Requirement 5.6).
+ *
+ * @see .kiro/specs/project-path-capture/requirements.md § Requirement 5.2
+ * @see .kiro/specs/project-path-capture/design.md § Test helper extensions
+ */
+export function projectPathArb(): fc.Arbitrary<string> {
+  return fc.string({ minLength: 1, maxLength: 2048 }).filter((s) => s.length > 0);
+}
+
 /** Arbitrary `EventKind`. */
 function kindArb(): fc.Arbitrary<KiroMemEvent['kind']> {
   return fc.constantFrom(
@@ -266,6 +278,16 @@ export function arbitraryEvent(): fc.Arbitrary<KiroMemEvent> {
       // preserves `exactOptionalPropertyTypes` compliance.
       fc.option(contentHashArb(), { nil: undefined }).map((hash) =>
         hash === undefined ? e : { ...e, content_hash: hash },
+      ),
+    )
+    .chain((e) =>
+      // Third `chain` step attaches `source.project_path` conditionally.
+      // When the option resolves to a string, it is spread into a new
+      // `source` object; when it resolves to `undefined`, the event is
+      // returned unchanged so the key stays absent (not
+      // `project_path: undefined`) under `exactOptionalPropertyTypes`.
+      fc.option(projectPathArb(), { nil: undefined }).map((pp) =>
+        pp === undefined ? e : { ...e, source: { ...e.source, project_path: pp } },
       ),
     );
 }
@@ -495,4 +517,160 @@ export function arbitraryCleanEvent(): fc.Arbitrary<KiroMemEvent> {
 
     return { ...event, body: cleanBody };
   });
+}
+
+// ── fs-tree generators for shim walk properties (Task 2.3) ─────────────
+
+/**
+ * The 15 project markers the shim walk checks at every directory, in the
+ * exact order used by `src/installer/index.ts`. Duplicated here (at the
+ * test layer) so the generators don't need to import production code —
+ * the shim's own module will be checked for marker-list parity by the
+ * example test `shim-project-markers-match-installer.test.ts` (Task 3.6).
+ *
+ * @see .kiro/specs/project-path-capture/design.md § Shim — Marker Walk
+ */
+const FS_TREE_PROJECT_MARKERS = [
+  '.kiro',
+  '.git',
+  'package.json',
+  'Cargo.toml',
+  'pyproject.toml',
+  'setup.py',
+  'go.mod',
+  'pom.xml',
+  'build.gradle',
+  'build.gradle.kts',
+  'Gemfile',
+  'composer.json',
+  'mix.exs',
+  'deno.json',
+  'deno.jsonc',
+] as const;
+
+/**
+ * Descriptor tuple emitted by {@link arbitraryFsTreeWithMarker} and
+ * {@link arbitraryFsTreeNoMarker}. Callers map the descriptor onto either
+ * a real temp directory (via `mkdtempSync`) or a stubbed
+ * `existsSync`/`realpathSync`; the generator itself is data-only.
+ *
+ * All paths are POSIX-style (`/` separator) and absolute. `home` is a
+ * mocked `$HOME` — an absolute path under a neutral root like `/mock-home`.
+ * `projectRoot` is the directory where a marker is planted (or equal to
+ * `home` when `marker === null`). `cwd` is at or below `projectRoot`.
+ */
+export interface FsTreeDescriptor {
+  /** Absolute POSIX path acting as the mocked `$HOME` walk ceiling. */
+  home: string;
+  /**
+   * Expected `projectRoot` result for this tree.
+   *
+   * - When `marker` is non-null, this is the directory containing the
+   *   marker — always a strict descendant of `home`.
+   * - When `marker` is `null`, this equals `home` (global-sentinel case).
+   */
+  projectRoot: string;
+  /** Absolute POSIX path of the walk start. Always at or below `projectRoot`. */
+  cwd: string;
+  /**
+   * The marker filename planted at `projectRoot`, or `null` for the
+   * no-marker case. Drawn from the same 15-element list the shim uses.
+   */
+  marker: string | null;
+}
+
+/**
+ * Arbitrary short, filesystem-safe directory segment. No `/`, no dots,
+ * only lowercase letters and digits, 1–8 characters. Avoids collisions
+ * with the marker filenames (which all contain a `.` or an uppercase
+ * letter) so a generated walk segment cannot accidentally look like a
+ * marker to downstream test code.
+ */
+function fsSegmentArb(): fc.Arbitrary<string> {
+  return fc
+    .stringMatching(/^[a-z0-9]{1,8}$/)
+    .filter((s) => s.length >= 1 && s.length <= 8);
+}
+
+/** Join absolute POSIX path segments with `/`. */
+function joinPosix(base: string, segments: readonly string[]): string {
+  if (segments.length === 0) return base;
+  const suffix = segments.join('/');
+  return base.endsWith('/') ? `${base}${suffix}` : `${base}/${suffix}`;
+}
+
+/**
+ * Arbitrary fs-tree descriptor with exactly one marker planted at a
+ * random depth under the mocked `$HOME`.
+ *
+ * The tuple guarantees:
+ *
+ * - `home` is an absolute POSIX path acting as the walk ceiling.
+ * - `projectRoot` is a strict descendant of `home` (depth 1..4 below).
+ * - `cwd` is at or below `projectRoot` (0..4 extra levels deep).
+ * - `marker` is one of the 15 shim project markers.
+ * - No marker sits strictly between `cwd` and `projectRoot`: the
+ *   generator places exactly one marker at `projectRoot`. Test code
+ *   that realises the tree onto a filesystem (or a stubbed
+ *   `existsSync`) is responsible for leaving every other directory
+ *   marker-free.
+ *
+ * Drives Property 1 (walk finds the nearest marker-bearing ancestor).
+ *
+ * @see .kiro/specs/project-path-capture/design.md § Property 1
+ * @see .kiro/specs/project-path-capture/requirements.md § N13
+ */
+export function arbitraryFsTreeWithMarker(): fc.Arbitrary<FsTreeDescriptor> {
+  return fc
+    .record({
+      homeSegment: fsSegmentArb(),
+      // Between `home` and `projectRoot`: 0..3 intermediate segments,
+      // plus the `projectRoot` segment itself (enforced via minLength=1).
+      // This makes `projectRoot` strictly deeper than `home`.
+      rootPath: fc.array(fsSegmentArb(), { minLength: 1, maxLength: 4 }),
+      // Between `projectRoot` and `cwd`: 0..4 extra segments (cwd may
+      // equal projectRoot when this array is empty).
+      cwdTail: fc.array(fsSegmentArb(), { minLength: 0, maxLength: 4 }),
+      marker: fc.constantFrom(...FS_TREE_PROJECT_MARKERS),
+    })
+    .map(({ homeSegment, rootPath, cwdTail, marker }) => {
+      const home = `/mock-home/${homeSegment}`;
+      const projectRoot = joinPosix(home, rootPath);
+      const cwd = joinPosix(projectRoot, cwdTail);
+      return { home, projectRoot, cwd, marker };
+    });
+}
+
+/**
+ * Arbitrary fs-tree descriptor with no markers anywhere between `cwd` and
+ * the mocked `$HOME` ceiling.
+ *
+ * The tuple guarantees:
+ *
+ * - `home` is an absolute POSIX path acting as the walk ceiling.
+ * - `cwd` is a strict descendant of `home` (depth 1..6 below).
+ * - `projectRoot === home` — the expected result of `detectProjectRoot`
+ *   for a marker-free tree is the global sentinel.
+ * - `marker === null` — no marker is planted. Test code that realises
+ *   the tree onto a filesystem (or a stubbed `existsSync`) must leave
+ *   every directory on the cwd→home chain marker-free.
+ *
+ * Drives Property 2 (global sentinel fallback).
+ *
+ * @see .kiro/specs/project-path-capture/design.md § Property 2
+ * @see .kiro/specs/project-path-capture/requirements.md § N13
+ */
+export function arbitraryFsTreeNoMarker(): fc.Arbitrary<FsTreeDescriptor> {
+  return fc
+    .record({
+      homeSegment: fsSegmentArb(),
+      // `cwd` must be a strict descendant of `home`; require at least
+      // one segment so `cwd !== home`.
+      cwdPath: fc.array(fsSegmentArb(), { minLength: 1, maxLength: 6 }),
+    })
+    .map(({ homeSegment, cwdPath }) => {
+      const home = `/mock-home/${homeSegment}`;
+      const cwd = joinPosix(home, cwdPath);
+      return { home, projectRoot: home, cwd, marker: null };
+    });
 }

@@ -2,15 +2,16 @@
  * Property-based tests for namespace determinism (Property 2).
  *
  * For any cwd string, calling `buildEvent` twice with the same cwd produces
- * identical `namespace` fields. For any two distinct cwd strings, the
- * `namespace` fields differ (with overwhelming probability, given SHA-256).
+ * identical `namespace` fields. For any two distinct cwd strings that are
+ * themselves valid project roots, the `namespace` fields differ (with
+ * overwhelming probability, given SHA-256).
  *
  * **Validates: Requirements 3.4, 8.1, 8.2, 8.3, 8.4**
  *
  * @see .kiro/specs/shim/design.md § Correctness Properties — Property 2
  */
 
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import type * as nodeOs from 'node:os';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -31,9 +32,23 @@ const { buildEvent } = await import('../../src/shim/shared/index.js');
 
 describe('Property 2: Namespace determinism', () => {
   /**
-   * `buildEvent` calls `realpathSync(cwd)` internally, so we need real
-   * directories. We create a pool of distinct temp directories before the
-   * suite runs and clean them up afterwards.
+   * `buildEvent` now delegates to `detectProjectRoot`, which walks upward
+   * from `cwd` looking for project markers, bounded above by the resolved
+   * `$HOME` (the Walk_Ceiling). Two distinct cwds that both live *outside*
+   * `$HOME` would collapse to the same global-sentinel namespace — correct
+   * behaviour per Requirements 2.5 / 3.2, but useless for exercising the
+   * "distinct cwds → distinct namespaces" property.
+   *
+   * To give each pool entry a distinct `project_id`, the directories must
+   * therefore be:
+   *   1. Created under the mocked `$HOME` (`tmpBase`), so the walk sees
+   *      them as being inside the ceiling rather than outside it.
+   *   2. Seeded with a project marker (`.git`) at their own level, so the
+   *      walk terminates at each pool directory and returns that directory
+   *      as the project root rather than walking up into `tmpBase`.
+   *
+   * With both conditions met, each pool directory is a distinct project
+   * root → distinct SHA-256(projectRoot) → distinct namespace.
    */
   const dirs: string[] = [];
   const POOL_SIZE = 20;
@@ -41,14 +56,18 @@ describe('Property 2: Namespace determinism', () => {
   beforeAll(() => {
     tmpBase = mkdtempSync(join(tmpdir(), 'kiro-learn-ns-prop-'));
     for (let i = 0; i < POOL_SIZE; i++) {
-      dirs.push(mkdtempSync(join(tmpdir(), `kiro-learn-ns-${String(i)}-`)));
+      // Pool dir must live under tmpBase (the mocked $HOME) so
+      // `detectProjectRoot` does not short-circuit to the global sentinel.
+      const dir = mkdtempSync(join(tmpBase, `proj-${String(i)}-`));
+      // Plant a `.git` marker so the upward walk terminates at this dir
+      // rather than continuing up to the ceiling.
+      mkdirSync(join(dir, '.git'));
+      dirs.push(dir);
     }
   });
 
   afterAll(() => {
-    for (const d of dirs) {
-      rmSync(d, { recursive: true, force: true });
-    }
+    // tmpBase is removed recursively, which also cleans up the pool.
     rmSync(tmpBase, { recursive: true, force: true });
   });
 
@@ -90,8 +109,10 @@ describe('Property 2: Namespace determinism', () => {
      * **Validates: Requirements 3.4, 8.1, 8.2, 8.3**
      *
      * For any two distinct directories from the pool, `buildEvent` must
-     * produce events with different `namespace` fields. SHA-256 collision
-     * probability on distinct inputs is negligible.
+     * produce events with different `namespace` fields. Each pool
+     * directory is its own project root (thanks to the planted `.git`
+     * marker), so SHA-256 collision probability on distinct inputs is
+     * negligible.
      */
     fc.assert(
       fc.property(
