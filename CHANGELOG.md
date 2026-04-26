@@ -1,3 +1,9 @@
+## [0.8.0](https://github.com/brendangeck/kiro-learn/compare/v0.7.2...v0.8.0) (2026-04-26)
+
+### Features
+
+* **shim,storage:** project-path capture ([#14](https://github.com/brendangeck/kiro-learn/issues/14)) ([a78e497](https://github.com/brendangeck/kiro-learn/commit/a78e497c677e4c92d72fc5d2d9ba66e51d68743a))
+
 ## [0.7.2](https://github.com/brendangeck/kiro-learn/compare/v0.7.1...v0.7.2) (2026-04-26)
 
 ### Bug Fixes
