@@ -18,7 +18,7 @@ npm run format:check   # prettier --check
 
 ## Architecture
 
-```
+```text
 Kiro CLI hooks → Shim (stdin JSON → Event → POST) → Collector daemon → Storage
                    ↑                                      │
                    └── stdout (retrieval context) ←───────┘
@@ -36,7 +36,7 @@ Shared types live in `src/types/`. The package entry point (`src/index.ts`) re-e
 
 ## Source Layout
 
-```
+```text
 src/
   index.ts                          # package entry — re-exports public types only
   types/
@@ -153,7 +153,7 @@ The `EventSchema` in `src/types/schemas.ts` is the wire contract. Key validation
 
 ## Test Structure
 
-```
+```text
 test/
   helpers/
     arbitrary.ts          # fast-check generators for Event, MemoryRecord, etc.
