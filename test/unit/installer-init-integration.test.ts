@@ -108,7 +108,7 @@ vi.mock('node:fs', async (importOriginal) => {
 });
 
 // Import after mocks so vitest intercepts the modules.
-const { cmdInit, INSTALL_DIR, OWNED_TRIGGERS, KIRO_LEARN_DESCRIPTION } = await import(
+const { cmdInit, INSTALL_DIR, OWNED_TRIGGERS, KIRO_LEARN_DESCRIPTION, KIRO_LEARN_PROMPT_SUFFIX } = await import(
   '../../src/installer/index.js'
 );
 
@@ -220,7 +220,8 @@ describe('fresh init flow — integration', () => {
     expect(config.description).toBe(KIRO_LEARN_DESCRIPTION);
 
     // Non-owned seed fields survive — this is the merge-branch witness.
-    expect(config.prompt).toBe('You are the default agent.');
+    // The prompt suffix is appended to the inherited seed prompt.
+    expect(config.prompt).toBe('You are the default agent.\n\n' + KIRO_LEARN_PROMPT_SUFFIX);
     expect(config.tools).toEqual(['fs_read', 'fs_write']);
 
     // All four owned hook triggers present.
@@ -267,7 +268,7 @@ describe('fresh init flow — integration', () => {
 
     expect(config.name).toBe('kiro-learn');
     expect(config.description).toBe(KIRO_LEARN_DESCRIPTION);
-    expect(config.prompt).toBe('You are the default agent.');
+    expect(config.prompt).toBe('You are the default agent.\n\n' + KIRO_LEARN_PROMPT_SUFFIX);
     expect(config.tools).toEqual(['fs_read', 'fs_write']);
     for (const trigger of OWNED_TRIGGERS) {
       expect(config.hooks).toHaveProperty(trigger);

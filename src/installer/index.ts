@@ -43,6 +43,22 @@ export const KIRO_LEARN_DESCRIPTION =
   'Continuous learning for Kiro sessions. Captures tool-use events and injects prior context.';
 
 /**
+ * Identity block appended to the inherited `kiro_default` prompt when the
+ * seed-then-merge path succeeds. Gives the agent self-awareness of the
+ * kiro-learn memory system without replacing any default behaviour.
+ *
+ * Only appended when the seed payload contains a string `prompt` field;
+ * the fallback config path (no prompt) is unaffected.
+ */
+export const KIRO_LEARN_PROMPT_SUFFIX = `## kiro-learn — Continuous Learning
+
+You are running as the **kiro-learn** agent, a continuous learning layer for Kiro sessions. You have all the same tools and capabilities as the default Kiro agent, plus passive memory capture via lifecycle hooks.
+
+When asked about your identity, mention that you are kiro-learn — a custom agent built on top of the default Kiro agent with added memory capabilities. You are not the built-in default agent, though you inherit all of its tools and behaviour.
+
+kiro-learn captures tool-use events and session activity in the background, extracts structured memory records, and injects relevant prior context into future sessions so you maintain continuity across conversations.`;
+
+/**
  * The exact set of hook triggers kiro-learn owns. Hook_Merge overwrites
  * each of these on the Seed_Payload; any hook trigger outside this tuple
  * is preserved unchanged.
@@ -838,6 +854,13 @@ export function writeKiroLearnAgent(targetDir: string): void {
   // (d) Merge kiro-learn's four owned triggers onto the seed and write
   // the merged result back to the same path.
   const merged = mergeHooks(payload, KIRO_LEARN_TRIGGERS);
+
+  // (d.2) Append kiro-learn identity to the inherited prompt so the agent
+  // knows it is kiro-learn, not the vanilla default agent.
+  if (typeof merged['prompt'] === 'string') {
+    merged['prompt'] = merged['prompt'] + '\n\n' + KIRO_LEARN_PROMPT_SUFFIX;
+  }
+
   writeFileSync(targetFile, JSON.stringify(merged, null, 2) + '\n');
 }
 
