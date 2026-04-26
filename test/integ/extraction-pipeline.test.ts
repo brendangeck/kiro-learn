@@ -23,10 +23,10 @@
  */
 
 import { execSync } from 'node:child_process';
-import { mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { createAcpSession } from '../../src/collector/pipeline/acp-client.js';
 import { frameEvent } from '../../src/collector/pipeline/xml-framer.js';
@@ -57,17 +57,32 @@ const canRun = acpAvailable();
 describe.skipIf(!canRun)(
   'Extraction pipeline — ACP + XML integration',
   () => {
-    beforeAll(() => {
-      // Refresh ~/.kiro/agents/kiro-learn-compressor.json from the
-      // current source. kiro-cli resolves agent names by scanning the
-      // global agents directory, so any stale on-disk prompt from an
-      // older kiro-learn install would drive the model toward its old
-      // output format. Writing from source is the only way to make the
-      // XML assertions below deterministic.
-      const globalAgentsDir = join(homedir(), '.kiro', 'agents');
-      mkdirSync(globalAgentsDir, { recursive: true });
-      writeCompressorAgent(globalAgentsDir);
-    });
+    // Backup/restore the global compressor config so the test doesn't
+  // permanently mutate the developer's installed agent.
+  const compressorPath = join(homedir(), '.kiro', 'agents', 'kiro-learn-compressor.json');
+  let originalCompressor: string | null = null;
+
+  beforeAll(() => {
+    // Save whatever is on disk (or note its absence).
+    if (existsSync(compressorPath)) {
+      originalCompressor = readFileSync(compressorPath, 'utf8');
+    }
+
+    // Refresh from the current source so the XML prompt is up to date.
+    const globalAgentsDir = join(homedir(), '.kiro', 'agents');
+    mkdirSync(globalAgentsDir, { recursive: true });
+    writeCompressorAgent(globalAgentsDir);
+  });
+
+  afterAll(() => {
+    // Restore the original compressor config, or remove the file if it
+    // didn't exist before the test wrote it.
+    if (originalCompressor !== null) {
+      writeFileSync(compressorPath, originalCompressor);
+    } else if (existsSync(compressorPath)) {
+      unlinkSync(compressorPath);
+    }
+  });
 
     // Sample event that simulates a real tool_use event
     const sampleEvent: KiroMemEvent = {

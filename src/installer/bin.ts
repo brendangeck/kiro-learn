@@ -165,9 +165,17 @@ function isMainModule(): boolean {
 
 if (isMainModule()) {
   void (async (): Promise<void> => {
-    const result = await dispatch(process.argv.slice(2));
-    if (result.stdout.length > 0) process.stdout.write(result.stdout);
-    if (result.stderr.length > 0) process.stderr.write(result.stderr);
-    process.exitCode = result.exitCode;
+    try {
+      const result = await dispatch(process.argv.slice(2));
+      if (result.stdout.length > 0) process.stdout.write(result.stdout);
+      if (result.stderr.length > 0) process.stderr.write(result.stderr);
+      process.exitCode = result.exitCode;
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      const stack = err instanceof Error ? err.stack : undefined;
+      process.stderr.write(`[kiro-learn] fatal: ${message}\n`);
+      if (stack !== undefined) process.stderr.write(`${stack}\n`);
+      process.exitCode = 1;
+    }
   })();
 }
