@@ -1,3 +1,9 @@
+## [0.7.2](https://github.com/brendangeck/kiro-learn/compare/v0.7.1...v0.7.2) (2026-04-26)
+
+### Bug Fixes
+
+* updating kiro learn agent prompt ([#12](https://github.com/brendangeck/kiro-learn/issues/12)) ([94428be](https://github.com/brendangeck/kiro-learn/commit/94428bebd682f6a6c313767d6897a60cde861a6f))
+
 ## [0.7.1](https://github.com/brendangeck/kiro-learn/compare/v0.7.0...v0.7.1) (2026-04-26)
 
 ### Bug Fixes
