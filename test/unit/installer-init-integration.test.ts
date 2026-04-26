@@ -3,7 +3,12 @@
  *
  * Uses a temp directory as HOME (mock homedir via vi.mock).
  * Mocks node:child_process so that checkKiroCli, installDeps, startDaemon,
- * and setDefaultAgent don't actually spawn processes.
+ * setDefaultAgent, and runSeedCommand don't actually spawn processes.
+ * The `execFileSync` mock simulates `kiro-cli agent create --from
+ * kiro_default` writing a known seed payload to `<targetDir>/kiro-learn.json`,
+ * which routes `writeKiroLearnAgent` down the merge path so the
+ * integration test exercises seed-then-merge end-to-end (not just the
+ * Fallback_Config branch).
  * Mocks cpSync so deployPayload creates lib/ subdirs without needing a
  * real dist/ directory.
  *
@@ -42,19 +47,53 @@ vi.mock('node:os', async (importOriginal) => {
   };
 });
 
-// Mock child_process so execSync/spawn don't actually run external commands.
+// Mock child_process so execSync/spawn/execFileSync don't actually run
+// external commands.
 // - checkKiroCli calls execSync('kiro-cli --version')
 // - installDeps calls execSync('npm install --production')
 // - setDefaultAgent calls execSync('kiro-cli agent set-default kiro-learn')
 // - startDaemon calls spawn(process.execPath, [...])
-vi.mock('node:child_process', () => ({
-  execSync: vi.fn(() => Buffer.from('')),
-  spawn: vi.fn(() => ({
-    pid: 99999,
-    unref: vi.fn(),
-    on: vi.fn(),
-  })),
-}));
+// - writeKiroLearnAgent → runSeedCommand calls
+//   execFileSync('kiro-cli', ['agent', 'create', '--from', 'kiro_default', ...])
+//
+// The execFileSync mock simulates `kiro-cli agent create --from
+// kiro_default --directory <dir> kiro-learn` writing a seed payload. This
+// routes `writeKiroLearnAgent` down the merge path (not the fallback
+// path), so the integration test exercises the happy path of the
+// seed-then-merge flow.
+vi.mock('node:child_process', async () => {
+  const { writeFileSync: realWriteFileSync } = (await vi.importActual(
+    'node:fs',
+  )) as typeof import('node:fs'); // eslint-disable-line @typescript-eslint/consistent-type-imports
+
+  const seedJson = JSON.stringify(
+    {
+      name: 'kiro_default',
+      description: 'Default agent',
+      prompt: 'You are the default agent.',
+      tools: ['fs_read', 'fs_write'],
+    },
+    null,
+    2,
+  );
+
+  return {
+    execSync: vi.fn(() => Buffer.from('')),
+    execFileSync: vi.fn((_cmd: string, args: readonly string[]) => {
+      const dirIdx = args.indexOf('--directory');
+      if (dirIdx !== -1 && dirIdx < args.length - 1) {
+        const dir = args[dirIdx + 1]!;
+        realWriteFileSync(`${dir}/kiro-learn.json`, seedJson);
+      }
+      return Buffer.from('');
+    }),
+    spawn: vi.fn(() => ({
+      pid: 99999,
+      unref: vi.fn(),
+      on: vi.fn(),
+    })),
+  };
+});
 
 // Mock cpSync so deployPayload creates lib/ subdirs without needing
 // a real dist/ directory. Other fs functions remain real.
@@ -69,7 +108,9 @@ vi.mock('node:fs', async (importOriginal) => {
 });
 
 // Import after mocks so vitest intercepts the modules.
-const { cmdInit, INSTALL_DIR } = await import('../../src/installer/index.js');
+const { cmdInit, INSTALL_DIR, OWNED_TRIGGERS, KIRO_LEARN_DESCRIPTION } = await import(
+  '../../src/installer/index.js'
+);
 
 // Suppress stdout/stderr noise from cmdInit progress messages
 vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
@@ -153,17 +194,39 @@ describe('fresh init flow — integration', () => {
     expect(content).toContain('../lib/installer/bin.js');
   });
 
-  it('writes kiro-learn.json agent config globally', () => {
+  it('writes kiro-learn.json agent config globally with merged seed payload', () => {
+    /**
+     * Validates the seed-then-merge flow ran end-to-end at global scope:
+     * mocked `kiro-cli` writes a seed containing `name: 'kiro_default'`,
+     * a custom `description`, `prompt`, and `tools`; `writeKiroLearnAgent`
+     * merges kiro-learn's owned fields (name, description, four hook
+     * triggers) onto the seed and writes the result back. The presence
+     * of `tools` in the final file proves the merge branch ran — the
+     * Fallback_Config does not carry that key.
+     */
     const configPath = join(tmpHome, '.kiro', 'agents', 'kiro-learn.json');
     expect(existsSync(configPath)).toBe(true);
 
     const config = JSON.parse(readFileSync(configPath, 'utf8')) as {
+      name: string;
+      description: string;
+      prompt?: string;
+      tools?: string[];
       hooks: Record<string, unknown[]>;
     };
-    expect(config.hooks).toHaveProperty('agentSpawn');
-    expect(config.hooks).toHaveProperty('userPromptSubmit');
-    expect(config.hooks).toHaveProperty('postToolUse');
-    expect(config.hooks).toHaveProperty('stop');
+
+    // Owned top-level fields overwritten by the merge.
+    expect(config.name).toBe('kiro-learn');
+    expect(config.description).toBe(KIRO_LEARN_DESCRIPTION);
+
+    // Non-owned seed fields survive — this is the merge-branch witness.
+    expect(config.prompt).toBe('You are the default agent.');
+    expect(config.tools).toEqual(['fs_read', 'fs_write']);
+
+    // All four owned hook triggers present.
+    for (const trigger of OWNED_TRIGGERS) {
+      expect(config.hooks).toHaveProperty(trigger);
+    }
   });
 
   it('writes kiro-learn-compressor.json agent config globally', () => {
@@ -185,9 +248,30 @@ describe('fresh init flow — integration', () => {
     expect(config.allowedTools).toEqual([]);
   });
 
-  it('writes kiro-learn.json agent config at project scope', () => {
+  it('writes kiro-learn.json agent config at project scope with merged seed payload', () => {
+    /**
+     * Mirrors the global-scope assertion: the project-scope file must
+     * also be the output of the merge branch (same mocked seed, same
+     * merge helper), so `tools` and `prompt` survive end-to-end.
+     */
     const configPath = join(projectDir, '.kiro', 'agents', 'kiro-learn.json');
     expect(existsSync(configPath)).toBe(true);
+
+    const config = JSON.parse(readFileSync(configPath, 'utf8')) as {
+      name: string;
+      description: string;
+      prompt?: string;
+      tools?: string[];
+      hooks: Record<string, unknown[]>;
+    };
+
+    expect(config.name).toBe('kiro-learn');
+    expect(config.description).toBe(KIRO_LEARN_DESCRIPTION);
+    expect(config.prompt).toBe('You are the default agent.');
+    expect(config.tools).toEqual(['fs_read', 'fs_write']);
+    for (const trigger of OWNED_TRIGGERS) {
+      expect(config.hooks).toHaveProperty(trigger);
+    }
   });
 
   it('creates settings.json with defaults', () => {

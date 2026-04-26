@@ -6,20 +6,20 @@
  * For any string not in {init, start, stop, status, uninstall, --help, --version},
  * the CLI produces exit code 1 and stderr lists valid commands.
  *
+ * Uses the exported in-process {@link dispatch} function from
+ * `src/installer/bin.ts` so fast-check can explore a hundred+ invalid
+ * argv strings in milliseconds rather than spawning a fresh `npx tsx`
+ * per iteration.
+ *
  * **Validates: Requirements 1.4**
  *
  * @see .kiro/specs/installer/design.md § Property 1
  */
 
-import { execSync } from 'node:child_process';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import fc from 'fast-check';
-import { describe, it, expect } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
-const thisDir = path.dirname(fileURLToPath(import.meta.url));
-const projectRoot = path.resolve(thisDir, '../..');
-const binPath = path.join(projectRoot, 'src', 'installer', 'bin.ts');
+import { dispatch } from '../../src/installer/bin.js';
 
 /** The set of valid commands and flags that the CLI recognizes. */
 const VALID_COMMANDS = new Set([
@@ -32,44 +32,18 @@ const VALID_COMMANDS = new Set([
   '--version',
 ]);
 
-/**
- * Run bin.ts with a single argument and return stdout, stderr, exitCode.
- */
-function runBin(arg: string): { stdout: string; stderr: string; exitCode: number } {
-  // Shell-escape the argument to prevent injection
-  const escaped = arg.replace(/'/g, "'\\''");
-  const cmd = `npx tsx ${binPath} '${escaped}'`;
-
-  try {
-    const stdout = execSync(cmd, {
-      cwd: projectRoot,
-      encoding: 'utf8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-      timeout: 15_000,
-    });
-    return { stdout, stderr: '', exitCode: 0 };
-  } catch (err: unknown) {
-    const e = err as { stdout?: string; stderr?: string; status?: number };
-    return {
-      stdout: e.stdout ?? '',
-      stderr: e.stderr ?? '',
-      exitCode: e.status ?? 1,
-    };
-  }
-}
-
 describe('Installer — property: unrecognized command rejection (P1)', () => {
-  it('any non-valid command string produces exit 1 and stderr lists valid commands', () => {
+  it('any non-valid command string produces exit 1 and stderr lists valid commands', async () => {
     /**
      * **Validates: Requirements 1.4**
      */
-    fc.assert(
-      fc.property(
+    await fc.assert(
+      fc.asyncProperty(
         fc
           .string({ minLength: 1, maxLength: 30 })
           .filter((s) => !VALID_COMMANDS.has(s) && !s.includes('\0') && !s.includes('\n')),
-        (cmd) => {
-          const result = runBin(cmd);
+        async (cmd) => {
+          const result = await dispatch([cmd]);
           expect(result.exitCode).toBe(1);
           expect(result.stderr).toContain('Valid commands:');
         },

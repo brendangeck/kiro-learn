@@ -6,12 +6,17 @@
  * For any error condition that causes stderr output, the output contains
  * the [kiro-learn] prefix.
  *
+ * Uses the exported in-process {@link dispatch} function from
+ * `src/installer/bin.ts` for the unrecognized-command property so
+ * fast-check doesn't have to spawn a subprocess per iteration. The
+ * `cmdStart` / `cmdStatus` cases still run in-process and spy on
+ * `process.stderr.write` the way they always did.
+ *
  * **Validates: Requirements 13.5**
  *
  * @see .kiro/specs/installer/design.md § Property 5
  */
 
-import { execSync } from 'node:child_process';
 import {
   mkdtempSync,
   realpathSync,
@@ -20,41 +25,8 @@ import {
 import type * as nodeOs from 'node:os';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import fc from 'fast-check';
 import { afterAll, describe, expect, it, vi } from 'vitest';
-
-const thisDir = path.dirname(fileURLToPath(import.meta.url));
-const projectRoot = path.resolve(thisDir, '../..');
-const binPath = path.join(projectRoot, 'src', 'installer', 'bin.ts');
-
-// ── Child process helper for command rejection errors ───────────────────
-
-/**
- * Run bin.ts with a single argument and return stdout, stderr, exitCode.
- */
-function runBin(arg: string): { stdout: string; stderr: string; exitCode: number } {
-  const escaped = arg.replace(/'/g, "'\\''");
-  const cmd = `npx tsx ${binPath} '${escaped}'`;
-
-  try {
-    const stdout = execSync(cmd, {
-      cwd: projectRoot,
-      encoding: 'utf8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-      timeout: 15_000,
-    });
-    return { stdout, stderr: '', exitCode: 0 };
-  } catch (err: unknown) {
-    const e = err as { stdout?: string; stderr?: string; status?: number };
-    return {
-      stdout: e.stdout ?? '',
-      stderr: e.stderr ?? '',
-      exitCode: e.status ?? 1,
-    };
-  }
-}
 
 // ── Mocked homedir tests for not-installed errors ───────────────────────
 
@@ -71,6 +43,7 @@ vi.mock('node:os', async (importOriginal) => {
 });
 
 const { cmdStart, cmdStatus } = await import('../../src/installer/index.js');
+const { dispatch } = await import('../../src/installer/bin.js');
 
 afterAll(() => {
   rmSync(tmpHome, { recursive: true, force: true });
@@ -88,15 +61,15 @@ const VALID_COMMANDS = new Set([
 ]);
 
 describe('Installer — property: error message prefix (P5)', () => {
-  it('unrecognized commands produce stderr with [kiro-learn] prefix', () => {
+  it('unrecognized commands produce stderr with [kiro-learn] prefix', async () => {
     /**
      * **Validates: Requirements 13.5**
      *
      * Generate random invalid command strings and verify stderr contains
      * the [kiro-learn] prefix.
      */
-    fc.assert(
-      fc.property(
+    await fc.assert(
+      fc.asyncProperty(
         fc
           .string({ minLength: 1, maxLength: 20 })
           .filter(
@@ -105,8 +78,8 @@ describe('Installer — property: error message prefix (P5)', () => {
               !s.includes('\0') &&
               !s.includes('\n'),
           ),
-        (cmd) => {
-          const result = runBin(cmd);
+        async (cmd) => {
+          const result = await dispatch([cmd]);
           expect(result.exitCode).toBe(1);
           expect(result.stderr).toContain('[kiro-learn]');
         },

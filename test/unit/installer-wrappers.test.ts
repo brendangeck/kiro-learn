@@ -7,6 +7,14 @@
  * INSTALL_DIR is computed once at module load time from homedir(), so we
  * set tmpHome before the import and keep it stable across all tests.
  *
+ * `node:child_process` is mocked so `writeKiroLearnAgent` takes the
+ * Fallback_Config branch (no real `kiro-cli` spawn). The fallback bytes
+ * are structurally identical to the pre-spec hand-authored output, so
+ * the hook-shape assertions below are valid guards for the fallback path
+ * specifically. The merge path is exercised in
+ * `installer-init-integration.test.ts` and
+ * `installer-write-kiro-learn-agent.test.ts`.
+ *
  * Validates: Requirements 5.1, 5.2, 5.3, 5.5, 6.3, 6.4, 6.5, 6.8, 6.9
  */
 
@@ -35,8 +43,39 @@ vi.mock('node:os', async (importOriginal) => {
   };
 });
 
-// Import after mock so vitest intercepts the module.
-const { writeBinWrappers, writeAgentConfigs, INSTALL_DIR } = await import(
+// Mock `node:child_process` so `writeKiroLearnAgent` → `runSeedCommand`
+// does not spawn real `kiro-cli` during unit tests. `execFileSync` throws
+// with no `status` property, which forces the `spawn-failed` branch and
+// routes `writeAgentConfigs` to the Fallback_Config writer. The bare
+// hooks-only bytes that the Fallback_Config produces are byte-for-byte
+// identical to the pre-spec hand-authored output, so the existing
+// assertions on hook shape still hold — and this file becomes a
+// load-bearing guard for the fallback path (Requirements 6.2, 8.3).
+vi.mock('node:child_process', () => ({
+  execFileSync: vi.fn(() => {
+    throw Object.assign(new Error('spawn kiro-cli ENOENT'), {
+      code: 'ENOENT',
+    });
+  }),
+  execSync: vi.fn(() => Buffer.from('')),
+  spawn: vi.fn(() => ({
+    pid: 99999,
+    unref: vi.fn(),
+    on: vi.fn(),
+  })),
+}));
+
+// Suppress the `[kiro-learn] warning:` line the fallback writer emits so
+// it doesn't clutter test output. Installed per-test because vitest's
+// `restoreMocks: true` (see vitest.config.ts) clears spies before each
+// test. The warning itself is asserted explicitly in
+// `installer-write-kiro-learn-agent.test.ts`.
+beforeEach(() => {
+  vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+});
+
+// Import after mocks so vitest intercepts the modules.
+const { writeBinWrappers, writeAgentConfigs, INSTALL_DIR, OWNED_TRIGGERS } = await import(
   '../../src/installer/index.js'
 );
 
@@ -127,10 +166,9 @@ describe('writeAgentConfigs', () => {
     };
 
     // All four hooks must be present
-    expect(config.hooks).toHaveProperty('agentSpawn');
-    expect(config.hooks).toHaveProperty('userPromptSubmit');
-    expect(config.hooks).toHaveProperty('postToolUse');
-    expect(config.hooks).toHaveProperty('stop');
+    for (const trigger of OWNED_TRIGGERS) {
+      expect(config.hooks).toHaveProperty(trigger);
+    }
 
     // Every command must use absolute path (quoted) and end with || true
     const shimPath = join(INSTALL_DIR, 'bin', 'shim');

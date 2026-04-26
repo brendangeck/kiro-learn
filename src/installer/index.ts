@@ -7,7 +7,7 @@
  * @see Requirements 1–18, Non-functional N1–N12
  */
 
-import { execSync, spawn } from 'node:child_process';
+import { execFileSync, execSync, spawn } from 'node:child_process';
 import {
   chmodSync,
   closeSync,
@@ -33,6 +33,71 @@ export const INSTALL_DIR: string = path.join(homedir(), '.kiro-learn');
 
 /** Minimum required Node.js major version. */
 export const MIN_NODE_VERSION = 22;
+
+/**
+ * The kiro-learn agent's description string. Extracted to module scope so
+ * both the seed-then-merge flow and the fallback writer can reference the
+ * same literal — see Requirements 4.2 and 6.2.
+ */
+export const KIRO_LEARN_DESCRIPTION =
+  'Continuous learning for Kiro sessions. Captures tool-use events and injects prior context.';
+
+/**
+ * The exact set of hook triggers kiro-learn owns. Hook_Merge overwrites
+ * each of these on the Seed_Payload; any hook trigger outside this tuple
+ * is preserved unchanged.
+ *
+ * @see Requirements 4.3, 4.6 — Installer_Hook_Triggers glossary entry
+ */
+export const OWNED_TRIGGERS = [
+  'agentSpawn',
+  'userPromptSubmit',
+  'postToolUse',
+  'stop',
+] as const;
+
+/**
+ * Absolute path to the shim executable that all four kiro-learn hook
+ * triggers invoke. Built once at module load from {@link INSTALL_DIR}.
+ *
+ * Identical to the path the existing inline `kiroLearnConfig` construction
+ * in {@link writeAgentConfigs} uses, by design — the Fallback_Config and
+ * the merged hook entries must be byte-for-byte compatible with today's
+ * hand-authored output (Requirement 6.2).
+ */
+const SHIM_PATH: string = path.join(INSTALL_DIR, 'bin', 'shim');
+
+/**
+ * `SHIM_PATH` wrapped in double quotes for safe inclusion in a shell
+ * command — handles home directories with spaces or special characters.
+ * The `|| true` suffix is appended at the call site (see
+ * {@link KIRO_LEARN_TRIGGERS}).
+ */
+const QUOTED_SHIM: string = `"${SHIM_PATH}"`;
+
+/**
+ * The four hook-trigger entries kiro-learn owns on every installed agent
+ * config. Used by both {@link mergeHooks} (to overwrite any seed payload's
+ * entries at those triggers) and the Fallback_Config path (to populate
+ * `hooks` when seeding fails).
+ *
+ * The quoted shim path and `|| true` suffix match the existing inline
+ * `kiroLearnConfig` construction in {@link writeAgentConfigs} exactly —
+ * this is load-bearing for Requirement 6.2 (Fallback_Config is byte-for-
+ * byte compatible with today's hand-authored output) and for Requirement
+ * 4.3 (merged output carries kiro-learn's owned entries).
+ *
+ * `postToolUse` is the only trigger that carries `matcher: '*'`; the
+ * other three omit `matcher`, matching what kiro-cli expects.
+ *
+ * @see Requirements 4.3, 4.6, 6.2 — Installer_Hook_Triggers glossary entry
+ */
+export const KIRO_LEARN_TRIGGERS: HookTriggerMap = {
+  agentSpawn: [{ command: QUOTED_SHIM + ' || true' }],
+  userPromptSubmit: [{ command: QUOTED_SHIM + ' || true' }],
+  postToolUse: [{ matcher: '*', command: QUOTED_SHIM + ' || true' }],
+  stop: [{ command: QUOTED_SHIM + ' || true' }],
+} as const;
 
 /**
  * Project markers used by {@link detectScope} to identify a project root.
@@ -380,52 +445,469 @@ export function writeSettings(): void {
   writeFileSync(settingsPath, JSON.stringify(defaults, null, 2) + '\n');
 }
 
+// ── Agent seed-then-merge helpers ───────────────────────────────────────
+
 /**
- * Generate and write both agent config files at all applicable scopes.
+ * The result of invoking the Seed_Command for one Agent_Scope.
  *
- * - kiro-learn.json: global always, project-scoped when detected.
- * - kiro-learn-compressor.json: global only.
+ * `ok: true` means `kiro-cli` exited zero AND the expected
+ * `<targetDir>/kiro-learn.json` file exists on disk. The contents have not
+ * been read or validated at this point — that is
+ * {@link validateSeedPayload}'s job.
  *
- * @see Requirements 6.1–6.11
+ * `ok: false` carries a `reason` distinguishing the three failure modes:
+ *
+ *  - `spawn-failed`: `kiro-cli` could not be spawned (e.g. not on PATH, OS
+ *    ENOENT). The thrown error had no numeric `status` property.
+ *  - `non-zero-exit`: `kiro-cli` ran but exited non-zero (unknown flag,
+ *    `kiro_default` not resolvable, permission denied, etc.). The thrown
+ *    error had a numeric `status` property.
+ *  - `missing-file`: `kiro-cli` exited zero but did not write the file —
+ *    a defensive guard that should never fire in practice.
+ *
+ * `stderr` is captured verbatim from the thrown error (or `''` for
+ * `missing-file`) so the caller can surface it in a warning if desired.
+ *
+ * @see Requirements 1.6, 1.7, 6.1
  */
-export function writeAgentConfigs(scope: InstallScope): void {
-  const shimPath = path.join(INSTALL_DIR, 'bin', 'shim');
+export type SeedResult =
+  | { ok: true; targetFile: string }
+  | {
+      ok: false;
+      reason: 'spawn-failed' | 'non-zero-exit' | 'missing-file';
+      stderr: string;
+    };
 
-  // ── Agent 1: kiro-learn.json (hook-registering agent) ──
+/**
+ * Invoke the Seed_Command for the given Agent_Scope's agents directory.
+ *
+ * Runs `kiro-cli agent create --from kiro_default --directory <targetDir>
+ * kiro-learn` synchronously with `EDITOR=true` (so `kiro-cli` does not open
+ * an interactive editor — Requirement 1.2) and captures stderr.
+ *
+ * On success, returns `{ ok: true, targetFile }` where `targetFile` is
+ * `<targetDir>/kiro-learn.json`. The file exists on disk but its contents
+ * have not been read — the caller is responsible for parsing and
+ * validating via {@link validateSeedPayload}.
+ *
+ * On failure, returns `{ ok: false, reason, stderr }` with `reason` one of
+ * `spawn-failed`, `non-zero-exit`, or `missing-file`. The caller is
+ * responsible for writing the Fallback_Config; this helper does not touch
+ * the filesystem on failure.
+ *
+ * Precondition: any pre-existing `<targetDir>/kiro-learn.json` has already
+ * been unlinked by the caller (see Requirement 2.1) — this helper does not
+ * perform the pre-seed delete.
+ *
+ * @param targetDir Absolute path to the Seed_Target_Directory (the scope's
+ *                  `.kiro/agents/` directory). Must exist and be writable.
+ * @returns A {@link SeedResult} describing whether the seed file was
+ *          written.
+ *
+ * @see Requirements 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7, 12.3
+ */
+export function runSeedCommand(targetDir: string): SeedResult {
+  const targetFile = path.join(targetDir, 'kiro-learn.json');
 
-  // Quote the shim path to handle home directories with spaces or special chars.
-  const quotedShimPath = `"${shimPath}"`;
+  // execFileSync: argv array avoids shell interpolation of targetDir (design § Security).
+  try {
+    execFileSync(
+      'kiro-cli',
+      [
+        'agent',
+        'create',
+        '--from',
+        'kiro_default',
+        '--directory',
+        targetDir,
+        'kiro-learn',
+      ],
+      {
+        env: { ...process.env, EDITOR: 'true' },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      },
+    );
+  } catch (err: unknown) {
+    const e = err as { status?: number; stderr?: Buffer | string };
+    const stderr =
+      typeof e.stderr === 'string'
+        ? e.stderr
+        : Buffer.isBuffer(e.stderr)
+          ? e.stderr.toString('utf8')
+          : '';
 
-  const kiroLearnConfig = {
-    name: 'kiro-learn',
-    description:
-      'Continuous learning for Kiro sessions. Captures tool-use events and injects prior context.',
-    hooks: {
-      agentSpawn: [{ command: quotedShimPath + ' || true' }],
-      userPromptSubmit: [{ command: quotedShimPath + ' || true' }],
-      postToolUse: [{ matcher: '*', command: quotedShimPath + ' || true' }],
-      stop: [{ command: quotedShimPath + ' || true' }],
-    },
-  };
+    // Differentiate spawn-failed (no numeric status, e.g. ENOENT) from
+    // non-zero-exit (kiro-cli ran but rejected the command).
+    return typeof e.status === 'number'
+      ? { ok: false, reason: 'non-zero-exit', stderr }
+      : { ok: false, reason: 'spawn-failed', stderr };
+  }
 
-  // Write global
-  const globalAgentsDir = path.join(homedir(), '.kiro', 'agents');
-  writeFileSync(
-    path.join(globalAgentsDir, 'kiro-learn.json'),
-    JSON.stringify(kiroLearnConfig, null, 2) + '\n',
-  );
+  // Defensive: even on exit 0, confirm kiro-cli actually produced the file.
+  if (!existsSync(targetFile)) {
+    return { ok: false, reason: 'missing-file', stderr: '' };
+  }
+  return { ok: true, targetFile };
+}
 
-  // Write project-scoped if detected
-  if (scope.projectRoot !== undefined) {
-    const projectAgentsDir = path.join(scope.projectRoot, '.kiro', 'agents');
-    writeFileSync(
-      path.join(projectAgentsDir, 'kiro-learn.json'),
-      JSON.stringify(kiroLearnConfig, null, 2) + '\n',
+/**
+ * Validate the raw seed payload string produced by `kiro-cli agent create
+ * --from kiro_default`.
+ *
+ * Attempts to parse `raw` as JSON. Returns the parsed value typed as
+ * `Record<string, unknown>` when it is a non-null, non-array object with at
+ * least one own key. Returns `null` on any failure: invalid JSON, `null`,
+ * `undefined`, primitives, arrays, or empty objects.
+ *
+ * Pure and total — never throws, regardless of input.
+ *
+ * The function deliberately does not assert the presence of any named field
+ * (`tools`, `prompt`, `description`, `mcpServers`, `allowedTools`, etc.) so
+ * the installer inherits whatever shape `kiro-cli` ships now and in the
+ * future without demanding specific keys.
+ *
+ * @param raw The raw string contents of `<target-dir>/kiro-learn.json`.
+ * @returns The parsed Seed_Payload on success, or `null` if the payload is
+ *          unusable and the caller should fall back to the minimal config.
+ *
+ * @see Requirements 3.1, 3.2, 3.3, 3.4, 3.5
+ */
+export function validateSeedPayload(
+  raw: string,
+): Record<string, unknown> | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+
+  if (parsed === null || parsed === undefined) return null;
+  if (typeof parsed !== 'object') return null;
+  if (Array.isArray(parsed)) return null;
+  if (Object.keys(parsed as object).length === 0) return null;
+
+  return parsed as Record<string, unknown>;
+}
+
+/**
+ * A single hook entry as it appears inside a Kiro agent JSON under
+ * `hooks.<trigger>[]`.
+ *
+ * `command` is the shell command string kiro-cli executes when the trigger
+ * fires. `matcher` is optional and is only populated for triggers that
+ * accept a matcher (today, `postToolUse`); the other three owned triggers
+ * omit it.
+ *
+ * @see Requirements 4.3, 4.6
+ */
+export interface HookEntry {
+  /** Shell command string, e.g. `"<shim>" || true`. */
+  command: string;
+  /** Optional matcher for triggers like `postToolUse`. */
+  matcher?: string;
+}
+
+/**
+ * The four hook triggers kiro-learn owns. Exactly these keys, no others —
+ * `mergeHooks` overwrites each of them on the Seed_Payload and leaves every
+ * other trigger (and every other top-level field) untouched.
+ *
+ * Each value is the hook entry array that will replace whatever the
+ * Seed_Payload had at that trigger.
+ *
+ * @see Requirements 4.3, 4.6 — Installer_Hook_Triggers glossary entry
+ */
+export interface HookTriggerMap {
+  agentSpawn: readonly HookEntry[];
+  userPromptSubmit: readonly HookEntry[];
+  postToolUse: readonly HookEntry[];
+  stop: readonly HookEntry[];
+}
+
+/**
+ * Merge kiro-learn's four hook triggers onto a validated Seed_Payload.
+ *
+ * Rules (Requirement 4):
+ *  - `name`          → `'kiro-learn'` (overwritten).
+ *  - `description`   → {@link KIRO_LEARN_DESCRIPTION} (overwritten).
+ *  - `hooks.<t>`     → `triggers[t]` for every `t` in {@link OWNED_TRIGGERS}
+ *                      (overwritten; fresh array, no aliasing).
+ *  - `hooks.<other>` → preserved unchanged for every hook trigger not in
+ *                      {@link OWNED_TRIGGERS}.
+ *  - all other top-level keys → copied through unchanged (tools, prompt,
+ *                      mcpServers, allowedTools, and any future fields
+ *                      `kiro_default` ships — Requirement 4.7).
+ *
+ * Pure: returns a fresh object, never mutates `seed`. If `seed.hooks` is
+ * absent or not a plain object (e.g. a string, number, or array), it is
+ * coerced to `{}` before the owned triggers are written — the result still
+ * contains exactly the four owned triggers under `hooks`, and nothing else
+ * from the malformed input.
+ *
+ * @param seed     A validated Seed_Payload (output of
+ *                 {@link validateSeedPayload}). Must be a non-empty plain
+ *                 object; this precondition is the caller's responsibility.
+ * @param triggers The kiro-learn hook triggers to overwrite onto `seed`.
+ *                 Must have exactly the four keys `agentSpawn`,
+ *                 `userPromptSubmit`, `postToolUse`, `stop`.
+ * @returns A fresh `Record<string, unknown>` representing the merged agent
+ *          config, ready to be serialised with
+ *          `JSON.stringify(merged, null, 2) + '\n'`.
+ *
+ * @see Requirements 4.1, 4.2, 4.3, 4.4, 4.5, 4.6, 4.7
+ */
+export function mergeHooks(
+  seed: Record<string, unknown>,
+  triggers: HookTriggerMap,
+): Record<string, unknown> {
+  // Start from a shallow copy of all top-level keys — preserves tools,
+  // prompt, mcpServers, allowedTools, and any other fields kiro_default
+  // ships now or in the future (Requirement 4.7).
+  const merged: Record<string, unknown> = { ...seed };
+
+  // Overwrite the two top-level fields kiro-learn owns.
+  merged['name'] = 'kiro-learn';
+  merged['description'] = KIRO_LEARN_DESCRIPTION;
+
+  // Start hooks from whatever the seed had. Coerce to {} if absent or
+  // malformed (non-object, array, null). validateSeedPayload guarantees
+  // `seed` itself is a plain object, but it makes no promise about
+  // `seed.hooks` specifically.
+  const seedHooks = seed['hooks'];
+  const baseHooks: Record<string, unknown> =
+    seedHooks !== null &&
+    typeof seedHooks === 'object' &&
+    !Array.isArray(seedHooks)
+      ? { ...(seedHooks as Record<string, unknown>) }
+      : {};
+
+  // Overwrite the four owned triggers — produces fresh arrays so the
+  // caller cannot accidentally alias into `triggers`.
+  for (const t of OWNED_TRIGGERS) {
+    baseHooks[t] = [...triggers[t]];
+  }
+  merged['hooks'] = baseHooks;
+
+  return merged;
+}
+
+/**
+ * Derive the scope label for a Fallback_Warning from a Seed_Target_Directory.
+ *
+ * Returns `'global'` when `targetDir` is exactly the global agents directory
+ * (`~/.kiro/agents`); returns `'project'` for any other directory
+ * (project-scoped `<projectRoot>/.kiro/agents`).
+ *
+ * Module-private — only used to compose the Fallback_Warning in
+ * {@link writeKiroLearnAgent}.
+ *
+ * @see Requirement 11.5
+ */
+function scopeLabel(targetDir: string): 'global' | 'project' {
+  return targetDir === path.join(homedir(), '.kiro', 'agents')
+    ? 'global'
+    : 'project';
+}
+
+/**
+ * Map a {@link SeedResult} failure reason to the `<cause>` substring used
+ * inside the Fallback_Warning.
+ *
+ * - `spawn-failed`  → `'kiro-cli unavailable'`
+ * - `non-zero-exit` → `'seed command failed'`
+ * - `missing-file`  → `'seed command failed'`
+ *
+ * The invalid-payload case (validateSeedPayload returning `null`) passes
+ * `'seed command failed'` directly at the call site and does not flow
+ * through this helper.
+ *
+ * Module-private — only used by {@link writeKiroLearnAgent}.
+ *
+ * @see Requirements 11.2, 11.5
+ */
+function reasonToCause(
+  reason: 'spawn-failed' | 'non-zero-exit' | 'missing-file',
+): string {
+  return reason === 'spawn-failed' ? 'kiro-cli unavailable' : 'seed command failed';
+}
+
+/**
+ * Write the kiro-learn.json agent config at the given Agent_Scope's
+ * `.kiro/agents/` directory, using the seed-then-merge flow from
+ * Requirements 2, 3, 4, 5, 6, and 12.
+ *
+ * Executes the five-step per-scope sequence:
+ *
+ *   (a) Delete any existing `<targetDir>/kiro-learn.json` (ENOENT tolerated).
+ *   (b) Invoke {@link runSeedCommand} to spawn `kiro-cli agent create --from
+ *       kiro_default --directory <targetDir> kiro-learn`.
+ *   (c) On seed success, read the written file and pass it to
+ *       {@link validateSeedPayload}.
+ *   (d) On valid payload, call {@link mergeHooks} with
+ *       {@link KIRO_LEARN_TRIGGERS} and write the serialised result back
+ *       to `<targetDir>/kiro-learn.json`.
+ *   (e) On any failure (seed failed or payload invalid), write the
+ *       Fallback_Config to the same path and emit a single
+ *       Fallback_Warning to stderr.
+ *
+ * A seed failure is NOT an install failure (Requirement 6.5) — this
+ * function returns normally in the fallback branch. It throws only on
+ * unexpected errors: non-ENOENT unlink failures, readFileSync failures on
+ * a file `runSeedCommand` reported as present, or writeFileSync failures
+ * (e.g. permission denied on the agents dir, disk full).
+ *
+ * Caller (`createLayout`) is responsible for ensuring `targetDir` exists
+ * and is writable before this is called.
+ *
+ * @param targetDir Absolute path to the Seed_Target_Directory — the
+ *                  scope's `.kiro/agents/` directory (global or project).
+ *
+ * @see Requirements 2.1, 2.2, 2.3, 2.4, 3.1, 3.2, 3.3, 3.4, 3.5, 4.1,
+ *      4.2, 4.3, 4.4, 4.5, 4.6, 4.7, 5.1, 5.2, 5.3, 6.1, 6.2, 6.3, 6.4,
+ *      6.5, 11.1, 11.2, 11.3, 11.4, 11.5, 12.1
+ */
+export function writeKiroLearnAgent(targetDir: string): void {
+  const targetFile = path.join(targetDir, 'kiro-learn.json');
+
+  /**
+   * Write the Fallback_Config to `targetFile` and emit a single
+   * Fallback_Warning to stderr. Shared between every failure branch of
+   * `writeKiroLearnAgent`.
+   *
+   * The Fallback_Config's key order — `name`, `description`, `hooks` at
+   * top level; `agentSpawn`, `userPromptSubmit`, `postToolUse`, `stop`
+   * inside `hooks` — is load-bearing: `JSON.stringify` serialises object
+   * literals in insertion order, and Requirement 6.2 requires byte-for-
+   * byte compatibility with the pre-spec hand-authored output.
+   *
+   * @see Requirements 6.1, 6.2, 6.3, 11.1, 11.2, 11.3, 11.4, 11.5
+   */
+  function writeFallback(cause: string, scope: 'global' | 'project'): void {
+    const fallback = {
+      name: 'kiro-learn',
+      description: KIRO_LEARN_DESCRIPTION,
+      hooks: {
+        agentSpawn: KIRO_LEARN_TRIGGERS.agentSpawn,
+        userPromptSubmit: KIRO_LEARN_TRIGGERS.userPromptSubmit,
+        postToolUse: KIRO_LEARN_TRIGGERS.postToolUse,
+        stop: KIRO_LEARN_TRIGGERS.stop,
+      },
+    };
+    writeFileSync(targetFile, JSON.stringify(fallback, null, 2) + '\n');
+    process.stderr.write(
+      `[kiro-learn] warning: could not seed kiro-learn agent from kiro_default (${cause}) for ${scope} scope. ` +
+        `Writing minimal hooks-only config — the agent will not have the default tools, prompt, or MCP servers until ` +
+        `you install/upgrade kiro-cli and rerun 'kiro-learn init'.\n`,
     );
   }
 
-  // ── Agent 2: kiro-learn-compressor.json (extraction agent) ──
+  // (a) Pre-seed delete: remove any existing file so kiro-cli can write a
+  // fresh seed in place. ENOENT is expected (no prior install); any other
+  // error indicates a real fs problem and must propagate.
+  try {
+    unlinkSync(targetFile);
+  } catch (err: unknown) {
+    const e = err as NodeJS.ErrnoException;
+    if (e.code !== 'ENOENT') throw err;
+  }
 
+  const scope = scopeLabel(targetDir);
+
+  // (b) Invoke the Seed_Command.
+  const seed = runSeedCommand(targetDir);
+
+  if (!seed.ok) {
+    // (e.i) Seed failed — write fallback with a cause derived from the
+    // SeedResult.reason and emit the warning.
+    writeFallback(reasonToCause(seed.reason), scope);
+    return;
+  }
+
+  // (c) Seed succeeded — read and validate the payload.
+  const raw = readFileSync(seed.targetFile, 'utf8');
+  const payload = validateSeedPayload(raw);
+
+  if (payload === null) {
+    // (e.ii) Payload unusable (invalid JSON, primitive, array, empty
+    // object). Per Requirement 11.2, report `seed command failed`.
+    writeFallback('seed command failed', scope);
+    return;
+  }
+
+  // (d) Merge kiro-learn's four owned triggers onto the seed and write
+  // the merged result back to the same path.
+  const merged = mergeHooks(payload, KIRO_LEARN_TRIGGERS);
+  writeFileSync(targetFile, JSON.stringify(merged, null, 2) + '\n');
+}
+
+/**
+ * Generate and write both agent config files at all applicable scopes.
+ *
+ * `kiro-learn.json` is written via {@link writeKiroLearnAgent} per scope:
+ *   - Global scope (`~/.kiro/agents/`) is always written.
+ *   - Project scope (`<projectRoot>/.kiro/agents/`) is written when
+ *     {@link InstallScope.projectRoot} is defined.
+ *
+ * Each scope runs the same seed-then-merge flow: delete any existing
+ * `kiro-learn.json`, invoke `kiro-cli agent create --from kiro_default
+ * --directory <targetDir> kiro-learn`, validate the seed payload, merge
+ * kiro-learn's four owned hook triggers onto it, and write the result.
+ * On any failure the scope falls back to a minimal hooks-only config and
+ * emits a single `[kiro-learn] warning:` line to stderr.
+ *
+ * Scopes run sequentially — global completes every step before project
+ * begins its own (Requirement 12.2). A fallback in one scope does not
+ * short-circuit the other (Requirement 6.4).
+ *
+ * `kiro-learn-compressor.json` is written at global scope only with
+ * hand-authored contents — this path is deliberately untouched by the
+ * seed-then-merge flow (Requirement 8). Its bytes remain byte-for-byte
+ * identical to the pre-spec installer's output (Requirement 8.2).
+ *
+ * @see Requirements 1–12 — default-equivalent-agent spec
+ * @see Requirements 6.1–6.11 — original agent-config requirements
+ *      (preserved for the compressor)
+ */
+export function writeAgentConfigs(scope: InstallScope): void {
+  const globalAgentsDir = path.join(homedir(), '.kiro', 'agents');
+
+  // ── Agent 1: kiro-learn.json (hook-registering agent) ──
+  // Delegate to writeKiroLearnAgent per scope — it handles the pre-seed
+  // delete, spawns kiro-cli, validates the payload, merges kiro-learn's
+  // four owned triggers, and falls back to the bare hooks-only config if
+  // any step fails (Requirements 1–6, 11, 12).
+  writeKiroLearnAgent(globalAgentsDir);
+
+  if (scope.projectRoot !== undefined) {
+    writeKiroLearnAgent(path.join(scope.projectRoot, '.kiro', 'agents'));
+  }
+
+  // ── Agent 2: kiro-learn-compressor.json (extraction agent) ──
+  writeCompressorAgent(globalAgentsDir);
+}
+
+/**
+ * Write the kiro-learn-compressor agent config (the XML extraction
+ * agent) into the given agents directory.
+ *
+ * The compressor is hand-authored — it is deliberately out of scope for
+ * the seed-then-merge flow (Requirement 8) because it ships with zero
+ * tools and a fixed XML-extraction prompt. Writing it through a
+ * dedicated helper (instead of inlining in {@link writeAgentConfigs})
+ * lets the extraction-pipeline integration test refresh the on-disk
+ * prompt to the current source before running, which keeps that test
+ * hermetic regardless of what the developer has previously installed.
+ *
+ * Global scope only — no project-scoped compressor is ever written
+ * (Requirement 8.3).
+ *
+ * @param agentsDir The absolute path of the `.kiro/agents/` directory
+ *                  to write into. The directory must already exist.
+ *
+ * @see Requirements 6.8, 6.9, 8.1, 8.2, 8.3
+ */
+export function writeCompressorAgent(agentsDir: string): void {
   const compressorPrompt =
     'You are a memory extraction agent for kiro-learn. Your ONLY job is to analyze tool-use observations and produce structured memory records.\n' +
     '\n' +
@@ -475,7 +957,7 @@ export function writeAgentConfigs(scope: InstallScope): void {
   };
 
   writeFileSync(
-    path.join(globalAgentsDir, 'kiro-learn-compressor.json'),
+    path.join(agentsDir, 'kiro-learn-compressor.json'),
     JSON.stringify(compressorConfig, null, 2) + '\n',
   );
 }

@@ -196,7 +196,7 @@ The `init` command:
 2. Copies the package's compiled `lib/` (shim, collector, installer, types) into `~/.kiro-learn/lib/`.
 3. Installs runtime dependencies (`better-sqlite3`, etc.) into `~/.kiro-learn/node_modules/` via a nested production install.
 4. Writes `bin/` wrapper scripts (`shim`, `collector`, `kiro-learn`) that are shebang-executable Node entrypoints.
-5. Writes the global CLI agent at `~/.kiro/agents/kiro-learn.json`, with hook commands pointing at absolute paths under `~/.kiro-learn/bin/`.
+5. Writes the global CLI agent at `~/.kiro/agents/kiro-learn.json` (and, when a project is detected, `<projectRoot>/.kiro/agents/kiro-learn.json`). Each file is seeded from Kiro's built-in `kiro_default` agent via `kiro-cli agent create --from kiro_default` so the installed agent inherits whatever tools, prompt, and MCP servers `kiro-cli` ships today, then kiro-learn's four lifecycle hook triggers (`agentSpawn`, `userPromptSubmit`, `postToolUse`, `stop`) are merged on top with hook commands pointing at absolute paths under `~/.kiro-learn/bin/`. If `kiro-cli` is unavailable or seeding fails, the installer falls back to a minimal hooks-only config for the affected scope and emits a single `[kiro-learn] warning:` line to stderr — install still succeeds.
 6. Starts the collector daemon and writes its PID to `~/.kiro-learn/collector.pid`.
 
 Once installed, `~/.kiro-learn/` is runtime-independent of the npm package. The npx cache is disposable; the installed copy is the source of truth for hook invocations.
