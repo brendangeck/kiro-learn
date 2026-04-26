@@ -1,3 +1,9 @@
+## [0.7.0](https://github.com/brendangeck/kiro-learn/compare/v0.6.0...v0.7.0) (2026-04-26)
+
+### Features
+
+* default-equivalent agent via kiro-cli seed-then-merge ([#10](https://github.com/brendangeck/kiro-learn/issues/10)) ([766f79a](https://github.com/brendangeck/kiro-learn/commit/766f79a9cb1c7d19463aff23708b55947824522f))
+
 ## [0.6.0](https://github.com/brendangeck/kiro-learn/compare/v0.5.1...v0.6.0) (2026-04-25)
 
 ### Features
