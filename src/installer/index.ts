@@ -335,7 +335,7 @@ export function writePackageJson(): void {
       '@agentclientprotocol/sdk': '0.20.0',
       'better-sqlite3': '12.0.0',
       ulidx: '2.4.1',
-      zod: '3.23.0',
+      zod: '3.25.76',
     },
   };
 
