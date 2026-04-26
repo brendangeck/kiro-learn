@@ -194,6 +194,8 @@ Design documents live in `.kiro/specs/`. Each spec has `requirements.md`, `desig
 
 ## Milestones
 
+> **Note on naming.** The `v0`, `v1`, `v2`, etc. labels below are **arbitrary milestone names** used for internal planning. They are **not** semantic version numbers of the published package and do not correspond to `0.x` / `1.0.0` / `2.0.0` releases on npm. The package itself is expected to remain on `0.x` for the indefinite future — breaking changes may occur on any minor bump. A semver `1.0.0` will only be cut once the public surface (event schema, storage format, installer layout, CLI flags) has been pressure-tested by real usage and is ready for a stability commitment.
+
 ### v0 — Local baseline (current, feature-complete)
 
 Kiro CLI hooks, local collector daemon, SQLite + FTS5 lexical search, XML extraction via ACP, seed-then-merge agent configs, CLI installer. Everything runs on a single machine with no cloud dependency beyond `kiro-cli` → Bedrock for extraction.

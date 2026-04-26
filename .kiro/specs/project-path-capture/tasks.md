@@ -109,7 +109,7 @@ Every task below cites the specific requirement sub-clauses it implements. Every
     - **Property 3: Walk-ceiling containment**
     - **Validates: Requirements 2.3, 2.6**
 
-- [ ] 4. Wire `detectProjectRoot` into `buildEvent`
+- [x] 4. Wire `detectProjectRoot` into `buildEvent`
   - Replace today's `realpathSync(cwd) + SHA-256` preimage with the result of `detectProjectRoot`. Signature is unchanged.
 
   - [x] 4.1 Update `buildEvent` in `src/shim/shared/index.ts`
@@ -236,7 +236,7 @@ Every task below cites the specific requirement sub-clauses it implements. Every
     - Construct an event with a near-1 MiB `body` (e.g. 1 MiB minus a small margin) and a 2 KiB `source.project_path`; assert `parseEvent` accepts it. Then construct a body > 1 MiB and assert rejection independent of `project_path` presence.
     - _Requirements: 12.5_
 
-- [ ] 8. Modularity guard checks (no new guards added)
+- [x] 8. Modularity guard checks (no new guards added)
   - The existing `test/unit/no-collector-in-shim.test.ts` and `test/unit/no-shim-in-installer.test.ts` already cover the relevant boundaries. Requirement N10 explicitly says no new guard is needed for the installer-in-shim direction. This task confirms the existing guards continue to pass against the new files.
 
   - [x] 8.1 Confirm existing guard tests pass against the new shim module
@@ -248,7 +248,7 @@ Every task below cites the specific requirement sub-clauses it implements. Every
   - Ensure all tests pass, ask the user if questions arise.
   - Run `npm run typecheck && npm run lint && npm run test` and confirm green before moving on to final integration verification.
 
-- [ ] 10. Final verification
+- [x] 10. Final verification
   - End-to-end sanity pass that exercises the full pipeline with the new field in the wire and in storage.
 
   - [x] 10.1 Run the full local gate
@@ -258,11 +258,11 @@ Every task below cites the specific requirement sub-clauses it implements. Every
     - `npm run test` — confirms every new property test, example test, and existing regression test passes.
     - _Requirements: all_
 
-  - [ ] 10.2 Manual end-to-end smoke
+  - [x] 10.2 Manual end-to-end smoke
     - Build the package, link it into an installed `~/.kiro-learn/` layout, run `kiro-cli` from a subdirectory of a real project, then open the SQLite DB and run `SELECT event_id, namespace, project_path FROM events ORDER BY transaction_time DESC LIMIT 5;` to confirm `project_path` is populated to the repo root and `namespace` is stable across subdirectories of the same repo.
     - Not a required step — every behaviour is covered by the automated suite above. This is a "does it feel right" spot-check for the operator.
 
-  - [ ] 10.3 Microbenchmark the walk
+  - [x] 10.3 Microbenchmark the walk
     - Add a throwaway benchmark script (not a test) that invokes `detectProjectRoot` against a realistic home-dir-depth cwd 10 000 times and asserts the 95th-percentile is under the 5 ms target from Requirement N1.
     - Skip unless N1 becomes a real concern. The walk performs at most 15 × depth `existsSync` calls and is expected to be sub-millisecond.
 
