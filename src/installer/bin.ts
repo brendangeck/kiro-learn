@@ -14,7 +14,7 @@
  * @see Requirements 1.1–1.9
  */
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, realpathSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -157,7 +157,12 @@ function isMainModule(): boolean {
   if (entry === undefined) return false;
   try {
     const thisFile = fileURLToPath(import.meta.url);
-    return path.resolve(entry) === thisFile;
+    // Resolve symlinks: npx creates a symlink in its temp cache
+    // (e.g. ~/.npm/_npx/<hash>/node_modules/.bin/kiro-learn) that
+    // points to the real file. path.resolve alone won't follow the
+    // symlink, so the comparison fails. realpathSync resolves the
+    // full chain so both sides agree on the canonical path.
+    return realpathSync(path.resolve(entry)) === realpathSync(thisFile);
   } catch {
     return false;
   }
