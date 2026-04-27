@@ -251,6 +251,72 @@ type SelectMemoryRecordsLikeParams = [
   limit: number,
 ];
 
+// ---------------------------------------------------------------------------
+// Row shapes for read-API queries (tasks 2.1–2.4)
+// ---------------------------------------------------------------------------
+
+/**
+ * Row shape returned by `selectStats` — global aggregate counts.
+ *
+ * @see Requirements 1.1, 1.6
+ */
+export interface StatsRow {
+  total_events: number;
+  total_memories: number;
+  total_projects: number;
+}
+
+/**
+ * Row shape returned by `selectStatsScoped` — namespace-filtered counts.
+ *
+ * @see Requirements 1.1, 1.6
+ */
+export interface StatsScopedRow {
+  total_events: number;
+  total_memories: number;
+}
+
+/**
+ * Row shape returned by observation-type and event-kind count queries.
+ *
+ * @see Requirements 1.2, 1.3
+ */
+export interface CountByLabelRow {
+  label: string;
+  count: number;
+}
+
+/**
+ * Row shape returned by `selectDistinctConcepts` /
+ * `selectDistinctConceptsScoped`.
+ *
+ * @see Requirement 1.1
+ */
+export interface DistinctConceptsRow {
+  total_concepts: number;
+}
+
+/**
+ * Row shape returned by `selectProjects`.
+ *
+ * @see Requirements 1.4, 1.5, 8.1
+ */
+export interface ProjectRow {
+  namespace: string;
+  project_path: string | null;
+  event_count: number;
+  memory_count: number;
+}
+
+/**
+ * Row shape returned by `selectEventCountByNamespace`.
+ *
+ * @see Requirements 3.6
+ */
+export interface EventCountRow {
+  total: number;
+}
+
 /**
  * The complete set of prepared statements used by the SQLite backend. One
  * instance is produced per open `Database` via {@link prepareStatements}.
@@ -328,6 +394,119 @@ export interface Statements {
    * @see Requirements 8.5, 12.1
    */
   selectMemoryRecordsLike: Statement<SelectMemoryRecordsLikeParams, MemoryRecordRow>;
+
+  // -----------------------------------------------------------------------
+  // Read-API statements (tasks 2.1–2.4)
+  // -----------------------------------------------------------------------
+
+  /**
+   * Global aggregate counts: total events, total memories, total distinct
+   * namespaces (projects). No parameters.
+   *
+   * @see Requirements 1.1, 1.6, N5
+   */
+  selectStats: Statement<[], StatsRow>;
+
+  /**
+   * Namespace-scoped aggregate counts: total events and total memories for
+   * a single namespace. The namespace is bound twice (once per scalar
+   * subquery).
+   *
+   * Parameters: `[namespace, namespace]`.
+   *
+   * @see Requirements 1.1, 1.6, N5
+   */
+  selectStatsScoped: Statement<[namespace: string, namespace2: string], StatsScopedRow>;
+
+  /**
+   * Global observation-type breakdown: count of memory records grouped by
+   * `observation_type`. No parameters.
+   *
+   * @see Requirements 1.2, N5
+   */
+  selectObservationTypeCounts: Statement<[], CountByLabelRow>;
+
+  /**
+   * Namespace-scoped observation-type breakdown.
+   *
+   * Parameters: `[namespace]`.
+   *
+   * @see Requirements 1.2, N5
+   */
+  selectObservationTypeCountsScoped: Statement<[namespace: string], CountByLabelRow>;
+
+  /**
+   * Global event-kind breakdown: count of events grouped by `kind`.
+   * No parameters.
+   *
+   * @see Requirements 1.3, N5
+   */
+  selectEventKindCounts: Statement<[], CountByLabelRow>;
+
+  /**
+   * Namespace-scoped event-kind breakdown.
+   *
+   * Parameters: `[namespace]`.
+   *
+   * @see Requirements 1.3, N5
+   */
+  selectEventKindCountsScoped: Statement<[namespace: string], CountByLabelRow>;
+
+  /**
+   * Count of distinct concept strings across all memory records, using
+   * `json_each(concepts_json)` to explode the JSON array column.
+   * No parameters.
+   *
+   * @see Requirements 1.1, N5
+   */
+  selectDistinctConcepts: Statement<[], DistinctConceptsRow>;
+
+  /**
+   * Namespace-scoped count of distinct concept strings.
+   *
+   * Parameters: `[namespace]`.
+   *
+   * @see Requirements 1.1, N5
+   */
+  selectDistinctConceptsScoped: Statement<[namespace: string], DistinctConceptsRow>;
+
+  /**
+   * Distinct namespaces with event count, memory count, and the most
+   * recent non-NULL `project_path`. Ordered by `event_count DESC`.
+   *
+   * No parameters.
+   *
+   * @see Requirements 1.4, 1.5, 8.1
+   */
+  selectProjects: Statement<[], ProjectRow>;
+
+  /**
+   * All memory records for a given namespace, ordered by `created_at DESC`.
+   *
+   * Parameters: `[namespace]`.
+   *
+   * @see Requirements 2.1, 2.4, 2.6
+   */
+  selectMemoryRecordsByNamespace: Statement<[namespace: string], MemoryRecordRow>;
+
+  /**
+   * Events for a given namespace, ordered by `valid_time DESC`, with a
+   * `LIMIT` parameter.
+   *
+   * Parameters: `[namespace, limit]`.
+   *
+   * @see Requirements 3.1, 3.3, 3.5, 3.6
+   */
+  selectEventsByNamespace: Statement<[namespace: string, limit: number], EventRow>;
+
+  /**
+   * Total count of events for a given namespace.
+   *
+   * Parameters: `[namespace]`.
+   *
+   * @see Requirements 3.6
+   */
+  selectEventCountByNamespace: Statement<[namespace: string], EventCountRow>;
 }
 
 /**
@@ -449,6 +628,155 @@ export function prepareStatements(db: Database): Statements {
      LIMIT ?`,
   );
 
+  // -----------------------------------------------------------------------
+  // Read-API statements (tasks 2.1–2.4)
+  // -----------------------------------------------------------------------
+
+  // Task 2.1 — Stats-related statements
+  //
+  // Global aggregate counts. Scalar subqueries keep this as a single-row
+  // result regardless of table sizes.
+  //
+  // @see Requirements 1.1, 1.6, N5
+  const selectStats = db.prepare<[], StatsRow>(
+    `SELECT
+       (SELECT COUNT(*) FROM events) AS total_events,
+       (SELECT COUNT(*) FROM memory_records) AS total_memories,
+       (SELECT COUNT(DISTINCT namespace) FROM events) AS total_projects`,
+  );
+
+  // Namespace-scoped aggregate counts. The namespace is bound twice — once
+  // for each scalar subquery.
+  //
+  // @see Requirements 1.1, 1.6, N5
+  const selectStatsScoped = db.prepare<[namespace: string, namespace2: string], StatsScopedRow>(
+    `SELECT
+       (SELECT COUNT(*) FROM events WHERE namespace = ?) AS total_events,
+       (SELECT COUNT(*) FROM memory_records WHERE namespace = ?) AS total_memories`,
+  );
+
+  // Global observation-type breakdown.
+  //
+  // @see Requirements 1.2, N5
+  const selectObservationTypeCounts = db.prepare<[], CountByLabelRow>(
+    `SELECT observation_type AS label, COUNT(*) AS count
+     FROM memory_records
+     GROUP BY observation_type`,
+  );
+
+  // Namespace-scoped observation-type breakdown.
+  //
+  // @see Requirements 1.2, N5
+  const selectObservationTypeCountsScoped = db.prepare<[namespace: string], CountByLabelRow>(
+    `SELECT observation_type AS label, COUNT(*) AS count
+     FROM memory_records
+     WHERE namespace = ?
+     GROUP BY observation_type`,
+  );
+
+  // Global event-kind breakdown.
+  //
+  // @see Requirements 1.3, N5
+  const selectEventKindCounts = db.prepare<[], CountByLabelRow>(
+    `SELECT kind AS label, COUNT(*) AS count
+     FROM events
+     GROUP BY kind`,
+  );
+
+  // Namespace-scoped event-kind breakdown.
+  //
+  // @see Requirements 1.3, N5
+  const selectEventKindCountsScoped = db.prepare<[namespace: string], CountByLabelRow>(
+    `SELECT kind AS label, COUNT(*) AS count
+     FROM events
+     WHERE namespace = ?
+     GROUP BY kind`,
+  );
+
+  // Global distinct concept count. `json_each` explodes the JSON array
+  // column so `COUNT(DISTINCT j.value)` counts unique concept strings
+  // across all memory records.
+  //
+  // @see Requirements 1.1, N5
+  const selectDistinctConcepts = db.prepare<[], DistinctConceptsRow>(
+    `SELECT COUNT(DISTINCT j.value) AS total_concepts
+     FROM memory_records, json_each(memory_records.concepts_json) AS j`,
+  );
+
+  // Namespace-scoped distinct concept count.
+  //
+  // @see Requirements 1.1, N5
+  const selectDistinctConceptsScoped = db.prepare<[namespace: string], DistinctConceptsRow>(
+    `SELECT COUNT(DISTINCT j.value) AS total_concepts
+     FROM memory_records, json_each(memory_records.concepts_json) AS j
+     WHERE memory_records.namespace = ?`,
+  );
+
+  // Task 2.2 — Project listing
+  //
+  // Distinct namespaces with event count, memory count, and the most
+  // recent non-NULL project_path. The correlated subqueries for
+  // project_path and memory_count are acceptable for v1 data volumes
+  // (< 50 projects). Ordered by event_count DESC per Requirement 1.5.
+  //
+  // @see Requirements 1.4, 1.5, 8.1
+  const selectProjects = db.prepare<[], ProjectRow>(
+    `SELECT
+       e.namespace,
+       (SELECT project_path FROM events e2
+        WHERE e2.namespace = e.namespace AND e2.project_path IS NOT NULL
+        ORDER BY e2.valid_time DESC LIMIT 1) AS project_path,
+       COUNT(*) AS event_count,
+       (SELECT COUNT(*) FROM memory_records mr
+        WHERE mr.namespace = e.namespace) AS memory_count
+     FROM events e
+     GROUP BY e.namespace
+     ORDER BY event_count DESC`,
+  );
+
+  // Task 2.3 — Memory listing by namespace
+  //
+  // All memory records for a given namespace, ordered by created_at DESC.
+  // No LIMIT — v1 expects < 500 memories per project.
+  //
+  // @see Requirements 2.1, 2.4, 2.6
+  const selectMemoryRecordsByNamespace = db.prepare<[namespace: string], MemoryRecordRow>(
+    `SELECT
+       record_id, namespace, strategy, title, summary,
+       facts_json, source_event_ids_json, created_at,
+       concepts_json, files_touched_json, observation_type
+     FROM memory_records
+     WHERE namespace = ?
+     ORDER BY created_at DESC`,
+  );
+
+  // Task 2.4 — Event listing by namespace
+  //
+  // Events for a given namespace, ordered by valid_time DESC, with a
+  // LIMIT parameter. The column list mirrors selectEventById (no
+  // project_path — read path uses source_json).
+  //
+  // @see Requirements 3.1, 3.3, 3.5, 3.6
+  const selectEventsByNamespace = db.prepare<[namespace: string, limit: number], EventRow>(
+    `SELECT
+       event_id, parent_event_id, session_id, actor_id,
+       namespace, schema_version, kind, body_json,
+       valid_time, transaction_time, source_json, content_hash
+     FROM events
+     WHERE namespace = ?
+     ORDER BY valid_time DESC
+     LIMIT ?`,
+  );
+
+  // Total event count for a namespace. Used alongside selectEventsByNamespace
+  // to populate the `total` field in the response (the total reflects the
+  // full count, not just the returned slice).
+  //
+  // @see Requirements 3.6
+  const selectEventCountByNamespace = db.prepare<[namespace: string], EventCountRow>(
+    `SELECT COUNT(*) AS total FROM events WHERE namespace = ?`,
+  );
+
   return {
     insertEvent,
     selectEventById,
@@ -456,5 +784,17 @@ export function prepareStatements(db: Database): Statements {
     insertMemoryRecordFts,
     selectMemoryRecordsFtsMatch,
     selectMemoryRecordsLike,
+    selectStats,
+    selectStatsScoped,
+    selectObservationTypeCounts,
+    selectObservationTypeCountsScoped,
+    selectEventKindCounts,
+    selectEventKindCountsScoped,
+    selectDistinctConcepts,
+    selectDistinctConceptsScoped,
+    selectProjects,
+    selectMemoryRecordsByNamespace,
+    selectEventsByNamespace,
+    selectEventCountByNamespace,
   };
 }

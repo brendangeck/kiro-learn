@@ -10,7 +10,7 @@
 import fc from 'fast-check';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import type { KiroMemEvent, EventIngestResponse } from '../../src/types/index.js';
+import type { KiroMemEvent, EventIngestResponse, StorageBackend } from '../../src/types/index.js';
 import type { Pipeline } from '../../src/collector/pipeline/index.js';
 import type { RetrievalAssembler } from '../../src/collector/retrieval/index.js';
 import type { ReceiverHandle } from '../../src/collector/receiver/index.js';
@@ -49,6 +49,24 @@ const mockRetrieval: RetrievalAssembler = {
   },
 };
 
+/** Mock storage backend — not exercised by retrieval gating tests. */
+const mockStorage: StorageBackend = {
+  putEvent() { return Promise.resolve(); },
+  getEventById() { return Promise.resolve(null); },
+  putMemoryRecord() { return Promise.resolve(); },
+  searchMemoryRecords() { return Promise.resolve([]); },
+  close() { return Promise.resolve(); },
+  getStats() {
+    return Promise.resolve({
+      total_events: 0, total_memories: 0, total_projects: 0,
+      total_concepts: 0, observation_types: {}, event_kinds: {},
+    });
+  },
+  listProjects() { return Promise.resolve([]); },
+  listMemoryRecords() { return Promise.resolve([]); },
+  listEvents() { return Promise.resolve({ items: [], total: 0 }); },
+};
+
 // ── Server lifecycle ────────────────────────────────────────────────────
 
 let handle: ReceiverHandle;
@@ -56,7 +74,7 @@ let baseUrl: string;
 
 beforeAll(async () => {
   handle = await startReceiver(
-    { pipeline: mockPipeline, retrieval: mockRetrieval },
+    { pipeline: mockPipeline, retrieval: mockRetrieval, storage: mockStorage },
     { host: '127.0.0.1', port: 0, maxBodyBytes: 2 * 1024 * 1024, retrievalBudgetMs: 500 },
   );
   const addr = handle.server.address();

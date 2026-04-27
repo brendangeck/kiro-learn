@@ -13,15 +13,16 @@
 
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from 'node:http';
 import { readFileSync, existsSync } from 'node:fs';
-import path from 'node:path';
+import { homedir } from 'node:os';
+import path, { sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { ZodError } from 'zod';
 
 import { resolveAsset, serveAsset } from './static-handler.js';
 
-import { parseEvent } from '../../types/index.js';
-import type { EventIngestResponse } from '../../types/index.js';
+import { NAMESPACE_RE, parseEvent } from '../../types/index.js';
+import type { EventIngestResponse, StorageBackend } from '../../types/index.js';
 import type { Pipeline } from '../pipeline/index.js';
 import type { RetrievalAssembler } from '../retrieval/index.js';
 
@@ -60,6 +61,7 @@ const daemonVersion: string = loadDaemonVersion();
 export interface ReceiverDeps {
   pipeline: Pipeline;
   retrieval: RetrievalAssembler;
+  storage: StorageBackend;
 }
 
 /**
@@ -142,6 +144,39 @@ function readBody(req: IncomingMessage, res: ServerResponse, maxBytes: number): 
   });
 }
 
+// ── Read-API helpers ────────────────────────────────────────────────────
+
+/**
+ * Extract the project_id hex segment from a namespace string.
+ * Namespace pattern: `/actor/<actor_id>/project/<project_id>/`.
+ * Returns the full namespace as fallback if the pattern doesn't match.
+ *
+ * @see Requirements 8.2, 8.3
+ */
+function extractProjectId(namespace: string): string {
+  const match = namespace.match(/^\/actor\/[^/]+\/project\/([^/]+)\/$/);
+  return match?.[1] ?? namespace;
+}
+
+/**
+ * Derive a human-readable display name from a project_path or namespace.
+ * Strips the `$HOME/` prefix from project_path when present; falls back
+ * to the first 12 hex chars of the project_id segment.
+ *
+ * @see Requirements 8.2, 8.3, 8.4
+ */
+function deriveDisplayName(namespace: string, projectPath: string | null): string {
+  if (projectPath !== null) {
+    const home = homedir();
+    if (projectPath.startsWith(home + sep)) {
+      return projectPath.slice(home.length + 1);
+    }
+    return projectPath;
+  }
+  // Fallback: first 12 hex chars of project_id
+  return extractProjectId(namespace).slice(0, 12);
+}
+
 // ── Factory ─────────────────────────────────────────────────────────────
 
 /**
@@ -154,7 +189,7 @@ export function startReceiver(
   deps: ReceiverDeps,
   opts: ReceiverOptions,
 ): Promise<ReceiverHandle> {
-  const { pipeline, retrieval } = deps;
+  const { pipeline, retrieval, storage } = deps;
   const { maxBodyBytes, retrievalBudgetMs } = opts;
 
   // ── Static-asset root (computed once at startup) ────────────────
@@ -235,6 +270,87 @@ export function startReceiver(
       }
 
       jsonResponse(res, 200, response);
+      return;
+    }
+
+    // ── GET /v1/stats ─────────────────────────────────────────────
+    if (method === 'GET' && pathname === '/v1/stats') {
+      const ns = url.searchParams.get('namespace') ?? undefined;
+      if (ns !== undefined && !NAMESPACE_RE.test(ns)) {
+        jsonResponse(res, 400, { error: 'invalid namespace' });
+        return;
+      }
+      try {
+        const stats = await storage.getStats(ns);
+        const projects = await storage.listProjects();
+        const projectsWithDisplay = projects.map((p) => ({
+          namespace: p.namespace,
+          project_id: extractProjectId(p.namespace),
+          display_name: deriveDisplayName(p.namespace, p.project_path),
+          event_count: p.event_count,
+          memory_count: p.memory_count,
+        }));
+        jsonResponse(res, 200, { ...stats, projects: projectsWithDisplay });
+      } catch {
+        jsonResponse(res, 500, { error: 'internal error' });
+      }
+      return;
+    }
+
+    // ── GET /v1/memories ──────────────────────────────────────────
+    if (method === 'GET' && pathname === '/v1/memories') {
+      const ns = url.searchParams.get('namespace');
+      if (ns === null) {
+        jsonResponse(res, 400, { error: 'namespace parameter is required' });
+        return;
+      }
+      if (!NAMESPACE_RE.test(ns)) {
+        jsonResponse(res, 400, { error: 'invalid namespace' });
+        return;
+      }
+      try {
+        const items = await storage.listMemoryRecords(ns);
+        jsonResponse(res, 200, { items, total: items.length });
+      } catch {
+        jsonResponse(res, 500, { error: 'internal error' });
+      }
+      return;
+    }
+
+    // ── GET /v1/events (read) ─────────────────────────────────────
+    if (method === 'GET' && pathname === '/v1/events') {
+      const ns = url.searchParams.get('namespace');
+      if (ns === null) {
+        jsonResponse(res, 400, { error: 'namespace parameter is required' });
+        return;
+      }
+      if (!NAMESPACE_RE.test(ns)) {
+        jsonResponse(res, 400, { error: 'invalid namespace' });
+        return;
+      }
+      const rawLimit = url.searchParams.get('limit');
+      let limit = 50;
+      if (rawLimit !== null) {
+        const parsed = Number(rawLimit);
+        if (!Number.isInteger(parsed)) {
+          jsonResponse(res, 400, { error: 'limit must be an integer' });
+          return;
+        }
+        limit = Math.max(1, Math.min(200, parsed));
+      }
+      try {
+        const result = await storage.listEvents({ namespace: ns, limit });
+        jsonResponse(res, 200, result);
+      } catch {
+        jsonResponse(res, 500, { error: 'internal error' });
+      }
+      return;
+    }
+
+    // ── Method enforcement for read routes ────────────────────────
+    if (pathname === '/v1/stats' || pathname === '/v1/memories') {
+      res.setHeader('Allow', 'GET');
+      jsonResponse(res, 405, { error: 'method not allowed' });
       return;
     }
 

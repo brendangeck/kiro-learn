@@ -1,20 +1,14 @@
 /**
- * Tests for the `/healthz` endpoint's version field.
+ * Method enforcement tests for the read API routes.
  *
- * Starts a real receiver and verifies that `GET /healthz` returns
- * `status: 'ok'` and a `version` string. Also verifies caching (two
- * consecutive calls return the same version) and correct Content-Type.
+ * Verifies that non-GET requests to `/v1/stats` and `/v1/memories`
+ * return 405 (or 404), and that `GET /v1/events` is not blocked by the
+ * existing `POST /v1/events` handler.
  *
- * Note: `loadDaemonVersion()` resolves `package.json` relative to the
- * compiled receiver at `dist/collector/receiver/index.js`. When running
- * under vitest (source at `src/collector/receiver/index.ts`), the
- * relative path `../../package.json` resolves to `src/package.json`
- * which does not exist, so the version falls back to `'unknown'`. In a
- * production build the version matches the root `package.json`. The
- * tests verify the structural contract (field presence, type, caching,
- * Content-Type) regardless of the resolved value.
+ * Uses a mock storage backend — no real SQLite needed since we're only
+ * testing routing / method enforcement.
  *
- * @see Requirements 10.1, 10.2, 10.3, 10.4
+ * @see Requirements 5.2
  */
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -88,33 +82,29 @@ afterAll(async () => {
 
 // ── Tests ───────────────────────────────────────────────────────────────
 
-describe('/healthz version field', () => {
-  it('returns status "ok" and a version string (Req 10.1, 10.3)', async () => {
-    const res = await fetch(`${baseUrl}/healthz`);
+describe('Method enforcement on read API routes (Req 5.2)', () => {
+  it('POST /v1/stats returns 405 or 404', async () => {
+    const res = await fetch(`${baseUrl}/v1/stats`, { method: 'POST' });
+    expect([404, 405]).toContain(res.status);
+  });
+
+  it('POST /v1/memories returns 405 or 404', async () => {
+    const res = await fetch(`${baseUrl}/v1/memories`, { method: 'POST' });
+    expect([404, 405]).toContain(res.status);
+  });
+
+  it('DELETE /v1/stats returns 405 or 404', async () => {
+    const res = await fetch(`${baseUrl}/v1/stats`, { method: 'DELETE' });
+    expect([404, 405]).toContain(res.status);
+  });
+
+  it('GET /v1/events still works and is not blocked by POST /v1/events handler', async () => {
+    const ns = '/actor/alice/project/aaa111bbb222ccc333ddd444eee555ff/';
+    const res = await fetch(`${baseUrl}/v1/events?namespace=${encodeURIComponent(ns)}`);
     expect(res.status).toBe(200);
 
-    const data = await res.json() as { status: string; version: string };
-    expect(data.status).toBe('ok');
-    expect(typeof data.version).toBe('string');
-    // In the test environment (vitest running source), the version resolves
-    // to 'unknown' because package.json is not at the expected relative path.
-    // In production (compiled dist/), it matches the real package version.
-    // Either way, the field must be a non-empty string.
-    expect(data.version.length).toBeGreaterThan(0);
-  });
-
-  it('two consecutive calls return the same version (cached, Req 10.2)', async () => {
-    const res1 = await fetch(`${baseUrl}/healthz`);
-    const data1 = await res1.json() as { version: string };
-
-    const res2 = await fetch(`${baseUrl}/healthz`);
-    const data2 = await res2.json() as { version: string };
-
-    expect(data1.version).toBe(data2.version);
-  });
-
-  it('response has Content-Type: application/json (Req 10.4)', async () => {
-    const res = await fetch(`${baseUrl}/healthz`);
-    expect(res.headers.get('content-type')).toBe('application/json');
+    const data = await res.json() as { items: unknown[]; total: number };
+    expect(data.items).toEqual([]);
+    expect(data.total).toBe(0);
   });
 });

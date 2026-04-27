@@ -144,7 +144,7 @@ export async function startCollector(
 
     // 5. Start HTTP receiver, injecting pipeline and retrieval
     const receiver = await startReceiver(
-      { pipeline, retrieval },
+      { pipeline, retrieval, storage },
       {
         host: cfg.host,
         port: cfg.port,

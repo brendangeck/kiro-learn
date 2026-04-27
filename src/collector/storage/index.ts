@@ -147,3 +147,10 @@ export type { SearchParams } from '../../types/index.js';
  * @see Requirements 4.1–4.6
  */
 export type { StorageBackend } from '../../types/index.js';
+
+/**
+ * Aggregate stats and project info types used by the visualizer read API.
+ *
+ * @see Requirements 6.2 (visualizer-read-api)
+ */
+export type { StatsResult, ProjectInfo } from '../../types/index.js';
