@@ -1,19 +1,14 @@
 import { Handle, Position, type NodeProps } from '@xyflow/react';
-import { getPalette, graphTheme } from './theme.js';
+import { getNodeColors, graphTheme } from './theme.js';
 
 /**
- * Custom React Flow node for project hub nodes.
- *
- * Uses the project's assigned color from the palette.
- * Saturated background with white text for prominence.
+ * Project hub node — blue outline style.
  * Handles on all four sides for nearest-side edge routing.
  */
-export function ProjectSupernode({ data }: NodeProps) {
+export function ProjectNode({ data }: NodeProps) {
   const label = typeof data.label === 'string' ? data.label : '';
-  const colorIndex = typeof data.colorIndex === 'number' ? data.colorIndex : 0;
   const isDark = typeof data.darkMode === 'boolean' ? data.darkMode : false;
-  const palette = getPalette(isDark);
-  const scheme = palette[colorIndex % palette.length]!;
+  const colors = getNodeColors(isDark).project;
 
   return (
     <div
@@ -21,9 +16,9 @@ export function ProjectSupernode({ data }: NodeProps) {
       style={{
         minWidth: 160,
         padding: '10px 20px',
-        background: scheme.border,
-        color: scheme.textInverse,
-        border: `2px solid ${scheme.border}`,
+        background: colors.background,
+        color: colors.text,
+        border: `2px solid ${colors.border}`,
         borderRadius: 10,
         fontFamily: graphTheme.fontFamily,
         fontSize: 14,
@@ -33,13 +28,17 @@ export function ProjectSupernode({ data }: NodeProps) {
         overflow: 'hidden',
         textOverflow: 'ellipsis',
         boxSizing: 'border-box',
-        boxShadow: `0 2px 8px ${scheme.border}40`,
+        boxShadow: `0 1px 4px ${colors.border}20`,
       }}
     >
       <Handle type="source" position={Position.Top} id="s-top" style={{ visibility: 'hidden' }} />
       <Handle type="source" position={Position.Bottom} id="s-bottom" style={{ visibility: 'hidden' }} />
       <Handle type="source" position={Position.Left} id="s-left" style={{ visibility: 'hidden' }} />
       <Handle type="source" position={Position.Right} id="s-right" style={{ visibility: 'hidden' }} />
+      <Handle type="target" position={Position.Top} id="t-top" style={{ visibility: 'hidden' }} />
+      <Handle type="target" position={Position.Bottom} id="t-bottom" style={{ visibility: 'hidden' }} />
+      <Handle type="target" position={Position.Left} id="t-left" style={{ visibility: 'hidden' }} />
+      <Handle type="target" position={Position.Right} id="t-right" style={{ visibility: 'hidden' }} />
       {label}
     </div>
   );

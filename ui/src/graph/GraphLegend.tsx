@@ -1,25 +1,22 @@
 import Box from '@cloudscape-design/components/box';
 import SpaceBetween from '@cloudscape-design/components/space-between';
-import { getPalette } from './theme.js';
+import { getNodeColors } from './theme.js';
 
 /**
  * Color legend for the memory graph.
- *
- * Shows Project (saturated) and Memory (tinted) styling using the
- * first palette color as an example.
  */
 export function GraphLegend({ darkMode = false }: { darkMode?: boolean }) {
-  const palette = getPalette(darkMode);
-  const first = palette[0]!;
+  const colors = getNodeColors(darkMode);
 
   const items = [
-    { label: 'Project', color: first.border },
-    { label: 'Memory', color: first.background, borderColor: first.border },
+    { label: 'Project', border: colors.project.border, bg: colors.project.background },
+    { label: 'Concept', border: colors.concept.border, bg: colors.concept.background },
+    { label: 'Memory', border: colors.memory.border, bg: colors.memory.background },
   ];
 
   return (
     <SpaceBetween direction="horizontal" size="m">
-      {items.map(({ label, color, borderColor }) => (
+      {items.map(({ label, border, bg }) => (
         <Box key={label} fontSize="body-s" color="text-body-secondary">
           <span
             style={{
@@ -27,8 +24,8 @@ export function GraphLegend({ darkMode = false }: { darkMode?: boolean }) {
               width: 12,
               height: 12,
               borderRadius: 2,
-              background: color,
-              border: borderColor ? `1px solid ${borderColor}` : undefined,
+              background: bg,
+              border: `1px solid ${border}`,
               marginRight: 6,
               verticalAlign: 'middle',
             }}

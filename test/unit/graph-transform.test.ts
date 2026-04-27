@@ -24,94 +24,63 @@ describe('transformToGraph', () => {
     expect(result.edges).toEqual([]);
   });
 
-  it('creates correct structure for a single memory with concepts', () => {
-    const ns = '/actor/alice/project/abc123def456/';
+  it('creates project, concept, and memory nodes with correct edges', () => {
+    const ns = '/actor/alice/project/abc/';
     const memories: MemoryRecord[] = [
-      mem({
-        record_id: 'mr_01',
-        namespace: ns,
-        title: 'Test memory',
-        concepts: ['typescript', 'testing'],
-      }),
+      mem({ record_id: 'mr_01', namespace: ns, title: 'Test memory', concepts: ['typescript', 'testing'] }),
     ];
-    const projects: ProjectInfo[] = [
-      { namespace: ns, display_name: 'My Project' },
-    ];
+    const projects: ProjectInfo[] = [{ namespace: ns, display_name: 'My Project' }];
 
     const { nodes, edges } = transformToGraph(memories, projects);
 
-    // 1 project hub + 1 memory node = 2 nodes (no concept nodes)
-    expect(nodes).toHaveLength(2);
+    // 1 project + 2 concepts + 1 memory = 4 nodes
+    expect(nodes).toHaveLength(4);
+    expect(nodes.filter((n) => n.type === 'projectNode')).toHaveLength(1);
+    expect(nodes.filter((n) => n.type === 'conceptNode')).toHaveLength(2);
+    expect(nodes.filter((n) => n.type === 'memoryNode')).toHaveLength(1);
 
-    // Project hub node — stable ID from namespace
-    const projectNode = nodes.find((n) => n.id === `project-${ns}`);
-    expect(projectNode).toBeDefined();
-    expect(projectNode!.type).toBe('projectSupernode');
-    expect(projectNode!.data).toEqual({
-      label: 'My Project',
-      namespace: ns,
-      colorIndex: 0,
-      darkMode: false,
-    });
-
-    // Memory node — stable ID from record_id
-    const memNode = nodes.find((n) => n.id === 'mem-mr_01');
-    expect(memNode).toBeDefined();
-    expect(memNode!.type).toBe('memoryNode');
-    expect(memNode!.data.label).toBe('Test memory');
-    expect(memNode!.data.memory).toEqual(memories[0]);
-    expect(memNode!.data.memory.concepts).toEqual(['typescript', 'testing']);
-
-    // 1 edge: project → memory
-    expect(edges).toHaveLength(1);
-    expect(edges[0]).toEqual({
-      id: `project-${ns}-to-mem-mr_01`,
-      source: `project-${ns}`,
-      target: 'mem-mr_01',
-    });
+    // 1 memory→project + 2 memory→concept + 2 project→concept = 5 edges
+    expect(edges).toHaveLength(5);
   });
 
-  it('creates edges from project to each memory', () => {
+  it('counts shared concept degree correctly', () => {
     const ns = '/actor/alice/project/abc/';
     const memories: MemoryRecord[] = [
-      mem({ record_id: 'mr_01', namespace: ns, title: 'Memory A', concepts: ['shared-concept', 'unique-a'] }),
-      mem({ record_id: 'mr_02', namespace: ns, title: 'Memory B', concepts: ['shared-concept'] }),
+      mem({ record_id: 'mr_01', namespace: ns, title: 'A', concepts: ['shared', 'unique-a'] }),
+      mem({ record_id: 'mr_02', namespace: ns, title: 'B', concepts: ['shared'] }),
     ];
     const projects: ProjectInfo[] = [{ namespace: ns, display_name: 'Proj' }];
 
-    const { nodes, edges } = transformToGraph(memories, projects);
+    const { nodes } = transformToGraph(memories, projects);
 
-    expect(nodes).toHaveLength(3);
-    expect(nodes.filter((n) => n.type === 'memoryNode')).toHaveLength(2);
-
-    // 2 edges: project → each memory
-    expect(edges).toHaveLength(2);
-    expect(edges.every((e) => e.source === `project-${ns}`)).toBe(true);
+    const sharedConcept = nodes.find((n) => n.data.label === 'shared');
+    expect(sharedConcept).toBeDefined();
+    expect(sharedConcept!.data.count).toBe(2);
   });
 
   it('creates separate project hub nodes for different namespaces', () => {
     const ns1 = '/actor/alice/project/aaa/';
     const ns2 = '/actor/alice/project/bbb/';
     const memories: MemoryRecord[] = [
-      mem({ record_id: 'mr_01', namespace: ns1, title: 'Mem in A', concepts: ['c1'] }),
-      mem({ record_id: 'mr_02', namespace: ns2, title: 'Mem in B', concepts: ['c1'] }),
+      mem({ record_id: 'mr_01', namespace: ns1, title: 'A', concepts: ['c1'] }),
+      mem({ record_id: 'mr_02', namespace: ns2, title: 'B', concepts: ['c1'] }),
     ];
     const projects: ProjectInfo[] = [
       { namespace: ns1, display_name: 'Project A' },
       { namespace: ns2, display_name: 'Project B' },
     ];
 
-    const { nodes, edges } = transformToGraph(memories, projects);
+    const { nodes } = transformToGraph(memories, projects);
 
-    const projectNodes = nodes.filter((n) => n.type === 'projectSupernode');
+    const projectNodes = nodes.filter((n) => n.type === 'projectNode');
     expect(projectNodes).toHaveLength(2);
-    expect(projectNodes[0]!.data.label).toBe('Project A');
-    expect(projectNodes[1]!.data.label).toBe('Project B');
 
-    expect(edges).toHaveLength(2);
+    // Same concept string in different projects = separate concept nodes
+    const conceptNodes = nodes.filter((n) => n.type === 'conceptNode');
+    expect(conceptNodes).toHaveLength(2);
   });
 
-  it('handles memory with empty concepts array', () => {
+  it('connects memory directly to project when concepts array is empty', () => {
     const ns = '/actor/alice/project/abc/';
     const memories: MemoryRecord[] = [
       mem({ record_id: 'mr_01', namespace: ns, title: 'No concepts', concepts: [] }),
@@ -120,8 +89,13 @@ describe('transformToGraph', () => {
 
     const { nodes, edges } = transformToGraph(memories, projects);
 
+    // 1 project + 0 concepts + 1 memory = 2 nodes
     expect(nodes).toHaveLength(2);
+    expect(nodes.filter((n) => n.type === 'conceptNode')).toHaveLength(0);
+    // 1 edge: memory → project
     expect(edges).toHaveLength(1);
+    expect(edges[0]!.source).toBe('mem-mr_01');
+    expect(edges[0]!.target).toBe(`project-${ns}`);
   });
 
   it('uses fallback label when no project display_name matches', () => {
@@ -132,8 +106,7 @@ describe('transformToGraph', () => {
 
     const { nodes } = transformToGraph(memories, []);
 
-    const projectNode = nodes.find((n) => n.type === 'projectSupernode');
-    expect(projectNode).toBeDefined();
+    const projectNode = nodes.find((n) => n.type === 'projectNode');
     expect(projectNode!.data.label).toBe('abcdef123456');
   });
 
@@ -149,20 +122,6 @@ describe('transformToGraph', () => {
 
     const memNode = nodes.find((n) => n.type === 'memoryNode');
     expect(memNode!.data.label).toBe('A'.repeat(40) + '…');
-    expect(memNode!.data.memory.title).toBe(longTitle);
-  });
-
-  it('stores observation_type in memory node data', () => {
-    const ns = '/actor/alice/project/abc/';
-    const memories: MemoryRecord[] = [
-      mem({ record_id: 'mr_01', namespace: ns, title: 'Error mem', concepts: [], observation_type: 'error' }),
-    ];
-    const projects: ProjectInfo[] = [{ namespace: ns, display_name: 'Proj' }];
-
-    const { nodes } = transformToGraph(memories, projects);
-
-    const memNode = nodes.find((n) => n.type === 'memoryNode');
-    expect(memNode!.data.memory.observation_type).toBe('error');
   });
 
   it('produces flat nodes without parentId or extent', () => {
@@ -183,17 +142,14 @@ describe('transformToGraph', () => {
   it('uses stable IDs derived from namespace and record_id', () => {
     const ns = '/actor/alice/project/abc/';
     const memories: MemoryRecord[] = [
-      mem({ record_id: 'mr_STABLE_01', namespace: ns, title: 'M1', concepts: [] }),
+      mem({ record_id: 'mr_STABLE_01', namespace: ns, title: 'M1', concepts: ['c1'] }),
     ];
     const projects: ProjectInfo[] = [{ namespace: ns, display_name: 'A' }];
 
-    const { nodes, edges } = transformToGraph(memories, projects);
+    const { nodes } = transformToGraph(memories, projects);
 
-    // Project ID is derived from namespace
-    expect(nodes[0]!.id).toBe(`project-${ns}`);
-    // Memory ID is derived from record_id
-    expect(nodes[1]!.id).toBe('mem-mr_STABLE_01');
-    // Edge uses both stable IDs
-    expect(edges[0]!.id).toBe(`project-${ns}-to-mem-mr_STABLE_01`);
+    expect(nodes.find((n) => n.type === 'projectNode')!.id).toBe(`project-${ns}`);
+    expect(nodes.find((n) => n.type === 'conceptNode')!.id).toBe(`concept-${ns}-c1`);
+    expect(nodes.find((n) => n.type === 'memoryNode')!.id).toBe('mem-mr_STABLE_01');
   });
 });

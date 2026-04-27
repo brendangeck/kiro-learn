@@ -2,11 +2,11 @@
 
 ## Overview
 
-This spec replaces the "coming soon" placeholder with a React Flow graph. The graph uses a flat node layout where project hub nodes and memory nodes are connected by animated bezier edges. d3-force positions nodes in organic radial clusters based on edge connectivity. A click on any memory node opens a detail panel showing full details including concepts as badges. All data comes from the existing `/v1/memories` and `/v1/stats` endpoints — no backend changes.
+This spec replaces the "coming soon" placeholder with a React Flow graph. The graph uses a flat node layout with three node types — project (blue), concept (mint/green), and memory (pink/salmon) — all using the same outline style but different colors. d3-force positions nodes in organic radial clusters based on edge connectivity. Memories act as the hub, connecting to both their project and their concepts.
 
-Concepts are NOT rendered as separate graph nodes — they are stored in memory node data and displayed in the detail panel sidebar.
+Three checkboxes above the graph (Projects, Memories, Concepts) let users filter which node types are visible. Edge visibility follows specific rules based on which types are checked.
 
-The graph does NOT use React Flow's group-node/parentId mechanism, MiniMap, Controls, or attribution watermark. An earlier iteration used `parentId` and dagre, but this prevented edges from rendering and produced rigid layouts. The current approach uses a flat graph with d3-force for organic clustering.
+A click on any memory or concept node opens a detail panel. All data comes from the existing `/v1/memories` and `/v1/stats` endpoints — no backend changes.
 
 ## Architecture
 
@@ -27,17 +27,18 @@ The graph does NOT use React Flow's group-node/parentId mechanism, MiniMap, Cont
 
 ```text
 App
-├── TopNavigation (existing + collector status, dark mode toggle, version)
+├── TopNavigation (collector status, dark mode toggle, version)
 ├── AppLayout
 │   └── content
 │       ├── MetricCards (existing — live data)
-│       ├── MemoryGraph (NEW — replaces placeholder)
+│       ├── MemoryGraph (replaces placeholder)
+│       │   ├── Filter checkboxes (Projects, Memories, Concepts)
 │       │   ├── ReactFlow canvas
-│       │   │   ├── ProjectSupernode (custom hub node)
-│       │   │   └── MemoryNode (custom node)
+│       │   │   ├── ProjectNode (blue outline)
+│       │   │   ├── ConceptNode (mint/green outline)
+│       │   │   └── MemoryNode (pink/salmon outline)
 │       │   └── Background (dot grid)
-│       ├── GraphLegend (Project, Memory)
-│       ├── MemoryDetailPanel (NEW — slides in on click)
+│       ├── MemoryDetailPanel (slides in on click)
 │       └── EventTail (existing)
 ```
 
@@ -47,49 +48,37 @@ App
 
 Pure function. No React, no side effects. Testable in isolation.
 
-Produces a flat graph (no `parentId` or `extent`) with two node types:
-- **Project hub nodes** — one per namespace, with `colorIndex` from the 6-hue palette
-- **Memory nodes** — one per memory record, inheriting the project's `colorIndex`
+Produces a flat graph with three node types and three edge types:
+- **Project nodes** (blue) — one per namespace
+- **Concept nodes** (mint/green) — one per unique concept string per project
+- **Memory nodes** (pink/salmon) — one per memory record
 
-Edges connect each project hub to its memory nodes. Concepts are stored in memory node data for the detail panel but are NOT rendered as graph nodes.
+All three edge types are generated (tagged with `linkType` in edge data):
+- `memory-project`: memory → its project
+- `memory-concept`: memory → each of its concepts
+- `project-concept`: project → each of its concepts
 
-```typescript
-export function transformToGraph(
-  memories: MemoryRecord[],
-  projects: ProjectInfo[],
-  darkMode?: boolean,
-): GraphData {
-  // Group memories by namespace
-  // For each namespace:
-  //   1. Create a project hub node (id: 'project-{namespace}')
-  //   2. Create memory nodes (id: 'mem-{record_id}') with colorIndex + darkMode in data
-  //   3. Create edges: project → each memory
-  // All nodes are flat. d3-force clusters them via edges.
-}
-```
+The MemoryGraph component filters which edges to display based on the checkbox state.
 
-Node IDs are derived from immutable values (namespace, record_id) for stability across refreshes.
+Node IDs are derived from immutable values for stability across refreshes.
 
 ### Component 2: Custom node types
 
-**ProjectSupernode** (`ui/src/graph/ProjectSupernode.tsx`):
-- Prominent hub node with saturated background from the project's palette color.
-- White text, rounded corners (`borderRadius: 10`), subtle box shadow.
-- `title` attribute for hover tooltip on ellipsized labels.
-- Hidden `Handle` components on all four sides (top, bottom, left, right) for nearest-side edge routing.
-- Reads `colorIndex` and `darkMode` from node data to select the correct palette.
+All three node types use the same outline style (tinted background + saturated border + `borderRadius: 8`) but different colors. Each has handles on all four sides (both source and target) for nearest-side edge routing.
 
-**MemoryNode** (`ui/src/graph/MemoryNode.tsx`):
-- Fixed-width rectangle (260px). Left-aligned text, truncated to ~40 chars + ellipsis.
-- Tinted background with saturated border from the project's palette color.
-- `title` attribute shows full memory title on hover.
-- Hidden `Handle` components on all four sides for nearest-side edge routing.
-- Reads `colorIndex` and `darkMode` from node data.
+**ProjectNode** (`ui/src/graph/ProjectNode.tsx`):
+- Blue outline style. Labeled with project `display_name`.
+- `title` attribute for hover tooltip.
 
 **ConceptNode** (`ui/src/graph/ConceptNode.tsx`):
-- Kept as a valid component but NOT used in the graph. Concepts are shown as badges in the detail panel instead.
+- Mint/green outline style. Labeled with concept string.
+- `title` attribute for hover tooltip.
 
-Only ProjectSupernode and MemoryNode are registered via React Flow's `nodeTypes` prop.
+**MemoryNode** (`ui/src/graph/MemoryNode.tsx`):
+- Pink/salmon outline style. Fixed width (260px), left-aligned text truncated to ~40 chars + ellipsis.
+- `title` attribute shows full memory title on hover.
+
+All three registered via React Flow's `nodeTypes` prop. All read `darkMode` from node data to select light/dark color variants.
 
 ### Component 3: MemoryGraph (`ui/src/components/MemoryGraph.tsx`)
 
@@ -98,14 +87,15 @@ The main graph component. Replaces the placeholder.
 Props: `memories`, `projects`, `loading`, `error`, `darkMode`, `onNodeClick`.
 
 Key behaviors:
-- Calls `transformToGraph(memories, projects, darkMode)` then `applyForceLayout(nodes, edges)`.
-- Uses `useNodesState`/`useEdgesState` for interactive node dragging.
-- Content-based memoization (`contentKey` from record_ids) prevents recomputing layout on identical 10s refreshes.
+- Three Cloudscape `Checkbox` components above the canvas: Projects, Memories, Concepts (all checked by default).
+- Computes full graph via `transformToGraph` then `applyForceLayout` (memoized by content key).
+- Filters nodes by checkbox state; filters edges by `linkType` using `getAllowedLinkTypes()` rules.
 - Assigns `sourceHandle`/`targetHandle` per edge based on relative node positions for nearest-side routing.
 - Animated bezier edges with mode-aware stroke color.
-- Canvas background adapts to dark mode via `getGraphColors(darkMode)`.
-- No MiniMap, Controls, or attribution. `minZoom={0.1}` for zooming far out. `fitView` on initial render.
-- Read-only: `nodesConnectable={false}`, `nodesDraggable={true}`, `elementsSelectable={true}`, `deleteKeyCode={null}`, `proOptions={{ hideAttribution: true }}`.
+- Canvas background adapts to dark mode.
+- No MiniMap, Controls, or attribution. `minZoom={0.1}`. `fitView` on initial render.
+- Read-only: `nodesConnectable={false}`, `nodesDraggable={true}`, `elementsSelectable={true}`, `deleteKeyCode={null}`.
+- Handles clicks on memory nodes (opens detail panel with full record) and concept nodes (opens detail panel with related memories).
 
 ### Component 4: MemoryDetailPanel (`ui/src/components/MemoryDetailPanel.tsx`)
 
@@ -158,15 +148,14 @@ This approach replaced dagre, which produced rigid hierarchical layouts. d3-forc
 
 `test/unit/graph-transform.test.ts`:
 - Empty memories → empty nodes/edges.
-- Single memory → 1 project node, 1 memory node, 1 edge (project→memory).
-- Multiple memories in same project → correct node/edge counts.
-- Memories across 2 namespaces → 2 project hub nodes.
-- Memory with empty concepts array → still has project→memory edge.
-- All nodes are flat — no `parentId` or `extent`.
-- No concept nodes created (concepts in memory data only).
-- Stable IDs derived from namespace and record_id.
+- Single memory with concepts → project + concept + memory nodes, all three edge types.
+- Shared concept → degree count correct.
+- Memories across 2 namespaces → 2 project nodes, separate concept nodes per project.
+- Memory with empty concepts → memory→project edge only.
+- All nodes flat — no `parentId` or `extent`.
+- Stable IDs derived from namespace, concept string, and record_id.
 - Title truncation to 40 chars + ellipsis.
-- `colorIndex` and `darkMode` in node data.
+- `darkMode` in node data.
 
 ### Updated smoke test
 
@@ -182,11 +171,11 @@ This approach replaced dagre, which produced rigid hierarchical layouts. d3-forc
 | Symbol | Module |
 |---|---|
 | `transformToGraph`, `ProjectInfo` | `ui/src/graph/transform.ts` |
-| `ProjectSupernode` | `ui/src/graph/ProjectSupernode.tsx` |
-| `ConceptNode` (unused in graph) | `ui/src/graph/ConceptNode.tsx` |
+| `ProjectNode` | `ui/src/graph/ProjectNode.tsx` |
+| `ConceptNode` | `ui/src/graph/ConceptNode.tsx` |
 | `MemoryNode` | `ui/src/graph/MemoryNode.tsx` |
 | `GraphLegend` | `ui/src/graph/GraphLegend.tsx` |
-| `graphTheme`, `getPalette`, `getGraphColors`, `LIGHT_PALETTE`, `DARK_PALETTE`, `PROJECT_PALETTE` | `ui/src/graph/theme.ts` |
+| `graphTheme`, `getNodeColors`, `getGraphColors`, `LIGHT_COLORS`, `DARK_COLORS` | `ui/src/graph/theme.ts` |
 | `applyForceLayout`, `NODE_DIMENSIONS` | `ui/src/graph/layout.ts` |
 | `MemoryGraph` | `ui/src/components/MemoryGraph.tsx` |
 | `MemoryDetailPanel` | `ui/src/components/MemoryDetailPanel.tsx` |

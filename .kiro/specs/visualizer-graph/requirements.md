@@ -8,18 +8,20 @@ This is the fifth and final spec: `project-path-capture` (shipped) → `visualiz
 
 The dashboard already fetches `/v1/stats` and `/v1/events`. This spec adds a fetch to `/v1/memories` (all memories, paginated) and transforms the response into a React Flow graph. All graph structure — project grouping, concept extraction, edge computation — is derived client-side from the memories data. No new backend endpoints.
 
-**In scope:** Install React Flow (`@xyflow/react`); fetch memories from `/v1/memories`; transform memories into graph nodes and edges; render with React Flow; project hub nodes; memory nodes; edges from projects to memories; click-to-detail side panel for memory nodes; pan/zoom/minimap; loading/error/empty states; runtime response validation; dark mode toggle; updated smoke tests.
+**In scope:** Install React Flow (`@xyflow/react`); fetch memories from `/v1/memories`; transform memories into graph nodes and edges; render with React Flow; project hub nodes; concept nodes; memory nodes; edges connecting memories to projects and concepts; node type filter checkboxes; click-to-detail side panel for memory and concept nodes; pan/zoom; loading/error/empty states; runtime response validation; dark mode toggle; updated smoke tests.
 
 **Out of scope:** New backend endpoints; cross-project concept merging; time-based visualization; node search/filter; drag-to-rearrange; export/save graph; React Router.
 
 ## Glossary
 
 - **Graph_Canvas**: The React Flow canvas that replaces the graph placeholder. Renders inside the existing Cloudscape `Container` with "Memory Graph" header. No MiniMap, Controls, or React Flow attribution overlay — clean canvas with dot grid background.
-- **Project_Hub_Node**: A React Flow node representing a project. Acts as the central hub of a cluster — memory nodes connect to it via edges, and d3-force positions related nodes nearby. Each project gets a color from a 6-hue palette (Blue, Violet, Rose, Amber, Emerald, Teal); memory nodes inherit their project's color. Labeled with the project's `display_name` from the stats response.
-- **Memory_Node**: A React Flow node representing a single memory record. Fixed width (260px), left-aligned text truncated to ~40 chars with ellipsis. Tinted background with saturated border from its project's palette color. Concepts are stored in the node data for the detail panel but are NOT rendered as separate graph nodes.
-- **Memory_Edge**: A React Flow animated bezier edge connecting a Project_Hub_Node to a Memory_Node. Edges use nearest-side handle routing (handles on all four sides of each node, `sourceHandle`/`targetHandle` assigned based on relative positions).
-- **Detail_Panel**: A Cloudscape side panel (or drawer) that slides in when a Memory_Node is clicked, showing the full memory record (title, summary, facts, concepts as badges, files_touched, observation_type, created_at, source_event_ids).
-- **Graph_Data**: The transformed data structure consumed by React Flow: `{ nodes: Node[], edges: Edge[] }`. Derived client-side from the memories response and the stats response (for project display names). Node IDs are stable (derived from namespace and record_id, not indices).
+- **Project_Node**: A React Flow node representing a project (blue outline style). Labeled with the project's `display_name` from the stats response. Handles on all four sides.
+- **Concept_Node**: A React Flow node representing a unique concept string within a project (mint/green outline style). Connected to memory nodes that reference it. Handles on all four sides.
+- **Memory_Node**: A React Flow node representing a single memory record (pink/salmon outline style). Fixed width (260px), left-aligned text truncated to ~40 chars with ellipsis. Acts as the hub — connects to both its project and its concepts. Handles on all four sides.
+- **Edge**: An animated bezier edge. Three link types exist: `memory-project`, `memory-concept`, `project-concept`. Which edges are visible depends on the node type filter checkboxes.
+- **Node_Type_Filter**: Three Cloudscape checkboxes (Projects, Memories, Concepts) above the graph canvas. Controls which node types and edges are visible.
+- **Detail_Panel**: A Cloudscape side panel that slides in when a Memory_Node or Concept_Node is clicked, showing full details.
+- **Graph_Data**: The transformed data structure consumed by React Flow: `{ nodes: Node[], edges: Edge[] }`. All three edge types are generated; the filter selects which to display. Node IDs are stable (derived from namespace, record_id, and concept string).
 
 ## Requirements
 
@@ -51,13 +53,17 @@ The dashboard already fetches `/v1/stats` and `/v1/events`. This spec adds a fet
 
 #### Acceptance Criteria
 
-1. THE transformation SHALL produce two types of nodes:
-   - **Project_Hub_Nodes**: one per distinct `namespace` in the memories. Labeled with `display_name` from the stats response's `projects` array (matched by namespace). If no match, label with the first 12 hex chars of the project_id segment. Each assigned a `colorIndex` from the 6-hue palette.
-   - **Memory_Nodes**: one per memory record. Concepts are stored in the node data for the detail panel but are NOT rendered as separate graph nodes.
-2. THE transformation SHALL produce edges from each Project_Hub_Node to each of its Memory_Nodes.
-3. ALL nodes SHALL be flat (no `parentId` or `extent`). Clustering is achieved through edge connectivity and the d3-force layout, not through React Flow's group-node mechanism.
-4. Node IDs SHALL be derived from immutable values: `project-{namespace}` for projects, `mem-{record_id}` for memories. This ensures stable IDs across refreshes regardless of data ordering.
-5. Memory_Nodes SHALL inherit their project's palette color. The `observation_type` is available in the data for the detail panel but does NOT affect node color.
+1. THE transformation SHALL produce three types of nodes:
+   - **Project_Nodes**: one per distinct `namespace` in the memories. Blue outline style. Labeled with `display_name` from the stats response's `projects` array (matched by namespace). If no match, label with the first 12 hex chars of the project_id segment.
+   - **Concept_Nodes**: one per unique concept string within each project. Mint/green outline style. A concept appearing in project A and project B produces two separate nodes (concepts are per-project).
+   - **Memory_Nodes**: one per memory record. Pink/salmon outline style.
+2. THE transformation SHALL produce three kinds of edges (all tagged with a `linkType` in edge data):
+   - **memory-project**: from each Memory_Node to its Project_Node.
+   - **memory-concept**: from each Memory_Node to each of its Concept_Nodes.
+   - **project-concept**: from each Project_Node to each of its Concept_Nodes.
+3. ALL nodes SHALL be flat (no `parentId` or `extent`). Clustering is achieved through edge connectivity and the d3-force layout.
+4. Node IDs SHALL be derived from immutable values: `project-{namespace}` for projects, `concept-{namespace}-{concept}` for concepts, `mem-{record_id}` for memories.
+5. All node types use the same outline style (tinted background + saturated border) but different colors per type. Colors adapt to dark mode.
 6. THE transformation SHALL be a pure function: `(memories: MemoryRecord[], projects: ProjectInfo[], darkMode?: boolean) => { nodes: Node[], edges: Edge[] }`. Testable in isolation.
 
 ### Requirement 4: React Flow Canvas
@@ -81,10 +87,11 @@ The dashboard already fetches `/v1/stats` and `/v1/events`. This spec adds a fet
 
 #### Acceptance Criteria
 
-1. THE graph SHALL use a 6-hue color palette (Blue, Violet, Rose, Amber, Emerald, Teal) that cycles across projects. Each project and its memory nodes share the same palette color. Light and dark mode each have their own palette variant.
-2. THE graph SHALL render Project_Hub_Nodes with a saturated background from the palette, white text, rounded corners, and a subtle box shadow. A `title` attribute SHALL provide the full name on hover. Handles on all four sides for nearest-side edge routing.
-3. THE graph SHALL render Memory_Nodes as fixed-width (260px) rectangles with the memory title (truncated to ~40 chars + ellipsis) left-aligned. Tinted background with saturated border from the project's palette color. `title` attribute shows full title on hover. Handles on all four sides.
-4. THE graph SHALL include a legend mapping node type colors to their names (Project, Memory).
+1. ALL node types SHALL use the same outline style (tinted background + saturated border + `borderRadius: 8`) but different colors per type: blue for projects, pink/salmon for memories, mint/green for concepts. Light and dark mode each have their own color variants.
+2. THE graph SHALL render Project_Nodes as labeled rectangles with blue outline. `title` attribute for hover tooltip. Handles on all four sides (both source and target).
+3. THE graph SHALL render Concept_Nodes as labeled rectangles with mint/green outline. `title` attribute for hover tooltip. Handles on all four sides (both source and target).
+4. THE graph SHALL render Memory_Nodes as fixed-width (260px) rectangles with pink/salmon outline. Left-aligned text truncated to ~40 chars + ellipsis. `title` attribute shows full title on hover. Handles on all four sides (both source and target).
+5. THE graph SHALL include a legend mapping node type colors to their names (Project, Concept, Memory).
 
 ### Requirement 6: Click-to-Detail Side Panel
 
@@ -95,8 +102,9 @@ The dashboard already fetches `/v1/stats` and `/v1/events`. This spec adds a fet
 1. WHEN a Memory_Node is clicked, THE Detail_Panel SHALL slide in from the right showing the full memory record.
 2. THE Detail_Panel SHALL display: title, summary, facts (as a bulleted list), concepts (as tags/badges), files_touched (as a list), observation_type (as a colored badge), created_at (formatted timestamp), source_event_ids (as a list of IDs).
 3. THE Detail_Panel SHALL use Cloudscape components (`Container`, `Header`, `SpaceBetween`, `Badge`, `Box`).
-4. WHEN the user clicks the background or a close button, THE Detail_Panel SHALL close.
-5. THE Detail_Panel SHALL NOT navigate away from the graph. It overlays or sits beside the canvas.
+4. WHEN a Concept_Node is clicked, THE Detail_Panel SHALL show the concept name and a list of memory titles that reference it.
+5. WHEN the user clicks the background or a close button, THE Detail_Panel SHALL close.
+6. THE Detail_Panel SHALL NOT navigate away from the graph. It overlays or sits beside the canvas.
 
 ### Requirement 7: Empty, Loading, and Error States
 
@@ -135,10 +143,10 @@ The dashboard already fetches `/v1/stats` and `/v1/events`. This spec adds a fet
 
 #### Acceptance Criteria
 
-1. THE graph's node colors SHALL use a curated 6-hue palette (Blue `#3B82F6`, Violet `#8B5CF6`, Rose `#F43F5E`, Amber `#F59E0B`, Emerald `#10B981`, Teal `#14B8A6`) with light and dark mode variants. Each project cycles through the palette; memory nodes inherit their project's color.
+1. THE graph's node colors SHALL use a type-based scheme: blue (`#3B82F6`) for projects, pink/salmon (`#F43F5E`) for memories, mint/green (`#10B981`) for concepts. Each has light and dark mode variants with tinted backgrounds and saturated borders.
 2. THE graph's text labels SHALL use the same font family as Cloudscape components (`'Amazon Ember'` or the fallback stack Cloudscape applies via `@cloudscape-design/global-styles`). No separate font import for the graph.
 3. THE graph's edge colors SHALL use a mid-gray (`#7d8998` light, `#4B5563` dark) for visibility against the canvas background.
-4. THE legend, detail panel, and any graph-adjacent UI SHALL use Cloudscape components (`Box`, `Badge`, `Header`, `Container`, etc.) — not custom-styled HTML.
+4. THE legend, detail panel, filter checkboxes, and any graph-adjacent UI SHALL use Cloudscape components (`Box`, `Badge`, `Header`, `Container`, `Checkbox`, etc.) — not custom-styled HTML.
 5. THE React Flow canvas background SHALL adapt to dark mode (`#f2f3f3` light, `#0f1b2d` dark).
 6. THE overall visual impression SHALL be that the graph is a native part of the Cloudscape page, not an embedded third-party widget.
 
@@ -177,6 +185,21 @@ The dashboard already fetches `/v1/stats` and `/v1/events`. This spec adds a fet
 5. THE selected mode SHALL be persisted to `localStorage` (`kiro-learn-dark-mode` key) and restored on page load.
 6. THE TopNavigation SHALL also show collector health status (`status-positive`/`status-negative`/`status-pending` icon with "Collector Online"/"Collector Offline"/"Connecting…" text) and the version number.
 
+### Requirement 14: Node Type Filter
+
+**User Story:** As a user, I want to show/hide different node types to focus on specific aspects of my memory graph.
+
+#### Acceptance Criteria
+
+1. THE graph SHALL display three Cloudscape `Checkbox` components above the canvas: Projects, Memories, Concepts. All checked by default.
+2. UNCHECKING a checkbox SHALL hide all nodes of that type and any edges that connect to them.
+3. WHEN all three are checked: edges shown are memory→project and memory→concept (no project→concept).
+4. WHEN Projects + Memories are checked (no Concepts): edges shown are memory→project only.
+5. WHEN Projects + Concepts are checked (no Memories): edges shown are project→concept only.
+6. WHEN Memories + Concepts are checked (no Projects): edges shown are memory→concept only.
+7. WHEN only one type is checked: nodes of that type are shown with no edges.
+8. THE filter SHALL NOT affect the underlying data or layout — only visibility.
+
 ## Non-functional Requirements
 
 - **N1.** THE graph SHALL render smoothly (no visible jank) with up to 500 memory nodes and 200 concept nodes. React Flow handles this scale in SVG mode.
@@ -190,7 +213,6 @@ The dashboard already fetches `/v1/stats` and `/v1/events`. This spec adds a fet
 - New backend endpoints — the graph derives everything from `/v1/memories` and `/v1/stats`.
 - Cross-project concept merging — same concept string in different projects stays separate.
 - Time-based visualization / decay / recency — all nodes rendered equally.
-- Node search or filter — show everything.
 - Drag-to-rearrange nodes (React Flow supports this but we don't need custom persistence).
 - Export/save graph as image.
 - React Router.

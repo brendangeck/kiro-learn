@@ -14,7 +14,8 @@ import type { Node, Edge } from '@xyflow/react';
  * Also used by custom node components to match rendering to layout.
  */
 export const NODE_DIMENSIONS: Record<string, { width: number; height: number }> = {
-  projectSupernode: { width: 180, height: 50 },
+  projectNode: { width: 180, height: 50 },
+  conceptNode: { width: 120, height: 32 },
   memoryNode: { width: 260, height: 40 },
 };
 
@@ -88,14 +89,14 @@ export function applyForceLayout(nodes: Node[], edges: Edge[]): Node[] {
       'link',
       forceLink<SimNode, SimulationLinkDatum<SimNode>>(simLinks)
         .id((d) => d.id)
-        .distance(180)
-        .strength(0.4),
+        .distance(100)
+        .strength(0.5),
     )
-    .force('charge', forceManyBody<SimNode>().strength(-600))
+    .force('charge', forceManyBody<SimNode>().strength(-250))
     .force('center', forceCenter(0, 0))
     .force(
       'collide',
-      forceCollide<SimNode>().radius((d) => Math.max(d.width, d.height) * 0.8).strength(0.8),
+      forceCollide<SimNode>().radius((d) => Math.max(d.width, d.height) * 0.6).strength(0.7),
     )
     .stop();
 

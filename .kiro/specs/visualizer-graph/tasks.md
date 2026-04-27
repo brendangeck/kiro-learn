@@ -24,13 +24,12 @@ Dependencies first, then graph logic, then UI components, then wiring, then test
 - [x] 3. Implement graph data transformation
 
   - [x] 3.1 Create `ui/src/graph/transform.ts`
-    - Pure function `transformToGraph(memories, projects) → { nodes, edges }`.
-    - Group memories by namespace → flat project hub nodes (no parentId/grouping).
-    - Create memory nodes with observation_type and concepts in data (concepts shown in detail panel, not as graph nodes).
-    - Create edges from each project hub → its memory nodes.
-    - Node IDs derived from immutable values: namespace for projects, record_id for memories.
-    - Each project and its memories assigned a `colorIndex` from the 6-hue palette.
-    - _Requirements: 3.1, 3.2, 3.3, 3.5, 3.6_
+    - Pure function `transformToGraph(memories, projects, darkMode) → { nodes, edges }`.
+    - Group memories by namespace → flat project nodes, concept nodes, memory nodes.
+    - Three edge types tagged with `linkType`: memory→project, memory→concept, project→concept.
+    - Node IDs derived from immutable values: namespace for projects, namespace+concept for concepts, record_id for memories.
+    - `darkMode` passed through to node data for color selection.
+    - _Requirements: 3.1, 3.2, 3.3, 3.4, 3.5, 3.6_
 
   - [x] 3.2 Implement layout positioning
     - d3-force simulation with deterministic initial positions (hashed from node IDs).
@@ -39,56 +38,57 @@ Dependencies first, then graph logic, then UI components, then wiring, then test
 
 - [x] 4. Build custom node components
 
-  - [x] 4.1 Create `ui/src/graph/ProjectSupernode.tsx`
-    - Flat hub node with saturated background from project palette color.
-    - White text, rounded corners, box shadow.
-    - Handles on all four sides for nearest-side edge routing.
+  - [x] 4.1 Create `ui/src/graph/ProjectNode.tsx`
+    - Blue outline style (tinted background + saturated border + borderRadius: 8).
+    - Handles on all four sides (both source and target).
     - `title` attribute for hover tooltip on ellipsized labels.
+    - Reads `darkMode` from node data for color selection.
     - _Requirements: 5.2, 10.1_
 
   - [x] 4.2 Create `ui/src/graph/ConceptNode.tsx`
-    - Kept as valid component but not used in graph (concepts shown as tags in detail panel).
-    - Size scales with degree (data.count).
-    - All concept nodes use the same color from the Cloudscape-derived theme.
+    - Mint/green outline style (same shape as other nodes).
+    - Handles on all four sides (both source and target).
+    - `title` attribute for hover tooltip.
+    - Reads `darkMode` from node data for color selection.
     - _Requirements: 5.3, 10.1_
 
   - [x] 4.3 Create `ui/src/graph/MemoryNode.tsx`
-    - Fixed-width rectangle (260px). Label is truncated title (~40 chars + ellipsis).
-    - Tinted background with saturated border from project palette color.
-    - Handles on all four sides for nearest-side edge routing.
+    - Pink/salmon outline style. Fixed-width (260px), left-aligned text (~40 chars + ellipsis).
+    - Handles on all four sides (both source and target).
     - `title` attribute shows full memory title on hover.
+    - Reads `darkMode` from node data for color selection.
     - _Requirements: 5.4, 10.1_
 
   - [x] 4.4 Add node type color legend
-    - Legend mapping two colors to: Project, Memory.
+    - Legend mapping three colors to: Project, Concept, Memory.
     - Use Cloudscape components (Box, SpaceBetween) for the legend display.
     - _Requirements: 5.5, 10.4_
 
 - [x] 5. Build MemoryGraph component
 
-  - [x] 5.0 Define color palette and graph styling constants
-    - Create a `ui/src/graph/theme.ts` file exporting a 6-hue color palette (Blue, Violet, Rose, Amber, Emerald, Teal) for project-based coloring.
-    - Each project gets a color; memory nodes inherit their project's color.
-    - Export edge stroke color and canvas background.
+  - [x] 5.0 Define node type colors and graph styling constants
+    - Create a `ui/src/graph/theme.ts` file exporting type-based colors: blue for projects, pink/salmon for memories, mint/green for concepts.
+    - Light and dark mode variants for each type.
+    - Export edge stroke color and canvas background (mode-aware).
     - Use the same font family Cloudscape applies (`'Amazon Ember'` or its fallback stack).
     - _Requirements: 10.1, 10.2, 10.3, 10.5_
 
   - [x] 5.1 Create `ui/src/components/MemoryGraph.tsx`
     - Import `@xyflow/react` and its CSS.
-    - Accept props: memories, projects, loading, error, onNodeClick.
+    - Accept props: memories, projects, loading, error, darkMode, onNodeClick.
     - Render loading/error/empty states.
-    - Call `transformToGraph` then `applyForceLayout` and render `<ReactFlow>` with positioned nodes and styled edges.
-    - Use `useNodesState`/`useEdgesState` for interactive dragging.
-    - Content-based memoization (contentKey from record_ids) to avoid recomputing layout on identical refreshes.
+    - Three Cloudscape `Checkbox` components: Projects, Memories, Concepts (all checked by default).
+    - Compute full graph via `transformToGraph` then `applyForceLayout` (memoized by content key).
+    - Filter nodes by checkbox state; filter edges by `linkType` using `getAllowedLinkTypes()` rules.
     - Assign `sourceHandle`/`targetHandle` per edge based on relative node positions for nearest-side routing.
     - Animated bezier edges with mode-aware stroke color.
     - Configure read-only: `nodesConnectable={false}`, `nodesDraggable={true}`, `elementsSelectable={true}`, `deleteKeyCode={null}`.
     - `<Background>` with dot grid. No MiniMap, Controls, or attribution (`proOptions={{ hideAttribution: true }}`).
-    - Register custom node types via `nodeTypes` prop (ProjectSupernode, MemoryNode).
-    - Handle `onNodeClick` for memory nodes.
+    - Register all three custom node types via `nodeTypes` prop.
+    - Handle `onNodeClick` for memory and concept nodes.
     - Canvas height at least 500px with themed background. `minZoom={0.1}`.
     - `fitView` on initial render.
-    - _Requirements: 2.3, 2.4, 2.5, 4.1, 4.2, 4.3, 4.4, 4.5, 4.6, 4.8, 7.1, 7.2, 7.3, 7.4, 11.1, 11.2, 11.3, 11.4, 11.5_
+    - _Requirements: 2.3, 2.4, 2.5, 4.1–4.8, 7.1–7.4, 11.1–11.5, 14.1–14.8_
 
 - [x] 6. Build MemoryDetailPanel component
 
@@ -159,9 +159,10 @@ Dependencies first, then graph logic, then UI components, then wiring, then test
 ## Notes
 
 - No backend changes. All data from existing `/v1/memories` and `/v1/stats`.
-- Concepts are stored in memory node data for the detail panel but are NOT rendered as separate graph nodes.
-- Node IDs are stable: `project-{namespace}` for projects, `mem-{record_id}` for memories. This ensures React Flow preserves viewport on refresh.
-- The transformation function is pure and testable without React or React Flow.
-- d3-force layout with deterministic initial positions (hashed from node IDs) produces organic clusters.
-- 6-hue color palette (Blue, Violet, Rose, Amber, Emerald, Teal) cycles across projects; memories inherit their project's color.
-- Dark mode toggle in TopNavigation uses Cloudscape's `applyMode(Mode.Dark)` / `applyMode(Mode.Light)`.
+- Three node types: project (blue), concept (mint/green), memory (pink/salmon). All use the same outline style.
+- Three edge types: memory→project, memory→concept, project→concept. All generated by transform; filtered by checkboxes.
+- Node IDs are stable: `project-{namespace}`, `concept-{namespace}-{concept}`, `mem-{record_id}`.
+- d3-force layout with deterministic circular initial positions (hashed from node IDs) produces organic clusters.
+- Node type filter checkboxes control visibility with specific edge rules per combination.
+- Dark mode toggle in TopNavigation uses Cloudscape's `applyMode()`, persisted to localStorage.
+- Collector health status shown in TopNavigation utilities.
