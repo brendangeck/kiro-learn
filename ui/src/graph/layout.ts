@@ -60,7 +60,7 @@ export function applyForceLayout(nodes: Node[], edges: Edge[]): Node[] {
   // Build simulation nodes with deterministic circular initial positions.
   // Spreading nodes evenly around a circle prevents lopsided clustering.
   const radius = Math.max(150, nodes.length * 15);
-  const simNodes: SimNode[] = nodes.map((node, i) => {
+  const simNodes: SimNode[] = nodes.map((node) => {
     const dims = NODE_DIMENSIONS[node.type ?? ''] ?? DEFAULT_DIMS;
     // Deterministic angle from hash, spread around full circle
     const angle = hashToUnit(node.id, 1) * 2 * Math.PI;
