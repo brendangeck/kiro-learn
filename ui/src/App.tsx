@@ -14,7 +14,7 @@ import EventTail from './components/EventTail.js';
 
 const POLL_INTERVAL_MS = 10_000;
 
-function MetricCard({ title, value, loading, error }: { title: string; value: number | null; loading: boolean; error: string | null }) {
+function MetricCard({ title, value, loading, error: _error }: { title: string; value: number | null; loading: boolean; error: string | null }) {
   let display: React.ReactNode;
   if (value !== null) {
     display = value;
