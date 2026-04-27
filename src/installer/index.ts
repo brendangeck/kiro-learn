@@ -329,10 +329,11 @@ export function deployPayload(): void {
 
   mkdirSync(libDir, { recursive: true });
 
-  // Copy each subdirectory: shim/, collector/, installer/, types/
-  for (const subdir of ['shim', 'collector', 'installer', 'types']) {
+  // Copy each subdirectory: shim/, collector/, installer/, types/, ui/
+  for (const subdir of ['shim', 'collector', 'installer', 'types', 'ui']) {
     const src = path.join(distDir, subdir);
     const dst = path.join(libDir, subdir);
+    if (!existsSync(src)) continue; // graceful skip for pre-visualizer builds
     cpSync(src, dst, { recursive: true });
   }
 }
