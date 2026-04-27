@@ -1,3 +1,9 @@
+## [0.12.1](https://github.com/brendangeck/kiro-learn/compare/v0.12.0...v0.12.1) (2026-04-27)
+
+### Bug Fixes
+
+* open visualizer UI in browser after init ([#19](https://github.com/brendangeck/kiro-learn/issues/19)) ([20e4ae6](https://github.com/brendangeck/kiro-learn/commit/20e4ae6cc3274eb8c5f634847fde1d948f5d0c27))
+
 ## [0.12.0](https://github.com/brendangeck/kiro-learn/compare/v0.11.0...v0.12.0) (2026-04-27)
 
 ### Features
