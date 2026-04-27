@@ -24,11 +24,8 @@ const observationTypeColor: Record<ObservationType, 'blue' | 'green' | 'red' | '
 };
 
 function formatTimestamp(iso: string): string {
-  try {
-    return new Date(iso).toLocaleString();
-  } catch {
-    return iso;
-  }
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime()) ? iso : date.toLocaleString();
 }
 
 /**

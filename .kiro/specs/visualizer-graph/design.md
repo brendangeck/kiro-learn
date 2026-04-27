@@ -2,13 +2,15 @@
 
 ## Overview
 
-This spec replaces the "coming soon" placeholder with a React Flow graph. The graph shows all memories across all projects, grouped into project supernodes, with concept nodes as intermediaries and edges connecting memories to their concepts. A click on any memory node opens a detail panel. All data comes from the existing `/v1/memories` and `/v1/stats` endpoints — no backend changes.
+This spec replaces the "coming soon" placeholder with a React Flow graph. The graph uses a flat node layout where project hub nodes, concept nodes, and memory nodes are connected by edges. Dagre positions related nodes close together based on edge connectivity, producing natural clusters per project. A click on any memory or concept node opens a detail panel. All data comes from the existing `/v1/memories` and `/v1/stats` endpoints — no backend changes.
+
+The graph does NOT use React Flow's group-node/parentId mechanism. An earlier iteration used `parentId` and `extent: 'parent'` to nest concept and memory nodes inside project supernodes, but this prevented edges from rendering (React Flow doesn't draw edges between nodes inside a group) and produced a rigid table-like layout. The current approach uses a flat graph where clustering emerges from edge connectivity through dagre.
 
 ## Architecture
 
 ### Data flow
 
-```
+```text
 /v1/memories?limit=500 → MemoryRecord[]
 /v1/stats              → StatsResponse (for project display_names)
                             ↓
@@ -21,7 +23,7 @@ This spec replaces the "coming soon" placeholder with a React Flow graph. The gr
 
 ### Component tree
 
-```
+```text
 App
 ├── TopNavigation (existing)
 ├── AppLayout
@@ -30,7 +32,7 @@ App
 │       ├── MetricCards (existing — live data)
 │       ├── MemoryGraph (NEW — replaces placeholder)
 │       │   ├── ReactFlow canvas
-│       │   │   ├── ProjectSupernode (custom group node)
+│       │   │   ├── ProjectSupernode (custom hub node)
 │       │   │   ├── ConceptNode (custom node)
 │       │   │   └── MemoryNode (custom node)
 │       │   ├── MiniMap
@@ -46,21 +48,16 @@ App
 
 Pure function. No React, no side effects. Testable in isolation.
 
+Produces a flat graph (no `parentId` or `extent`) with three node types connected by edges:
+- **Project hub → Concept** edges create the cluster structure
+- **Memory → Concept** edges connect memories to their topics
+
 ```typescript
 import type { Node, Edge } from '@xyflow/react';
 
 interface ProjectInfo {
   namespace: string;
   display_name: string;
-}
-
-interface MemoryRecord {
-  record_id: string;
-  namespace: string;
-  title: string;
-  concepts: string[];
-  observation_type: string;
-  // ... other fields
 }
 
 interface GraphData {
@@ -72,114 +69,39 @@ export function transformToGraph(
   memories: MemoryRecord[],
   projects: ProjectInfo[],
 ): GraphData {
-  const nodes: Node[] = [];
-  const edges: Edge[] = [];
-
   // Group memories by namespace
-  const byNamespace = new Map<string, MemoryRecord[]>();
-  for (const mem of memories) {
-    const list = byNamespace.get(mem.namespace) ?? [];
-    list.push(mem);
-    byNamespace.set(mem.namespace, list);
-  }
-
-  // Build project display name lookup
-  const displayNames = new Map(projects.map((p) => [p.namespace, p.display_name]));
-
-  let projectIndex = 0;
-  for (const [namespace, mems] of byNamespace) {
-    const projectId = `project-${projectIndex}`;
-    const displayName = displayNames.get(namespace) ?? namespace.slice(0, 12);
-
-    // Project supernode (group)
-    nodes.push({
-      id: projectId,
-      type: 'projectSupernode',
-      data: { label: displayName, namespace },
-      position: { x: projectIndex * 600, y: 0 },
-    });
-
-    // Collect concepts for this project
-    const conceptCounts = new Map<string, number>();
-    for (const mem of mems) {
-      for (const concept of mem.concepts) {
-        conceptCounts.set(concept, (conceptCounts.get(concept) ?? 0) + 1);
-      }
-    }
-
-    // Concept nodes
-    let conceptIndex = 0;
-    const conceptNodeIds = new Map<string, string>();
-    for (const [concept, count] of conceptCounts) {
-      const conceptNodeId = `${projectId}-concept-${conceptIndex}`;
-      conceptNodeIds.set(concept, conceptNodeId);
-      nodes.push({
-        id: conceptNodeId,
-        type: 'conceptNode',
-        data: { label: concept, count },
-        position: { x: conceptIndex * 150, y: 100 },
-        parentId: projectId,
-        extent: 'parent' as const,
-      });
-      conceptIndex++;
-    }
-
-    // Memory nodes + edges
-    let memIndex = 0;
-    for (const mem of mems) {
-      const memNodeId = `${projectId}-mem-${memIndex}`;
-      nodes.push({
-        id: memNodeId,
-        type: 'memoryNode',
-        data: {
-          label: mem.title.slice(0, 40),
-          memory: mem,
-        },
-        position: { x: memIndex * 120, y: 300 },
-        parentId: projectId,
-        extent: 'parent' as const,
-      });
-
-      // Edges to concepts
-      for (const concept of mem.concepts) {
-        const conceptNodeId = conceptNodeIds.get(concept);
-        if (conceptNodeId) {
-          edges.push({
-            id: `${memNodeId}-${conceptNodeId}`,
-            source: memNodeId,
-            target: conceptNodeId,
-          });
-        }
-      }
-      memIndex++;
-    }
-    projectIndex++;
-  }
-
-  return { nodes, edges };
+  // For each namespace:
+  //   1. Create a project hub node (type: 'projectSupernode')
+  //   2. Collect unique concepts with degree counts → concept nodes
+  //   3. Create edges: project → each concept
+  //   4. Create memory nodes + edges: memory → each of its concepts
+  // All nodes are flat — no parentId. Dagre clusters them via edges.
 }
 ```
 
-The positions above are initial placeholders. A layout algorithm (dagre or elkjs) repositions them after the initial render.
+Positions are all `{ x: 0, y: 0 }` placeholders — dagre repositions them in a single pass over the flat graph.
 
 ### Component 2: Custom node types
 
 **ProjectSupernode** (`ui/src/graph/ProjectSupernode.tsx`):
-- Group node with a colored header bar and semi-transparent background.
-- Label shows project display_name.
-- All project supernodes use the same color — projects are distinguished by label text, not color.
+- Prominent hub node with the project's `display_name` as label.
+- All project hub nodes use the same blue color — projects are distinguished by label text, not color.
+- Includes a `title` attribute for hover tooltip on ellipsized labels.
+- Hidden `Handle` components (source + target) so React Flow can anchor edges.
 
 **ConceptNode** (`ui/src/graph/ConceptNode.tsx`):
 - Rounded rectangle. Label is the concept string.
-- Width/height scales with `data.count` (degree).
-- All concept nodes use the same color (distinct from project and memory colors).
+- Fixed dimensions matching the layout engine's `NODE_DIMENSIONS` to avoid rendering/layout mismatches.
+- All concept nodes use the same green color (distinct from project and memory colors).
+- Hidden `Handle` components (source + target) for edge anchoring.
 
 **MemoryNode** (`ui/src/graph/MemoryNode.tsx`):
 - Small rectangle. Label is truncated title.
-- All memory nodes use the same color (distinct from project and concept colors).
+- All memory nodes use the same amber color (distinct from project and concept colors).
 - `observation_type` is stored in node data for the detail panel but does not affect node color.
+- Hidden `Handle` components (source + target) for edge anchoring.
 
-All three are registered via React Flow's `nodeTypes` prop.
+All three are registered via React Flow's `nodeTypes` prop. All include invisible `Handle` components — without handles, React Flow cannot draw edges between custom nodes.
 
 ### Component 3: MemoryGraph (`ui/src/components/MemoryGraph.tsx`)
 
@@ -255,13 +177,17 @@ Uses Cloudscape `Container`, `Header`, `SpaceBetween`, `Badge`, `Box`, `Button` 
 
 ### Component 6: Layout
 
-React Flow needs initial positions for nodes. Two approaches:
+`dagre` is installed as a devDependency. A single dagre pass over the flat graph positions all nodes. Edge connectivity (project → concepts → memories) naturally produces clustered groups where related nodes are positioned close together.
 
-**Option A: dagre layout.** Install `dagre` as a devDependency. Compute a hierarchical layout: project at top, concepts in middle, memories at bottom. Run once after `transformToGraph`, update node positions.
+The layout function (`ui/src/graph/layout.ts`):
+- Takes all nodes and edges from `transformToGraph`
+- Runs a single `dagre.layout()` with `rankdir: 'TB'`, `ranksep: 60`, `nodesep: 30`
+- Converts dagre's center-based positions to React Flow's top-left convention
+- Exports `NODE_DIMENSIONS` so custom node components can use the same sizes dagre allocates, avoiding rendering/layout mismatches
 
-**Option B: Manual grid layout.** Position project supernodes in a row. Within each, concepts in a row above memories in a row. Simple, deterministic, no extra dependency.
-
-Recommend **Option A** for better visual results with varying data shapes. dagre is small (~30KB) and well-suited for hierarchical graphs.
+This approach replaced an earlier per-project-group dagre strategy that used React Flow's `parentId` grouping. The flat graph approach was adopted because:
+1. React Flow doesn't render edges between nodes inside a group node
+2. Per-group dagre produced rigid table-like layouts instead of organic clusters
 
 ## Testing Strategy
 
@@ -269,10 +195,12 @@ Recommend **Option A** for better visual results with varying data shapes. dagre
 
 `test/unit/graph-transform.test.ts`:
 - Empty memories → empty nodes/edges.
-- Single memory with 2 concepts → 1 project node, 2 concept nodes, 1 memory node, 2 edges.
-- Two memories sharing a concept → concept node has degree 2, 2 edges to it.
-- Memories across 2 namespaces → 2 project supernodes, nodes correctly parented.
+- Single memory with 2 concepts → 1 project node, 2 concept nodes, 1 memory node, 4 edges (2 project→concept + 2 memory→concept).
+- Two memories sharing a concept → concept node has degree 2, correct edge count.
+- Memories across 2 namespaces → 2 project hub nodes, separate concept nodes per project.
 - Memory with empty concepts array → memory node exists, no edges.
+- All nodes are flat — no `parentId` or `extent`.
+- Project→concept edges exist for cluster structure.
 
 ### Updated smoke test
 
@@ -287,17 +215,20 @@ Recommend **Option A** for better visual results with varying data shapes. dagre
 
 | Symbol | Module |
 |---|---|
-| `transformToGraph` | `ui/src/graph/transform.ts` |
+| `transformToGraph`, `ProjectInfo` | `ui/src/graph/transform.ts` |
 | `ProjectSupernode` | `ui/src/graph/ProjectSupernode.tsx` |
 | `ConceptNode` | `ui/src/graph/ConceptNode.tsx` |
 | `MemoryNode` | `ui/src/graph/MemoryNode.tsx` |
+| `GraphLegend` | `ui/src/graph/GraphLegend.tsx` |
+| `graphTheme` | `ui/src/graph/theme.ts` |
+| `applyDagreLayout`, `NODE_DIMENSIONS` | `ui/src/graph/layout.ts` |
 | `MemoryGraph` | `ui/src/components/MemoryGraph.tsx` |
 | `MemoryDetailPanel` | `ui/src/components/MemoryDetailPanel.tsx` |
-| `MemoriesResponse`, `MemoryRecord` | `ui/src/types/api.ts` |
+| `MemoriesResponse`, `MemoryRecord`, `normalizeMemoriesResponse`, `normalizeMemoryRecord` | `ui/src/types/api.ts` |
 
 ### Modified
 
 | Symbol | Change |
 |---|---|
-| `App` in `ui/src/App.tsx` | Adds memories fetch, replaces placeholder with MemoryGraph, adds detail panel |
-| `package.json` devDeps | Adds `@xyflow/react`, optionally `dagre` |
+| `App` in `ui/src/App.tsx` | Adds memories fetch with `normalizeMemoriesResponse`, replaces placeholder with MemoryGraph, adds detail panel |
+| `package.json` devDeps | Adds `@xyflow/react`, `dagre`, `@types/dagre` |

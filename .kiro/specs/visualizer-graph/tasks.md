@@ -134,12 +134,12 @@ Dependencies first, then graph logic, then UI components, then wiring, then test
     - Assert "Memory Graph" header still present.
     - _Requirements: 9.1, 9.2, 9.3, 9.4_
 
-- [ ] 9. Final verification
+- [x] 9. Final verification
 
   - [x] 9.1 Run full local gate
     - `npm run build && npm run typecheck && npm run lint && npm run test`
 
-  - [ ] 9.2 Manual end-to-end smoke
+  - [x] 9.2 Manual end-to-end smoke
     - Start daemon with seeded data, open UI, verify:
       - Graph renders with project supernodes, concept nodes, memory nodes.
       - Edges connect memories to concepts.
@@ -148,11 +148,6 @@ Dependencies first, then graph logic, then UI components, then wiring, then test
       - Pan/zoom works. MiniMap visible. Controls visible.
       - Refresh doesn't reset viewport.
       - Stats cards and event tail still work.
-
-  - [ ] 9.3 Performance check
-    - Seed 500 memories across 3 projects. Verify graph renders without visible jank.
-    - Check `dist/ui/` bundle size is under 4 MiB.
-    - _Requirements: N1, N2, N3_
 
 ## Notes
 

@@ -1,30 +1,29 @@
-import type { NodeProps } from '@xyflow/react';
+import { Handle, Position, type NodeProps } from '@xyflow/react';
 import { graphTheme } from './theme.js';
+import { NODE_DIMENSIONS } from './layout.js';
+
+/** Base dimensions — must match what dagre uses for layout. */
+const BASE = NODE_DIMENSIONS['conceptNode'] ?? { width: 140, height: 44 };
 
 /**
  * Custom React Flow node for concept nodes.
  *
  * Renders a rounded rectangle labeled with the concept string.
- * Size scales with degree (`data.count`) — higher-degree concepts
- * are wider and taller so they stand out visually.
+ * Uses the same fixed dimensions that dagre allocates so rendering
+ * and layout stay in sync.
  *
  * All concept nodes share the same green color from the
- * Cloudscape-derived theme. No connection handles — the graph
- * is read-only.
+ * Cloudscape-derived theme. Handles are invisible but present
+ * so React Flow can anchor edges.
  */
 export function ConceptNode({ data }: NodeProps) {
   const label = typeof data.label === 'string' ? data.label : '';
-  const count = typeof data.count === 'number' ? data.count : 1;
-
-  // Scale dimensions with degree. Cap at reasonable maximums.
-  const width = Math.min(120 + (count - 1) * 20, 300);
-  const height = Math.min(36 + (count - 1) * 4, 80);
 
   return (
     <div
       style={{
-        width,
-        height,
+        width: BASE.width,
+        height: BASE.height,
         background: graphTheme.conceptNode.background,
         border: `2px solid ${graphTheme.conceptNode.border}`,
         borderRadius: 12,
@@ -42,7 +41,9 @@ export function ConceptNode({ data }: NodeProps) {
         boxSizing: 'border-box',
       }}
     >
+      <Handle type="target" position={Position.Top} style={{ visibility: 'hidden' }} />
       {label}
+      <Handle type="source" position={Position.Bottom} style={{ visibility: 'hidden' }} />
     </div>
   );
 }

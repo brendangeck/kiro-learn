@@ -1,45 +1,40 @@
-import type { NodeProps } from '@xyflow/react';
+import { Handle, Position, type NodeProps } from '@xyflow/react';
 import { graphTheme } from './theme.js';
 
 /**
- * Custom React Flow group node for project supernodes.
+ * Custom React Flow node for project hub nodes.
  *
- * Renders a colored header bar with the project display_name and a
- * semi-transparent body. Child nodes (concepts, memories) are positioned
- * inside automatically by React Flow — group nodes just render their own
- * visual container.
- *
- * No connection handles — the graph is read-only.
+ * Handles on all four sides so edges connect to whichever side
+ * is closest to the target node.
  */
 export function ProjectSupernode({ data }: NodeProps) {
   const label = typeof data.label === 'string' ? data.label : '';
 
   return (
     <div
+      title={label}
       style={{
-        width: '100%',
-        height: '100%',
-        background: graphTheme.projectNode.background,
+        minWidth: 160,
+        padding: '8px 16px',
+        background: graphTheme.projectNode.headerBackground,
+        color: graphTheme.projectNode.headerText,
         border: `2px solid ${graphTheme.projectNode.border}`,
         borderRadius: 8,
-        overflow: 'hidden',
         fontFamily: graphTheme.fontFamily,
+        fontSize: 14,
+        fontWeight: 600,
+        textAlign: 'center',
+        whiteSpace: 'nowrap',
+        overflow: 'hidden',
+        textOverflow: 'ellipsis',
+        boxSizing: 'border-box',
       }}
     >
-      <div
-        style={{
-          background: graphTheme.projectNode.headerBackground,
-          color: graphTheme.projectNode.headerText,
-          padding: '6px 12px',
-          fontSize: 14,
-          fontWeight: 600,
-          whiteSpace: 'nowrap',
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
-        }}
-      >
-        {label}
-      </div>
+      <Handle type="source" position={Position.Top} id="s-top" style={{ visibility: 'hidden' }} />
+      <Handle type="source" position={Position.Bottom} id="s-bottom" style={{ visibility: 'hidden' }} />
+      <Handle type="source" position={Position.Left} id="s-left" style={{ visibility: 'hidden' }} />
+      <Handle type="source" position={Position.Right} id="s-right" style={{ visibility: 'hidden' }} />
+      {label}
     </div>
   );
 }

@@ -53,10 +53,10 @@ export const graphTheme = {
     text: '#000716',
   },
 
-  /** Edge styling — uses Cloudscape divider token so edges blend with the page. */
+  /** Edge styling — uses a mid-gray derived from Cloudscape's text-secondary palette for visibility. */
   edge: {
-    /** Stroke color from colorBorderDividerDefault. */
-    stroke: '#e9ebed',
+    /** Stroke color — darker than colorBorderDividerDefault for visibility against the light canvas. */
+    stroke: '#7d8998',
   },
 
   /** Canvas background — matches Cloudscape layout background. */

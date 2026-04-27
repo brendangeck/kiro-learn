@@ -1,174 +1,113 @@
-import dagre from 'dagre';
+import {
+  forceSimulation,
+  forceLink,
+  forceManyBody,
+  forceCenter,
+  forceCollide,
+  type SimulationNodeDatum,
+  type SimulationLinkDatum,
+} from 'd3-force';
 import type { Node, Edge } from '@xyflow/react';
 
 /**
- * Node dimension constants used by dagre for space allocation.
- * These don't control rendering size — they tell dagre how much
- * space each node occupies so it can avoid overlaps.
+ * Node dimension constants used for collision radius.
+ * Also used by custom node components to match rendering to layout.
  */
-const NODE_DIMENSIONS = {
-  projectSupernode: { width: 600, height: 400 },
-  conceptNode: { width: 160, height: 50 },
-  memoryNode: { width: 140, height: 40 },
-} as const;
+export const NODE_DIMENSIONS: Record<string, { width: number; height: number }> = {
+  projectSupernode: { width: 180, height: 50 },
+  memoryNode: { width: 260, height: 40 },
+};
 
-/** Horizontal gap between project supernodes. */
-const PROJECT_GAP_X = 80;
+const DEFAULT_DIMS = { width: 140, height: 40 };
 
-/** Padding inside a project supernode around its children. */
-const PROJECT_PADDING = { top: 60, left: 40, bottom: 40, right: 40 };
+/** Internal type for d3-force simulation nodes. */
+interface SimNode extends SimulationNodeDatum {
+  id: string;
+  type: string;
+  width: number;
+  height: number;
+}
 
 /**
- * Applies dagre-based hierarchical layout to graph nodes.
- *
- * Strategy: run dagre independently per project group (concepts + memories),
- * then space project supernodes horizontally. Child node positions are
- * relative to their parent supernode (React Flow convention when parentId
- * is set).
- *
- * Pure function — no React dependency.
+ * Simple deterministic hash of a string → number in [0, 1).
+ * Same input always produces the same output, replacing Math.random().
  */
-export function applyDagreLayout(nodes: Node[], edges: Edge[]): Node[] {
-  // Separate project supernodes from child nodes
-  const projectNodes = nodes.filter((n) => n.type === 'projectSupernode');
-  const childNodes = nodes.filter((n) => n.type !== 'projectSupernode');
+function hashToUnit(str: string, seed: number): number {
+  let h = seed;
+  for (let i = 0; i < str.length; i++) {
+    h = Math.imul(31, h) + str.charCodeAt(i);
+    h = h | 0; // Convert to 32-bit int
+  }
+  return ((h >>> 0) % 10000) / 10000;
+}
 
-  // Group children by parentId
-  const childrenByProject = new Map<string, Node[]>();
-  for (const child of childNodes) {
-    const parentId = child.parentId ?? '';
-    const list = childrenByProject.get(parentId) ?? [];
-    list.push(child);
-    childrenByProject.set(parentId, list);
+/**
+ * Runs a d3-force simulation to compute positions for a flat graph.
+ *
+ * Forces:
+ * - **link**: edges act as springs pulling connected nodes together
+ * - **charge**: nodes repel each other (many-body force)
+ * - **center**: keeps the graph centered at origin
+ * - **collide**: prevents node overlap based on dimensions
+ *
+ * Initial positions are derived deterministically from node IDs so the
+ * simulation always converges to the same layout for the same data.
+ * This prevents nodes from jumping around on each 10s refresh cycle.
+ */
+export function applyForceLayout(nodes: Node[], edges: Edge[]): Node[] {
+  if (nodes.length === 0) return [];
+
+  // Build simulation nodes with deterministic initial positions
+  const simNodes: SimNode[] = nodes.map((node) => {
+    const dims = NODE_DIMENSIONS[node.type ?? ''] ?? DEFAULT_DIMS;
+    return {
+      id: node.id,
+      type: node.type ?? '',
+      width: dims.width,
+      height: dims.height,
+      x: (hashToUnit(node.id, 1) - 0.5) * 400,
+      y: (hashToUnit(node.id, 2) - 0.5) * 400,
+    };
+  });
+
+  // Build simulation links (d3-force uses source/target indices or id strings)
+  const simLinks: SimulationLinkDatum<SimNode>[] = edges.map((edge) => ({
+    source: edge.source,
+    target: edge.target,
+  }));
+
+  // Create and run simulation
+  const simulation = forceSimulation<SimNode>(simNodes)
+    .force(
+      'link',
+      forceLink<SimNode, SimulationLinkDatum<SimNode>>(simLinks)
+        .id((d) => d.id)
+        .distance(120)
+        .strength(0.7),
+    )
+    .force('charge', forceManyBody<SimNode>().strength(-300))
+    .force('center', forceCenter(0, 0))
+    .force(
+      'collide',
+      forceCollide<SimNode>().radius((d) => Math.max(d.width, d.height) * 0.6),
+    )
+    .stop();
+
+  // Tick to completion synchronously
+  const iterations = Math.ceil(Math.log(simulation.alphaMin()) / Math.log(1 - simulation.alphaDecay()));
+  for (let i = 0; i < iterations; i++) {
+    simulation.tick();
   }
 
-  // Collect edges per project (both source and target must share the same parent)
-  const childParentLookup = new Map<string, string>();
-  for (const child of childNodes) {
-    if (child.parentId) {
-      childParentLookup.set(child.id, child.parentId);
-    }
+  // Build lookup from simulation results
+  const positionMap = new Map<string, { x: number; y: number }>();
+  for (const simNode of simNodes) {
+    positionMap.set(simNode.id, { x: simNode.x ?? 0, y: simNode.y ?? 0 });
   }
 
-  const edgesByProject = new Map<string, Edge[]>();
-  for (const edge of edges) {
-    const parentId = childParentLookup.get(edge.source) ?? childParentLookup.get(edge.target);
-    if (parentId) {
-      const list = edgesByProject.get(parentId) ?? [];
-      list.push(edge);
-      edgesByProject.set(parentId, list);
-    }
-  }
-
-  // Layout each project group independently, track bounding boxes
-  const layoutResults = new Map<string, { nodes: Map<string, { x: number; y: number }>; width: number; height: number }>();
-
-  for (const project of projectNodes) {
-    const children = childrenByProject.get(project.id) ?? [];
-    const projectEdges = edgesByProject.get(project.id) ?? [];
-
-    if (children.length === 0) {
-      layoutResults.set(project.id, { nodes: new Map(), width: 200, height: 100 });
-      continue;
-    }
-
-    const g = new dagre.graphlib.Graph();
-    g.setGraph({ rankdir: 'TB', ranksep: 80, nodesep: 40, marginx: 20, marginy: 20 });
-    g.setDefaultEdgeLabel(() => ({}));
-
-    // Add child nodes with dimensions and rank hints
-    for (const child of children) {
-      const dims = child.type === 'conceptNode'
-        ? NODE_DIMENSIONS.conceptNode
-        : NODE_DIMENSIONS.memoryNode;
-
-      g.setNode(child.id, { width: dims.width, height: dims.height });
-    }
-
-    // Add edges
-    for (const edge of projectEdges) {
-      // Edges go memory → concept; dagre will rank sources above targets
-      // by default in TB mode. We want concepts above memories, so
-      // reverse the edge direction for dagre (concept is target in our
-      // data model, but should be ranked higher).
-      g.setEdge(edge.target, edge.source);
-    }
-
-    dagre.layout(g);
-
-    // Extract positions and compute bounding box
-    const positions = new Map<string, { x: number; y: number }>();
-    let minX = Infinity;
-    let minY = Infinity;
-    let maxX = -Infinity;
-    let maxY = -Infinity;
-
-    for (const child of children) {
-      const dagreNode = g.node(child.id);
-      if (dagreNode) {
-        // dagre positions are center-based; convert to top-left for React Flow
-        const x = dagreNode.x - (dagreNode.width / 2);
-        const y = dagreNode.y - (dagreNode.height / 2);
-        positions.set(child.id, { x, y });
-
-        minX = Math.min(minX, x);
-        minY = Math.min(minY, y);
-        maxX = Math.max(maxX, x + dagreNode.width);
-        maxY = Math.max(maxY, y + dagreNode.height);
-      }
-    }
-
-    // Normalize positions so the top-left child starts at (padding, padding)
-    for (const pos of positions.values()) {
-      pos.x = pos.x - minX + PROJECT_PADDING.left;
-      pos.y = pos.y - minY + PROJECT_PADDING.top;
-    }
-
-    const contentWidth = maxX - minX;
-    const contentHeight = maxY - minY;
-    const totalWidth = contentWidth + PROJECT_PADDING.left + PROJECT_PADDING.right;
-    const totalHeight = contentHeight + PROJECT_PADDING.top + PROJECT_PADDING.bottom;
-
-    layoutResults.set(project.id, {
-      nodes: positions,
-      width: Math.max(totalWidth, NODE_DIMENSIONS.projectSupernode.width),
-      height: Math.max(totalHeight, NODE_DIMENSIONS.projectSupernode.height),
-    });
-  }
-
-  // Position project supernodes horizontally
-  const updatedNodes: Node[] = [];
-  let currentX = 0;
-
-  for (const project of projectNodes) {
-    const result = layoutResults.get(project.id);
-    const width = result?.width ?? NODE_DIMENSIONS.projectSupernode.width;
-    const height = result?.height ?? NODE_DIMENSIONS.projectSupernode.height;
-
-    updatedNodes.push({
-      ...project,
-      position: { x: currentX, y: 0 },
-      style: {
-        ...project.style,
-        width,
-        height,
-      },
-    });
-
-    currentX += width + PROJECT_GAP_X;
-  }
-
-  // Position child nodes relative to their parent supernode
-  for (const child of childNodes) {
-    const parentId = child.parentId ?? '';
-    const result = layoutResults.get(parentId);
-    const pos = result?.nodes.get(child.id);
-
-    updatedNodes.push({
-      ...child,
-      position: pos ?? child.position,
-    });
-  }
-
-  return updatedNodes;
+  // Map positions back to React Flow nodes
+  return nodes.map((node) => {
+    const pos = positionMap.get(node.id);
+    return pos ? { ...node, position: { x: pos.x, y: pos.y } } : node;
+  });
 }

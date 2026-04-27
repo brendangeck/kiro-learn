@@ -14,7 +14,6 @@ import { graphTheme } from './theme.js';
 
 const items: readonly { readonly label: string; readonly color: string }[] = [
   { label: 'Project', color: graphTheme.projectNode.border },
-  { label: 'Concept', color: graphTheme.conceptNode.border },
   { label: 'Memory', color: graphTheme.memoryNode.border },
 ] as const;
 

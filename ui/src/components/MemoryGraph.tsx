@@ -1,10 +1,12 @@
-import { useMemo } from 'react';
+import { useMemo, useCallback } from 'react';
 import {
   ReactFlow,
   MiniMap,
   Controls,
   Background,
   BackgroundVariant,
+  useNodesState,
+  useEdgesState,
   type Node,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
@@ -14,9 +16,8 @@ import StatusIndicator from '@cloudscape-design/components/status-indicator';
 import Box from '@cloudscape-design/components/box';
 
 import { transformToGraph, type ProjectInfo } from '../graph/transform.js';
-import { applyDagreLayout } from '../graph/layout.js';
+import { applyForceLayout } from '../graph/layout.js';
 import { ProjectSupernode } from '../graph/ProjectSupernode.js';
-import { ConceptNode } from '../graph/ConceptNode.js';
 import { MemoryNode } from '../graph/MemoryNode.js';
 import { GraphLegend } from '../graph/GraphLegend.js';
 import { graphTheme } from '../graph/theme.js';
@@ -28,8 +29,13 @@ import type { MemoryRecord } from '../types/api.js';
  */
 const nodeTypes = {
   projectSupernode: ProjectSupernode,
-  conceptNode: ConceptNode,
   memoryNode: MemoryNode,
+};
+
+/** Default edge style with animated dashes for a floaty feel. */
+const defaultEdgeOptions = {
+  style: { stroke: graphTheme.edge.stroke, strokeWidth: 1.5 },
+  animated: true,
 };
 
 interface MemoryGraphProps {
@@ -41,14 +47,11 @@ interface MemoryGraphProps {
 }
 
 /**
- * Interactive React Flow graph showing project supernodes, concept nodes,
- * and memory nodes with edges connecting memories to their concepts.
+ * Interactive React Flow graph showing project hub nodes and memory nodes
+ * with animated edges. Uses d3-force for organic, clustered positioning.
  *
  * Read-only: users can pan, zoom, and drag nodes to explore, but cannot
  * create, delete, or connect nodes.
- *
- * Validates: Requirements 2.3, 2.4, 2.5, 4.1, 4.2, 4.3, 4.4, 4.5, 4.6,
- * 4.8, 7.1, 7.2, 7.3, 7.4, 11.1, 11.2, 11.3, 11.4, 11.5
  */
 export function MemoryGraph({
   memories,
@@ -57,17 +60,85 @@ export function MemoryGraph({
   error,
   onNodeClick,
 }: MemoryGraphProps) {
-  // Memoize the transformation + layout so it only recomputes when data changes
-  const { layoutNodes, edges } = useMemo(() => {
+  // Stable content key — only recompute layout when actual data changes,
+  // not on every 10s fetch that returns the same records.
+  const contentKey = useMemo(
+    () => memories.map((m) => m.record_id).join(','),
+    [memories],
+  );
+
+  const projectKey = useMemo(
+    () => projects.map((p) => p.namespace).join(','),
+    [projects],
+  );
+
+  // Compute initial layout from data
+  const { initialNodes, initialEdges } = useMemo(() => {
     if (memories.length === 0) {
-      return { layoutNodes: [], edges: [] };
+      return { initialNodes: [] as Node[], initialEdges: [] as typeof styledEdges };
     }
     const graph = transformToGraph(memories, projects);
-    const positioned = applyDagreLayout(graph.nodes, graph.edges);
-    return { layoutNodes: positioned, edges: graph.edges };
-  }, [memories, projects]);
+    const positioned = applyForceLayout(graph.nodes, graph.edges);
 
-  // --- Loading state (Req 7.1) ---
+    // Build position lookup for closest-handle selection
+    const posMap = new Map<string, { x: number; y: number }>();
+    for (const n of positioned) {
+      posMap.set(n.id, n.position);
+    }
+
+    // Assign sourceHandle/targetHandle based on relative node positions
+    const styledEdges = graph.edges.map((e) => {
+      const sp = posMap.get(e.source);
+      const tp = posMap.get(e.target);
+      let sourceHandle: string | undefined;
+      let targetHandle: string | undefined;
+
+      if (sp && tp) {
+        const dx = tp.x - sp.x;
+        const dy = tp.y - sp.y;
+        // Pick the side closest to the other node
+        if (Math.abs(dx) > Math.abs(dy)) {
+          // Horizontal dominant
+          sourceHandle = dx > 0 ? 's-right' : 's-left';
+          targetHandle = dx > 0 ? 't-left' : 't-right';
+        } else {
+          // Vertical dominant
+          sourceHandle = dy > 0 ? 's-bottom' : 's-top';
+          targetHandle = dy > 0 ? 't-top' : 't-bottom';
+        }
+      }
+
+      return {
+        ...e,
+        sourceHandle,
+        targetHandle,
+        animated: true,
+        style: { stroke: graphTheme.edge.stroke, strokeWidth: 1.5 },
+      };
+    });
+    return { initialNodes: positioned, initialEdges: styledEdges };
+  }, [contentKey, projectKey, memories, projects]);
+
+  // Use React Flow's state hooks for interactive node dragging
+  const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
+  const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
+
+  // Sync when data changes (refresh cycle)
+  useMemo(() => {
+    setNodes(initialNodes);
+    setEdges(initialEdges);
+  }, [initialNodes, initialEdges, setNodes, setEdges]);
+
+  const handleNodeClick = useCallback(
+    (_event: React.MouseEvent, node: Node) => {
+      if (node.type === 'memoryNode') {
+        onNodeClick(node.data.memory as MemoryRecord, null);
+      }
+    },
+    [onNodeClick],
+  );
+
+  // --- Loading state ---
   if (loading) {
     return (
       <Box textAlign="center" padding={{ vertical: 'xxl' }}>
@@ -79,7 +150,7 @@ export function MemoryGraph({
     );
   }
 
-  // --- Error state (Req 7.2) ---
+  // --- Error state ---
   if (error) {
     return (
       <Box textAlign="center" padding={{ vertical: 'xxl' }}>
@@ -88,7 +159,7 @@ export function MemoryGraph({
     );
   }
 
-  // --- Empty state (Req 7.3) ---
+  // --- Empty state ---
   if (memories.length === 0) {
     return (
       <Box textAlign="center" padding={{ vertical: 'xxl' }} color="text-body-secondary">
@@ -97,26 +168,23 @@ export function MemoryGraph({
     );
   }
 
-  // --- Graph canvas (Req 4.2–4.8, 11.1–11.5) ---
+  // --- Graph canvas ---
   return (
     <>
-      <div style={{ height: 500 }}>
+      <div style={{ height: 500, background: graphTheme.canvas.background }}>
         <ReactFlow
-          nodes={layoutNodes}
+          nodes={nodes}
           edges={edges}
+          onNodesChange={onNodesChange}
+          onEdgesChange={onEdgesChange}
           nodeTypes={nodeTypes}
+          defaultEdgeOptions={defaultEdgeOptions}
           nodesConnectable={false}
           nodesDraggable={true}
           elementsSelectable={true}
           deleteKeyCode={null}
           fitView
-          onNodeClick={(_event: React.MouseEvent, node: Node) => {
-            if (node.type === 'memoryNode') {
-              onNodeClick(node.data.memory as MemoryRecord, null);
-            } else if (node.type === 'conceptNode') {
-              onNodeClick(null, node.data.label as string);
-            }
-          }}
+          onNodeClick={handleNodeClick}
         >
           <MiniMap />
           <Controls />

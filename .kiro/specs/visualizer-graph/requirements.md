@@ -2,23 +2,23 @@
 
 ## Introduction
 
-This document defines the requirements for the memory graph — the hero feature of the v1 visualizer. The graph replaces the "coming soon" placeholder with a React Flow canvas showing project supernodes containing concept nodes and memory nodes, with edges connecting memories to their concepts.
+This document defines the requirements for the memory graph — the hero feature of the v1 visualizer. The graph replaces the "coming soon" placeholder with a React Flow canvas showing project hub nodes, concept nodes, and memory nodes connected by edges in a flat, clustered layout.
 
 This is the fifth and final spec: `project-path-capture` (shipped) → `visualizer-scaffold` (shipped) → `visualizer-read-api` (shipped) → `visualizer-dashboard` (shipped) → **`visualizer-graph` (this spec)**.
 
 The dashboard already fetches `/v1/stats` and `/v1/events`. This spec adds a fetch to `/v1/memories` (all memories, paginated) and transforms the response into a React Flow graph. All graph structure — project grouping, concept extraction, edge computation — is derived client-side from the memories data. No new backend endpoints.
 
-**In scope:** Install React Flow (`@xyflow/react`); fetch memories from `/v1/memories`; transform memories into graph nodes and edges; render with React Flow; project supernodes (compound/group nodes); concept nodes sized by degree; memory nodes colored by observation type; edges from memories to concepts; click-to-detail side panel for memory nodes; pan/zoom/minimap; loading/error/empty states; updated smoke tests.
+**In scope:** Install React Flow (`@xyflow/react`); fetch memories from `/v1/memories`; transform memories into graph nodes and edges; render with React Flow; project hub nodes; concept nodes; memory nodes; edges from projects to concepts and from memories to concepts; click-to-detail side panel for memory and concept nodes; pan/zoom/minimap; loading/error/empty states; runtime response validation; updated smoke tests.
 
 **Out of scope:** New backend endpoints; cross-project concept merging; time-based visualization; node search/filter; drag-to-rearrange; export/save graph; React Router.
 
 ## Glossary
 
 - **Graph_Canvas**: The React Flow canvas that replaces the graph placeholder. Renders inside the existing Cloudscape `Container` with "Memory Graph" header.
-- **Project_Supernode**: A React Flow group node representing a project. Contains concept and memory nodes. Styled with a consistent project-node color (all projects share the same color). Labeled with the project's `display_name` from the stats response.
-- **Project_Supernode**: A React Flow group node representing a project. Contains concept and memory nodes. All project supernodes share the same color — projects are distinguished by their text label (`display_name`), not by color. Labeled with the project's `display_name` from the stats response.
-- **Concept_Node**: A React Flow node representing a unique concept string within a project. Sized by degree (number of memories that reference it). All concept nodes share the same color (distinct from project and memory node colors).
+- **Project_Hub_Node**: A React Flow node representing a project. Acts as the central hub of a cluster — concept and memory nodes connect to it via edges, and dagre positions related nodes nearby. All project hub nodes share the same color — projects are distinguished by their text label (`display_name`), not by color. Labeled with the project's `display_name` from the stats response.
+- **Concept_Node**: A React Flow node representing a unique concept string within a project. Connected to its project hub node and to the memory nodes that reference it. All concept nodes share the same color (distinct from project and memory node colors).
 - **Memory_Node**: A React Flow node representing a single memory record. All memory nodes share the same color (distinct from project and concept node colors). Connected to its concept nodes via edges.
+- **Project_Edge**: A React Flow edge connecting a Project_Hub_Node to a Concept_Node. Creates the cluster structure so dagre groups related nodes together.
 - **Memory_Edge**: A React Flow edge connecting a Memory_Node to a Concept_Node. Drawn when the memory's `concepts` array contains the concept string.
 - **Detail_Panel**: A Cloudscape side panel (or drawer) that slides in when a Memory_Node is clicked, showing the full memory record (title, summary, facts, concepts, files_touched, observation_type, created_at, source_event_ids).
 - **Graph_Data**: The transformed data structure consumed by React Flow: `{ nodes: Node[], edges: Edge[] }`. Derived client-side from the memories response and the stats response (for project display names).
@@ -54,12 +54,14 @@ The dashboard already fetches `/v1/stats` and `/v1/events`. This spec adds a fet
 #### Acceptance Criteria
 
 1. THE transformation SHALL produce three types of nodes:
-   - **Project_Supernodes**: one per distinct `namespace` in the memories. Labeled with `display_name` from the stats response's `projects` array (matched by namespace). If no match, label with the first 12 hex chars of the project_id segment.
+   - **Project_Hub_Nodes**: one per distinct `namespace` in the memories. Labeled with `display_name` from the stats response's `projects` array (matched by namespace). If no match, label with the first 12 hex chars of the project_id segment.
    - **Concept_Nodes**: one per unique concept string within each project. A concept appearing in project A and project B produces two separate nodes (concepts are per-project).
    - **Memory_Nodes**: one per memory record.
-2. THE transformation SHALL produce edges from each Memory_Node to each of its Concept_Nodes (derived from the memory's `concepts` array).
-3. Memory_Nodes and Concept_Nodes SHALL be children of their Project_Supernode (React Flow `parentId` field).
-4. Concept_Nodes SHALL be sized proportionally to their degree (number of memories referencing them). Minimum size for degree 1; larger for higher degree.
+2. THE transformation SHALL produce two kinds of edges:
+   - **Project_Edges**: from each Project_Hub_Node to each of its Concept_Nodes (creates the cluster structure for layout).
+   - **Memory_Edges**: from each Memory_Node to each of its Concept_Nodes (derived from the memory's `concepts` array).
+3. ALL nodes SHALL be flat (no `parentId` or `extent`). Clustering is achieved through edge connectivity and the dagre layout algorithm, not through React Flow's group-node mechanism. This ensures edges render correctly and dagre can produce organic, clustered layouts.
+4. Concept_Nodes SHALL use fixed dimensions matching the layout engine's allocation to avoid rendering/layout mismatches.
 5. Memory_Nodes SHALL all use the same color. The `observation_type` is available in the data for the detail panel but does NOT affect node color.
 6. THE transformation SHALL be a pure function: `(memories: MemoryRecord[], projects: ProjectInfo[]) => { nodes: Node[], edges: Edge[] }`. Testable in isolation.
 
@@ -84,9 +86,9 @@ The dashboard already fetches `/v1/stats` and `/v1/events`. This spec adds a fet
 
 #### Acceptance Criteria
 
-1. THE graph SHALL use a consistent color scheme where each node TYPE has its own color: one color for all Project_Supernodes, a different color for all Concept_Nodes, and a third color for all Memory_Nodes. Projects, concepts, and memories are distinguished by color; individual items within a type are distinguished by their text labels.
-2. THE graph SHALL render Project_Supernodes with a labeled header bar showing the project's `display_name` and a semi-transparent background. All project supernodes use the same color.
-3. THE graph SHALL render Concept_Nodes as rounded rectangles with the concept text as label. Size scales with degree. All concept nodes use the same color.
+1. THE graph SHALL use a consistent color scheme where each node TYPE has its own color: one color for all Project_Hub_Nodes, a different color for all Concept_Nodes, and a third color for all Memory_Nodes. Projects, concepts, and memories are distinguished by color; individual items within a type are distinguished by their text labels.
+2. THE graph SHALL render Project_Hub_Nodes as prominent labeled nodes showing the project's `display_name`. All project hub nodes use the same color. A `title` attribute SHALL provide the full name on hover for long labels that are ellipsized.
+3. THE graph SHALL render Concept_Nodes as rounded rectangles with the concept text as label. All concept nodes use the same fixed dimensions matching the layout engine. All concept nodes use the same color.
 4. THE graph SHALL render Memory_Nodes as smaller rectangles with the memory title (truncated to ~40 chars) as label. All memory nodes use the same color.
 5. THE graph SHALL include a legend mapping node type colors to their names (Project, Concept, Memory).
 
@@ -112,7 +114,7 @@ The dashboard already fetches `/v1/stats` and `/v1/events`. This spec adds a fet
 1. WHILE memories are loading, THE graph container SHALL show a centered `Spinner` with "Loading graph...".
 2. WHEN the memories fetch fails, THE graph container SHALL show a `StatusIndicator` type `error` with "Failed to load memories".
 3. WHEN there are zero memories, THE graph container SHALL show "No memories yet — run some sessions to see your graph".
-4. WHEN there are memories but a specific project has zero concepts (all memories have empty `concepts` arrays), THE project supernode SHALL still render with its memory nodes but no concept nodes or edges.
+4. WHEN there are memories but a specific project has zero concepts (all memories have empty `concepts` arrays), THE project hub node SHALL still render with its memory nodes but no concept nodes or edges.
 
 ### Requirement 8: UI Types for Memories
 
@@ -123,6 +125,7 @@ The dashboard already fetches `/v1/stats` and `/v1/events`. This spec adds a fet
 1. THE UI SHALL define a `MemoriesResponse` interface in `ui/src/types/api.ts` matching `{ items: MemoryRecord[], total: number, limit: number, offset: number }`.
 2. THE UI SHALL define a `MemoryRecord` interface matching the backend's `MemoryRecord` schema fields.
 3. These types SHALL NOT be imported from `src/`.
+4. THE UI SHALL provide runtime normalizers (`normalizeMemoryRecord`, `normalizeMemoriesResponse`) that validate required fields and coerce missing or incorrect values to safe defaults (empty strings, empty arrays, fallback `ObservationType`). The fetch handler SHALL call `normalizeMemoriesResponse` before storing data into UI state.
 
 ### Requirement 9: Updated Smoke Tests
 

@@ -9,7 +9,8 @@ import Box from '@cloudscape-design/components/box';
 import ColumnLayout from '@cloudscape-design/components/column-layout';
 import Spinner from '@cloudscape-design/components/spinner';
 import type { HealthzResponse } from './types/health.js';
-import type { StatsResponse, EventsResponse, MemoriesResponse, MemoryRecord } from './types/api.js';
+import type { StatsResponse, EventsResponse, MemoryRecord } from './types/api.js';
+import { normalizeMemoriesResponse } from './types/api.js';
 import type { ProjectInfo } from './graph/transform.js';
 import EventTail from './components/EventTail.js';
 import { MemoryGraph } from './components/MemoryGraph.js';
@@ -124,7 +125,7 @@ export default function App() {
       if (memoriesResult.status === 'fulfilled') {
         const memoriesRes = memoriesResult.value;
         if (memoriesRes.ok) {
-          const data = await memoriesRes.json() as MemoriesResponse;
+          const data = normalizeMemoriesResponse(await memoriesRes.json());
           setMemories(data.items);
           setMemoriesError(null);
         } else {

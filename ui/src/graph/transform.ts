@@ -18,16 +18,18 @@ export interface GraphData {
 /**
  * Pure transformation: memories + project metadata → React Flow graph data.
  *
- * - Groups memories by namespace into project supernodes.
- * - Extracts unique concepts per project with degree counts.
- * - Creates memory nodes with observation_type in data.
- * - Creates edges from each memory to its concept nodes.
- * - Concepts are per-project: same string in different projects = separate nodes.
+ * Produces a flat graph with two node types:
+ *   - Project hub nodes (one per namespace)
+ *   - Memory nodes (one per memory record)
+ *
+ * Edges connect each memory to its project hub. Concepts are stored in
+ * the memory node data for display in the detail panel sidebar but are
+ * NOT rendered as separate graph nodes.
  *
  * Node IDs are deterministic (index-based) so React Flow preserves viewport
  * across re-renders when data refreshes.
  *
- * Positions are placeholders — layout is applied separately.
+ * Positions are placeholders — layout is applied separately by dagre.
  */
 export function transformToGraph(
   memories: MemoryRecord[],
@@ -52,40 +54,15 @@ export function transformToGraph(
     const projectId = `project-${projectIndex}`;
     const displayName = displayNames.get(namespace) ?? extractFallbackLabel(namespace);
 
-    // Project supernode (group)
+    // Project hub node
     nodes.push({
       id: projectId,
       type: 'projectSupernode',
       data: { label: displayName, namespace },
-      position: { x: projectIndex * 600, y: 0 },
+      position: { x: 0, y: 0 },
     });
 
-    // Collect concepts for this project and count degree
-    const conceptCounts = new Map<string, number>();
-    for (const mem of mems) {
-      for (const concept of mem.concepts) {
-        conceptCounts.set(concept, (conceptCounts.get(concept) ?? 0) + 1);
-      }
-    }
-
-    // Concept nodes
-    let conceptIndex = 0;
-    const conceptNodeIds = new Map<string, string>();
-    for (const [concept, count] of conceptCounts) {
-      const conceptNodeId = `${projectId}-concept-${conceptIndex}`;
-      conceptNodeIds.set(concept, conceptNodeId);
-      nodes.push({
-        id: conceptNodeId,
-        type: 'conceptNode',
-        data: { label: concept, count },
-        position: { x: conceptIndex * 150, y: 100 },
-        parentId: projectId,
-        extent: 'parent' as const,
-      });
-      conceptIndex++;
-    }
-
-    // Memory nodes + edges
+    // Memory nodes + edges to project hub
     let memIndex = 0;
     for (const mem of mems) {
       const memNodeId = `${projectId}-mem-${memIndex}`;
@@ -93,25 +70,19 @@ export function transformToGraph(
         id: memNodeId,
         type: 'memoryNode',
         data: {
-          label: mem.title.length > 40 ? mem.title.slice(0, 40) : mem.title,
+          label: mem.title.length > 40 ? mem.title.slice(0, 40) + '…' : mem.title,
           memory: mem,
         },
-        position: { x: memIndex * 120, y: 300 },
-        parentId: projectId,
-        extent: 'parent' as const,
+        position: { x: 0, y: 0 },
       });
 
-      // Edges from memory to its concepts
-      for (const concept of mem.concepts) {
-        const conceptNodeId = conceptNodeIds.get(concept);
-        if (conceptNodeId) {
-          edges.push({
-            id: `${memNodeId}-${conceptNodeId}`,
-            source: memNodeId,
-            target: conceptNodeId,
-          });
-        }
-      }
+      // Edge from project hub → memory
+      edges.push({
+        id: `${projectId}-to-${memNodeId}`,
+        source: projectId,
+        target: memNodeId,
+      });
+
       memIndex++;
     }
     projectIndex++;
@@ -128,8 +99,6 @@ export function transformToGraph(
  */
 function extractFallbackLabel(namespace: string): string {
   const parts = namespace.split('/');
-  // Namespace: /actor/<username>/project/<project_id>/
-  // Split on '/': ['', 'actor', '<username>', 'project', '<project_id>', '']
   const projectIdIndex = parts.indexOf('project');
   if (projectIdIndex !== -1 && projectIdIndex + 1 < parts.length) {
     const projectId = parts[projectIdIndex + 1] ?? '';
