@@ -50,6 +50,76 @@ async function cleanupScratch(s: Scratch): Promise<void> {
 /* ── Property test ──────────────────────────────────────────────────── */
 
 describe('Read API — property: namespace isolation on memories and events (P1 + P2)', () => {
+  it('when namespace is omitted, results may span multiple namespaces', async () => {
+    /**
+     * **Validates: Requirements 1.1, 2.1**
+     *
+     * For any set of 2–4 distinct namespaces, each populated with 1–3
+     * events and 1–3 memory records, calling `listMemoryRecords` and
+     * `listEvents` WITHOUT a namespace MUST return items from ALL
+     * namespaces — the total count equals the sum across all namespaces.
+     */
+    await fc.assert(
+      fc.asyncProperty(
+        fc
+          .uniqueArray(namespaceArb(), { minLength: 2, maxLength: 4, comparator: 'IsStrictlyEqual' }),
+        fc.array(arbitraryEvent(), { minLength: 2, maxLength: 8 }),
+        fc.array(arbitraryMemoryRecord(), { minLength: 2, maxLength: 8 }),
+        async (namespaces, eventPool, memoryPool) => {
+          const s = openScratch();
+          try {
+            let totalEvents = 0;
+            let totalMemories = 0;
+
+            // Distribute events across namespaces round-robin.
+            for (let i = 0; i < eventPool.length; i++) {
+              const ns = namespaces[i % namespaces.length]!;
+              const event = { ...eventPool[i]!, namespace: ns };
+              const suffix = i.toString(32).toUpperCase().padStart(4, '0');
+              event.event_id = event.event_id.slice(0, 22) + suffix;
+              await s.storage.putEvent(event);
+              totalEvents++;
+            }
+
+            // Distribute memories across namespaces round-robin.
+            for (let i = 0; i < memoryPool.length; i++) {
+              const ns = namespaces[i % namespaces.length]!;
+              const record = { ...memoryPool[i]!, namespace: ns };
+              const suffix = i.toString(32).toUpperCase().padStart(4, '0');
+              record.record_id = record.record_id.slice(0, -4) + suffix;
+              await s.storage.putMemoryRecord(record);
+              totalMemories++;
+            }
+
+            // Query without namespace — should span all namespaces.
+            const { items: allMemories, total: memTotal } = await s.storage.listMemoryRecords({
+              limit: 1000,
+              offset: 0,
+            });
+            expect(memTotal).toBe(totalMemories);
+            expect(allMemories.length).toBe(totalMemories);
+
+            // Verify items come from the expected number of namespaces.
+            const memNamespaces = new Set(allMemories.map((m) => m.namespace));
+            expect(memNamespaces.size).toBe(Math.min(totalMemories, namespaces.length));
+
+            const { items: allEvents, total: evtTotal } = await s.storage.listEvents({
+              limit: 1000,
+            });
+            expect(evtTotal).toBe(totalEvents);
+            expect(allEvents.length).toBe(totalEvents);
+
+            const evtNamespaces = new Set(allEvents.map((e) => e.namespace));
+            expect(evtNamespaces.size).toBe(Math.min(totalEvents, namespaces.length));
+          } finally {
+            await cleanupScratch(s);
+          }
+        },
+      ),
+      { numRuns: 30 },
+    );
+  });
+
   it('listMemoryRecords and listEvents return only items matching the requested namespace', async () => {
     /**
      * **Validates: Requirements 7.1, N9**
@@ -104,7 +174,7 @@ describe('Read API — property: namespace isolation on memories and events (P1 
 
             // For each namespace, verify isolation.
             for (const ns of namespaces) {
-              const memories = await s.storage.listMemoryRecords(ns);
+              const { items: memories } = await s.storage.listMemoryRecords({ namespace: ns, limit: 1000, offset: 0 });
               const expectedMemories = memoriesByNs.get(ns) ?? 0;
               expect(memories.length).toBe(expectedMemories);
               for (const mem of memories) {

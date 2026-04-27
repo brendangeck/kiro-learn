@@ -7,15 +7,27 @@ import SpaceBetween from '@cloudscape-design/components/space-between';
 import StatusIndicator from '@cloudscape-design/components/status-indicator';
 import Box from '@cloudscape-design/components/box';
 import ColumnLayout from '@cloudscape-design/components/column-layout';
+import Spinner from '@cloudscape-design/components/spinner';
 import type { HealthzResponse } from './types/health.js';
+import type { StatsResponse, EventsResponse } from './types/api.js';
+import EventTail from './components/EventTail.js';
 
 const POLL_INTERVAL_MS = 10_000;
 
-function MetricCard({ title, value }: { title: string; value: number }) {
+function MetricCard({ title, value, loading, error: _error }: { title: string; value: number | null; loading: boolean; error: string | null }) {
+  let display: React.ReactNode;
+  if (value !== null) {
+    display = value;
+  } else if (loading) {
+    display = <Spinner size="large" />;
+  } else {
+    display = '—';
+  }
+
   return (
     <Container header={<Header variant="h3">{title}</Header>}>
       <Box variant="awsui-key-label" fontSize="display-l" fontWeight="bold" textAlign="center">
-        {value}
+        {display}
       </Box>
     </Container>
   );
@@ -24,6 +36,14 @@ function MetricCard({ title, value }: { title: string; value: number }) {
 export default function App() {
   const [health, setHealth] = useState<'loading' | 'ok' | 'error'>('loading');
   const [version, setVersion] = useState<string>('unknown');
+
+  const [stats, setStats] = useState<StatsResponse | null>(null);
+  const [events, setEvents] = useState<EventsResponse | null>(null);
+  const [statsLoading, setStatsLoading] = useState<boolean>(true);
+  const [eventsLoading, setEventsLoading] = useState<boolean>(true);
+  const [statsError, setStatsError] = useState<string | null>(null);
+  const [eventsError, setEventsError] = useState<string | null>(null);
+
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const checkHealth = useCallback(async () => {
@@ -42,13 +62,64 @@ export default function App() {
     }
   }, []);
 
+  const fetchData = useCallback(async () => {
+    const [statsResult, eventsResult] = await Promise.allSettled([
+      fetch('/v1/stats'),
+      fetch('/v1/events?limit=50'),
+    ]);
+
+    // Stats
+    try {
+      if (statsResult.status === 'fulfilled') {
+        const statsRes = statsResult.value;
+        if (statsRes.ok) {
+          const data = await statsRes.json() as StatsResponse;
+          setStats(data);
+          setStatsError(null);
+        } else {
+          setStatsError('Failed to load stats');
+        }
+      } else {
+        setStatsError('Failed to load stats');
+      }
+    } catch {
+      setStatsError('Failed to load stats');
+    } finally {
+      setStatsLoading(false);
+    }
+
+    // Events
+    try {
+      if (eventsResult.status === 'fulfilled') {
+        const eventsRes = eventsResult.value;
+        if (eventsRes.ok) {
+          const data = await eventsRes.json() as EventsResponse;
+          setEvents(data);
+          setEventsError(null);
+        } else {
+          setEventsError('Failed to load events');
+        }
+      } else {
+        setEventsError('Failed to load events');
+      }
+    } catch {
+      setEventsError('Failed to load events');
+    } finally {
+      setEventsLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     checkHealth();
-    intervalRef.current = setInterval(checkHealth, POLL_INTERVAL_MS);
+    fetchData();
+    intervalRef.current = setInterval(() => {
+      checkHealth();
+      fetchData();
+    }, POLL_INTERVAL_MS);
     return () => {
       if (intervalRef.current !== null) clearInterval(intervalRef.current);
     };
-  }, [checkHealth]);
+  }, [checkHealth, fetchData]);
 
   return (
     <>
@@ -68,12 +139,12 @@ export default function App() {
               {health === 'ok' ? 'Daemon healthy' : health === 'error' ? 'Daemon unreachable' : 'Checking daemon...'}
             </StatusIndicator>
 
-            {/* Metric cards row — placeholder values */}
+            {/* Metric cards row */}
             <ColumnLayout columns={4}>
-              <MetricCard title="Total Memories" value={0} />
-              <MetricCard title="Total Events" value={0} />
-              <MetricCard title="Projects" value={0} />
-              <MetricCard title="Concepts" value={0} />
+              <MetricCard title="Total Memories" value={stats?.total_memories ?? null} loading={statsLoading} error={statsError} />
+              <MetricCard title="Total Events" value={stats?.total_events ?? null} loading={statsLoading} error={statsError} />
+              <MetricCard title="Projects" value={stats?.total_projects ?? null} loading={statsLoading} error={statsError} />
+              <MetricCard title="Concepts" value={stats?.total_concepts ?? null} loading={statsLoading} error={statsError} />
             </ColumnLayout>
 
             {/* Graph placeholder */}
@@ -86,6 +157,14 @@ export default function App() {
                 </SpaceBetween>
               </div>
             </Container>
+
+            {/* Event tail */}
+            <EventTail
+              items={events?.items ?? []}
+              total={events?.total ?? 0}
+              loading={eventsLoading}
+              error={eventsError}
+            />
           </SpaceBetween>
         }
       />

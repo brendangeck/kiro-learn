@@ -299,22 +299,49 @@ export function startReceiver(
 
     // ── GET /v1/memories ──────────────────────────────────────────
     if (method === 'GET' && pathname === '/v1/memories') {
-      const ns = url.searchParams.get('namespace');
-      if (ns === null) {
-        jsonResponse(res, 400, { error: 'namespace parameter is required' });
-        return;
+      const ns = url.searchParams.get('namespace') ?? undefined;
+      if (ns !== undefined) {
+        if (ns.length > 500) {
+          jsonResponse(res, 400, { error: 'parameter too long' });
+          return;
+        }
+        if (!NAMESPACE_RE.test(ns)) {
+          jsonResponse(res, 400, { error: 'invalid namespace' });
+          return;
+        }
       }
-      if (ns.length > 500) {
-        jsonResponse(res, 400, { error: 'parameter too long' });
-        return;
+
+      // Parse limit (default 100, clamped to [1, 500])
+      const rawLimit = url.searchParams.get('limit');
+      let limit = 100;
+      if (rawLimit !== null) {
+        const parsed = Number(rawLimit);
+        if (!Number.isInteger(parsed)) {
+          jsonResponse(res, 400, { error: 'limit must be an integer' });
+          return;
+        }
+        limit = Math.max(1, Math.min(500, parsed));
       }
-      if (!NAMESPACE_RE.test(ns)) {
-        jsonResponse(res, 400, { error: 'invalid namespace' });
-        return;
+
+      // Parse offset (default 0, clamped to [0, ∞))
+      const rawOffset = url.searchParams.get('offset');
+      let offset = 0;
+      if (rawOffset !== null) {
+        const parsed = Number(rawOffset);
+        if (!Number.isInteger(parsed)) {
+          jsonResponse(res, 400, { error: 'offset must be an integer' });
+          return;
+        }
+        offset = Math.max(0, parsed);
       }
+
       try {
-        const items = await storage.listMemoryRecords(ns);
-        jsonResponse(res, 200, { items, total: items.length });
+        const params: { namespace?: string; limit: number; offset: number } = { limit, offset };
+        if (ns !== undefined) {
+          params.namespace = ns;
+        }
+        const result = await storage.listMemoryRecords(params);
+        jsonResponse(res, 200, { items: result.items, total: result.total, limit, offset });
       } catch {
         jsonResponse(res, 500, { error: 'internal error' });
       }
@@ -323,18 +350,16 @@ export function startReceiver(
 
     // ── GET /v1/events (read) ─────────────────────────────────────
     if (method === 'GET' && pathname === '/v1/events') {
-      const ns = url.searchParams.get('namespace');
-      if (ns === null) {
-        jsonResponse(res, 400, { error: 'namespace parameter is required' });
-        return;
-      }
-      if (ns.length > 500) {
-        jsonResponse(res, 400, { error: 'parameter too long' });
-        return;
-      }
-      if (!NAMESPACE_RE.test(ns)) {
-        jsonResponse(res, 400, { error: 'invalid namespace' });
-        return;
+      const ns = url.searchParams.get('namespace') ?? undefined;
+      if (ns !== undefined) {
+        if (ns.length > 500) {
+          jsonResponse(res, 400, { error: 'parameter too long' });
+          return;
+        }
+        if (!NAMESPACE_RE.test(ns)) {
+          jsonResponse(res, 400, { error: 'invalid namespace' });
+          return;
+        }
       }
       const rawLimit = url.searchParams.get('limit');
       let limit = 50;
@@ -347,7 +372,11 @@ export function startReceiver(
         limit = Math.max(1, Math.min(200, parsed));
       }
       try {
-        const result = await storage.listEvents({ namespace: ns, limit });
+        const params: { namespace?: string; limit: number } = { limit };
+        if (ns !== undefined) {
+          params.namespace = ns;
+        }
+        const result = await storage.listEvents(params);
         jsonResponse(res, 200, result);
       } catch {
         jsonResponse(res, 500, { error: 'internal error' });
