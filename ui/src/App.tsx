@@ -20,8 +20,6 @@ function MetricCard({ title, value, loading, error }: { title: string; value: nu
     display = value;
   } else if (loading) {
     display = <Spinner size="large" />;
-  } else if (error) {
-    display = '—';
   } else {
     display = '—';
   }
@@ -65,13 +63,22 @@ export default function App() {
   }, []);
 
   const fetchData = useCallback(async () => {
+    const [statsResult, eventsResult] = await Promise.allSettled([
+      fetch('/v1/stats'),
+      fetch('/v1/events?limit=50'),
+    ]);
+
     // Stats
     try {
-      const statsRes = await fetch('/v1/stats');
-      if (statsRes.ok) {
-        const data = await statsRes.json() as StatsResponse;
-        setStats(data);
-        setStatsError(null);
+      if (statsResult.status === 'fulfilled') {
+        const statsRes = statsResult.value;
+        if (statsRes.ok) {
+          const data = await statsRes.json() as StatsResponse;
+          setStats(data);
+          setStatsError(null);
+        } else {
+          setStatsError('Failed to load stats');
+        }
       } else {
         setStatsError('Failed to load stats');
       }
@@ -83,11 +90,15 @@ export default function App() {
 
     // Events
     try {
-      const eventsRes = await fetch('/v1/events?limit=50');
-      if (eventsRes.ok) {
-        const data = await eventsRes.json() as EventsResponse;
-        setEvents(data);
-        setEventsError(null);
+      if (eventsResult.status === 'fulfilled') {
+        const eventsRes = eventsResult.value;
+        if (eventsRes.ok) {
+          const data = await eventsRes.json() as EventsResponse;
+          setEvents(data);
+          setEventsError(null);
+        } else {
+          setEventsError('Failed to load events');
+        }
       } else {
         setEventsError('Failed to load events');
       }

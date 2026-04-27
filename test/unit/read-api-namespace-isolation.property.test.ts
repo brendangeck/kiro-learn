@@ -99,13 +99,9 @@ describe('Read API — property: namespace isolation on memories and events (P1 
             expect(memTotal).toBe(totalMemories);
             expect(allMemories.length).toBe(totalMemories);
 
-            // Verify items come from multiple namespaces.
+            // Verify items come from the expected number of namespaces.
             const memNamespaces = new Set(allMemories.map((m) => m.namespace));
-            if (totalMemories >= namespaces.length) {
-              expect(memNamespaces.size).toBe(namespaces.length);
-            } else {
-              expect(memNamespaces.size).toBeGreaterThanOrEqual(1);
-            }
+            expect(memNamespaces.size).toBe(Math.min(totalMemories, namespaces.length));
 
             const { items: allEvents, total: evtTotal } = await s.storage.listEvents({
               limit: 1000,
@@ -114,11 +110,7 @@ describe('Read API — property: namespace isolation on memories and events (P1 
             expect(allEvents.length).toBe(totalEvents);
 
             const evtNamespaces = new Set(allEvents.map((e) => e.namespace));
-            if (totalEvents >= namespaces.length) {
-              expect(evtNamespaces.size).toBe(namespaces.length);
-            } else {
-              expect(evtNamespaces.size).toBeGreaterThanOrEqual(1);
-            }
+            expect(evtNamespaces.size).toBe(Math.min(totalEvents, namespaces.length));
           } finally {
             await cleanupScratch(s);
           }

@@ -51,7 +51,6 @@ export default function EventTail({ items, total, loading, error }: EventTailPro
           id: 'time',
           header: 'Time',
           cell: (item: EventItem) => formatTime(item.valid_time),
-          sortingField: 'valid_time',
         },
         {
           id: 'kind',
