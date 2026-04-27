@@ -12,13 +12,45 @@
  */
 
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from 'node:http';
+import { readFileSync, existsSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { ZodError } from 'zod';
+
+import { resolveAsset, serveAsset } from './static-handler.js';
 
 import { parseEvent } from '../../types/index.js';
 import type { EventIngestResponse } from '../../types/index.js';
 import type { Pipeline } from '../pipeline/index.js';
 import type { RetrievalAssembler } from '../retrieval/index.js';
+
+// ── Version resolution ───────────────────────────────────────────────────
+
+/**
+ * Read the package version once at module load. The compiled receiver
+ * lives at `dist/collector/receiver/index.js`, so `../../../package.json`
+ * resolves to the root `package.json`.
+ *
+ * @see Requirements 10.1, 10.2, 10.3, 10.4
+ */
+function loadDaemonVersion(): string {
+  try {
+    const pkgPath = path.resolve(
+      path.dirname(fileURLToPath(import.meta.url)),
+      '..', '..', '..', 'package.json',
+    );
+    const raw = readFileSync(pkgPath, 'utf8');
+    const pkg = JSON.parse(raw) as { version?: string };
+    return typeof pkg.version === 'string' ? pkg.version : 'unknown';
+  } catch {
+    process.stderr.write('[kiro-learn] could not read package version\n');
+    return 'unknown';
+  }
+}
+
+/** Cached daemon version — read once, never re-read. */
+const daemonVersion: string = loadDaemonVersion();
 
 // ── Interfaces ──────────────────────────────────────────────────────────
 
@@ -125,6 +157,12 @@ export function startReceiver(
   const { pipeline, retrieval } = deps;
   const { maxBodyBytes, retrievalBudgetMs } = opts;
 
+  // ── Static-asset root (computed once at startup) ────────────────
+  const assetRoot = path.resolve(
+    path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'ui',
+  );
+  const uiBundleAvailable = existsSync(assetRoot);
+
   const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
     const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
     const pathname = url.pathname;
@@ -132,7 +170,7 @@ export function startReceiver(
 
     // ── Health check ──────────────────────────────────────────────
     if (method === 'GET' && pathname === '/healthz') {
-      jsonResponse(res, 200, { status: 'ok' });
+      jsonResponse(res, 200, { status: 'ok', version: daemonVersion });
       return;
     }
 
@@ -197,6 +235,25 @@ export function startReceiver(
       }
 
       jsonResponse(res, 200, response);
+      return;
+    }
+
+    // ── Static UI serving ────────────────────────────────────────
+    if (pathname === '/ui' || pathname === '/ui/' || pathname.startsWith('/ui/')) {
+      if (method !== 'GET') {
+        res.setHeader('Allow', 'GET');
+        jsonResponse(res, 405, { error: 'method not allowed' });
+        return;
+      }
+      if (!uiBundleAvailable) {
+        jsonResponse(res, 404, { error: 'not found' });
+        return;
+      }
+      const urlPath = pathname === '/ui' || pathname === '/ui/'
+        ? '/'
+        : pathname.slice('/ui'.length);
+      const resolution = resolveAsset(urlPath, assetRoot);
+      await serveAsset(resolution, res);
       return;
     }
 

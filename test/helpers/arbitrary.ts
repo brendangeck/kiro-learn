@@ -674,3 +674,208 @@ export function arbitraryFsTreeNoMarker(): fc.Arbitrary<FsTreeDescriptor> {
       return { home, projectRoot: home, cwd, marker: null };
     });
 }
+
+// ── URL path generators for static-handler property tests (Task 7.1) ───
+
+/**
+ * Common file extensions produced by Vite builds and referenced in
+ * `MIME_TABLE`. Used by sub-generators that need paths with extensions.
+ */
+const ASSET_EXTENSIONS = [
+  '.html',
+  '.js',
+  '.mjs',
+  '.css',
+  '.json',
+  '.svg',
+  '.png',
+  '.ico',
+  '.woff',
+  '.woff2',
+  '.map',
+] as const;
+
+/**
+ * Arbitrary safe path segment: 1–12 lowercase alphanumeric characters.
+ * No `/`, no `.`, no special characters — just a clean directory or
+ * filename component.
+ */
+function urlSegmentArb(): fc.Arbitrary<string> {
+  return fc
+    .stringMatching(/^[a-z0-9]{1,12}$/)
+    .filter((s) => s.length >= 1 && s.length <= 12);
+}
+
+/**
+ * Arbitrary URL path containing `..` traversal segments.
+ *
+ * Generates paths like `/../../../etc/passwd`, `/assets/../../secret`,
+ * and `/..` to exercise the path-traversal containment logic.
+ */
+function traversalPathArb(): fc.Arbitrary<string> {
+  return fc
+    .tuple(
+      // Generate 0–5 segments that may or may not be '..'
+      fc.array(urlSegmentArb(), { minLength: 0, maxLength: 5 }),
+      // Pick a random index to force a '..' into
+      fc.nat(),
+      fc.option(urlSegmentArb(), { nil: undefined }),
+    )
+    .chain(([otherSegments, insertIdx, tail]) => {
+      // Insert a guaranteed '..' at a random position
+      const idx = otherSegments.length === 0 ? 0 : insertIdx % (otherSegments.length + 1);
+      const segments = [...otherSegments];
+      segments.splice(idx, 0, '..');
+
+      return fc.tuple(...segments.map((s) => fc.constant(s))).map((segs) => {
+        const path = '/' + segs.join('/');
+        return tail !== undefined ? `${path}/${tail}` : path;
+      });
+    });
+}
+
+/**
+ * Arbitrary URL path with percent-encoded attack characters.
+ *
+ * Generates paths containing:
+ * - `%2e%2e` (encoded `..`)
+ * - `%2f` (encoded `/`)
+ * - `%00` (null byte)
+ * - `%2e` (encoded `.`)
+ * - Mixed case encodings (`%2E%2E`, `%2F`)
+ */
+function encodedPathArb(): fc.Arbitrary<string> {
+  const encodedSegments = fc.constantFrom(
+    '%2e%2e',       // ..
+    '%2E%2E',       // .. (uppercase)
+    '%2e%2E',       // .. (mixed case)
+    '%2f',          // /
+    '%2F',          // / (uppercase)
+    '%00',          // null byte
+    '%2e',          // .
+    '%2E',          // . (uppercase)
+    '..%2f',        // ../ (mixed literal + encoded)
+    '%2e%2e%2f',    // ../ (fully encoded)
+    '%2e%2e/',      // ../ (encoded dots, literal slash)
+    '..%2F',        // ../ (uppercase encoded slash)
+    '%2e%2e%2F',    // ../ (encoded dots, uppercase slash)
+    '%zz',          // malformed percent-encoding
+    '%',            // incomplete percent-encoding
+    '%0',           // incomplete percent-encoding
+  );
+
+  return fc
+    .array(fc.oneof(encodedSegments, urlSegmentArb()), {
+      minLength: 1,
+      maxLength: 5,
+    })
+    .map((parts) => '/' + parts.join('/'));
+}
+
+/**
+ * Arbitrary extensionless URL path (no `.` in the final segment).
+ *
+ * These paths exercise the SPA fallback logic: when no file matches and
+ * the path has no extension, `resolveAsset` should return `spa-fallback`
+ * rather than 404.
+ */
+function extensionlessPathArb(): fc.Arbitrary<string> {
+  return fc
+    .array(urlSegmentArb(), { minLength: 1, maxLength: 4 })
+    .map((segments) => '/' + segments.join('/'));
+}
+
+/**
+ * Arbitrary URL path with a file extension from the MIME table.
+ *
+ * Exercises the MIME-type resolution and the "missing asset with
+ * extension → 404" branch.
+ */
+function pathWithExtensionArb(): fc.Arbitrary<string> {
+  return fc
+    .tuple(
+      fc.array(urlSegmentArb(), { minLength: 0, maxLength: 3 }),
+      urlSegmentArb(),
+      fc.constantFrom(...ASSET_EXTENSIONS),
+    )
+    .map(([dirs, name, ext]) => {
+      const prefix = dirs.length > 0 ? '/' + dirs.join('/') : '';
+      return `${prefix}/${name}${ext}`;
+    });
+}
+
+/**
+ * Arbitrary URL path with mixed separator styles.
+ *
+ * Generates paths using backslashes (`\`), double slashes (`//`), and
+ * mixed forward/back slashes to test normalisation.
+ */
+function mixedSeparatorPathArb(): fc.Arbitrary<string> {
+  const separators = fc.constantFrom('/', '\\', '//', '\\\\', '/\\', '\\/');
+  return fc
+    .tuple(
+      fc.array(
+        fc.tuple(separators, urlSegmentArb()),
+        { minLength: 1, maxLength: 4 },
+      ),
+      fc.option(fc.constantFrom('..', '.'), { nil: undefined }),
+    )
+    .map(([pairs, dotSegment]) => {
+      let path = '';
+      for (const [sep, seg] of pairs) {
+        path += sep + seg;
+      }
+      if (dotSegment !== undefined) {
+        path += '/' + dotSegment;
+      }
+      return path;
+    });
+}
+
+/**
+ * Arbitrary very long URL path string (500–2000 characters).
+ *
+ * Exercises buffer and length-related edge cases in the resolver.
+ */
+function longPathArb(): fc.Arbitrary<string> {
+  return fc
+    .array(urlSegmentArb(), { minLength: 40, maxLength: 160 })
+    .map((segments) => '/' + segments.join('/'));
+}
+
+/**
+ * Arbitrary URL path string for exercising the static-handler's
+ * `resolveAsset` function across its full input space.
+ *
+ * Produces a weighted mix of:
+ * - Path-traversal attempts (`..` segments)
+ * - Percent-encoded attack strings (`%2e%2e`, `%00`, `%2f`)
+ * - Mixed separator styles (`\`, `//`)
+ * - Extensionless paths (SPA fallback candidates)
+ * - Paths with file extensions (MIME resolution)
+ * - Empty strings
+ * - Very long strings
+ * - Fully arbitrary strings (catch-all for unexpected inputs)
+ *
+ * Used by the three property tests in Tasks 7.3, 7.4, and 7.5.
+ *
+ * @see .kiro/specs/visualizer-scaffold/design.md § Property 1, 2, 3
+ * @see .kiro/specs/visualizer-scaffold/requirements.md § N17
+ */
+export function arbitraryUrlPath(): fc.Arbitrary<string> {
+  return fc.oneof(
+    // Weight traversal and encoded paths higher — they are the
+    // security-critical inputs for the static handler.
+    { weight: 3, arbitrary: traversalPathArb() },
+    { weight: 3, arbitrary: encodedPathArb() },
+    { weight: 2, arbitrary: mixedSeparatorPathArb() },
+    { weight: 2, arbitrary: extensionlessPathArb() },
+    { weight: 2, arbitrary: pathWithExtensionArb() },
+    { weight: 1, arbitrary: longPathArb() },
+    { weight: 1, arbitrary: fc.constant('') },
+    { weight: 1, arbitrary: fc.constant('/') },
+    { weight: 1, arbitrary: fc.constant('/index.html') },
+    // Fully arbitrary string — catches inputs none of the above produce.
+    { weight: 2, arbitrary: fc.string({ minLength: 0, maxLength: 200 }) },
+  );
+}
