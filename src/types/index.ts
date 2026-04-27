@@ -170,12 +170,16 @@ export interface StorageBackend {
   /** Distinct namespaces with counts and most recent project_path. @see Requirements 6.1 */
   listProjects(): Promise<ProjectInfo[]>;
 
-  /** All memory records for a namespace, newest first. @see Requirements 6.1 */
-  listMemoryRecords(namespace: string): Promise<MemoryRecord[]>;
+  /** Memory records, optionally scoped to a namespace, newest first. @see Requirements 6.1, 9.1 */
+  listMemoryRecords(params: {
+    namespace?: string;
+    limit: number;
+    offset: number;
+  }): Promise<{ items: MemoryRecord[]; total: number }>;
 
-  /** Last N events for a namespace, newest first, plus total count. @see Requirements 6.1, 6.4 */
+  /** Last N events, optionally scoped to a namespace, newest first, plus total count. @see Requirements 6.1, 6.4, 9.2 */
   listEvents(params: {
-    namespace: string;
+    namespace?: string;
     limit: number;
   }): Promise<{ items: KiroMemEvent[]; total: number }>;
 }

@@ -148,12 +148,14 @@ describe('GET /v1/events', () => {
     }
   });
 
-  it('returns 400 with error message when namespace is missing (Req 3.2)', async () => {
+  it('returns all events when namespace is omitted (Req 2.1 — visualizer-dashboard)', async () => {
     const res = await fetch(`${baseUrl}/v1/events`);
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(200);
 
-    const data = (await res.json()) as { error: string };
-    expect(data.error).toBe('namespace parameter is required');
+    const data = (await res.json()) as { items: unknown[]; total: number };
+    // All 5 events should be returned (default limit 50)
+    expect(data.total).toBe(5);
+    expect(data.items).toHaveLength(5);
   });
 
   it('returns 400 with error message for invalid namespace (Req 4.1)', async () => {

@@ -481,13 +481,42 @@ export interface Statements {
   selectProjects: Statement<[], ProjectRow>;
 
   /**
-   * All memory records for a given namespace, ordered by `created_at DESC`.
+   * All memory records for a given namespace, ordered by `created_at DESC`,
+   * with pagination via LIMIT and OFFSET.
+   *
+   * Parameters: `[namespace, limit, offset]`.
+   *
+   * @see Requirements 1.2, 2.1, 2.4, 2.6, 9.4
+   */
+  selectMemoryRecordsByNamespace: Statement<[namespace: string, limit: number, offset: number], MemoryRecordRow>;
+
+  /**
+   * All memory records across all namespaces, ordered by `created_at DESC`,
+   * with pagination via LIMIT and OFFSET.
+   *
+   * Parameters: `[limit, offset]`.
+   *
+   * @see Requirements 1.2, 1.5, 9.4
+   */
+  selectMemoryRecordsAll: Statement<[limit: number, offset: number], MemoryRecordRow>;
+
+  /**
+   * Total count of memory records across all namespaces.
+   *
+   * No parameters.
+   *
+   * @see Requirements 1.2, 9.4
+   */
+  selectMemoryRecordCountAll: Statement<[], EventCountRow>;
+
+  /**
+   * Total count of memory records for a given namespace.
    *
    * Parameters: `[namespace]`.
    *
-   * @see Requirements 2.1, 2.4, 2.6
+   * @see Requirements 1.2, 2.2, 9.4
    */
-  selectMemoryRecordsByNamespace: Statement<[namespace: string], MemoryRecordRow>;
+  selectMemoryRecordCountByNamespace: Statement<[namespace: string], EventCountRow>;
 
   /**
    * Events for a given namespace, ordered by `valid_time DESC`, with a
@@ -507,6 +536,25 @@ export interface Statements {
    * @see Requirements 3.6
    */
   selectEventCountByNamespace: Statement<[namespace: string], EventCountRow>;
+
+  /**
+   * All events across all namespaces, ordered by `valid_time DESC`, with a
+   * `LIMIT` parameter.
+   *
+   * Parameters: `[limit]`.
+   *
+   * @see Requirements 2.2, 9.4
+   */
+  selectEventsAll: Statement<[limit: number], EventRow>;
+
+  /**
+   * Total count of events across all namespaces.
+   *
+   * No parameters.
+   *
+   * @see Requirements 2.2, 9.4
+   */
+  selectEventCountAll: Statement<[], EventCountRow>;
 }
 
 /**
@@ -736,18 +784,50 @@ export function prepareStatements(db: Database): Statements {
 
   // Task 2.3 — Memory listing by namespace
   //
-  // All memory records for a given namespace, ordered by created_at DESC.
-  // No LIMIT — v1 expects < 500 memories per project.
+  // All memory records for a given namespace, ordered by created_at DESC,
+  // with LIMIT and OFFSET for pagination.
   //
-  // @see Requirements 2.1, 2.4, 2.6
-  const selectMemoryRecordsByNamespace = db.prepare<[namespace: string], MemoryRecordRow>(
+  // @see Requirements 1.2, 2.1, 2.4, 2.6, 9.4
+  const selectMemoryRecordsByNamespace = db.prepare<
+    [namespace: string, limit: number, offset: number],
+    MemoryRecordRow
+  >(
     `SELECT
        record_id, namespace, strategy, title, summary,
        facts_json, source_event_ids_json, created_at,
        concepts_json, files_touched_json, observation_type
      FROM memory_records
      WHERE namespace = ?
-     ORDER BY created_at DESC`,
+     ORDER BY created_at DESC
+     LIMIT ? OFFSET ?`,
+  );
+
+  // Global memory listing — all namespaces, ordered by created_at DESC,
+  // with LIMIT and OFFSET for pagination.
+  //
+  // @see Requirements 1.2, 1.5, 9.4
+  const selectMemoryRecordsAll = db.prepare<[limit: number, offset: number], MemoryRecordRow>(
+    `SELECT
+       record_id, namespace, strategy, title, summary,
+       facts_json, source_event_ids_json, created_at,
+       concepts_json, files_touched_json, observation_type
+     FROM memory_records
+     ORDER BY created_at DESC
+     LIMIT ? OFFSET ?`,
+  );
+
+  // Total count of memory records across all namespaces.
+  //
+  // @see Requirements 1.2, 9.4
+  const selectMemoryRecordCountAll = db.prepare<[], EventCountRow>(
+    `SELECT COUNT(*) AS total FROM memory_records`,
+  );
+
+  // Total count of memory records for a given namespace.
+  //
+  // @see Requirements 1.2, 2.2, 9.4
+  const selectMemoryRecordCountByNamespace = db.prepare<[namespace: string], EventCountRow>(
+    `SELECT COUNT(*) AS total FROM memory_records WHERE namespace = ?`,
   );
 
   // Task 2.4 — Event listing by namespace
@@ -777,6 +857,27 @@ export function prepareStatements(db: Database): Statements {
     `SELECT COUNT(*) AS total FROM events WHERE namespace = ?`,
   );
 
+  // Global event listing — all namespaces, ordered by valid_time DESC,
+  // with a LIMIT parameter.
+  //
+  // @see Requirements 2.2, 9.4
+  const selectEventsAll = db.prepare<[limit: number], EventRow>(
+    `SELECT
+       event_id, parent_event_id, session_id, actor_id,
+       namespace, schema_version, kind, body_json,
+       valid_time, transaction_time, source_json, content_hash
+     FROM events
+     ORDER BY valid_time DESC
+     LIMIT ?`,
+  );
+
+  // Total event count across all namespaces.
+  //
+  // @see Requirements 2.2, 9.4
+  const selectEventCountAll = db.prepare<[], EventCountRow>(
+    `SELECT COUNT(*) AS total FROM events`,
+  );
+
   return {
     insertEvent,
     selectEventById,
@@ -794,7 +895,12 @@ export function prepareStatements(db: Database): Statements {
     selectDistinctConceptsScoped,
     selectProjects,
     selectMemoryRecordsByNamespace,
+    selectMemoryRecordsAll,
+    selectMemoryRecordCountAll,
+    selectMemoryRecordCountByNamespace,
     selectEventsByNamespace,
     selectEventCountByNamespace,
+    selectEventsAll,
+    selectEventCountAll,
   };
 }

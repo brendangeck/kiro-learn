@@ -4,22 +4,46 @@ import { render, screen, waitFor } from '@testing-library/react';
 import App from '../../ui/src/App.js';
 
 /**
- * Smoke test for the scaffold page.
+ * Smoke test for the dashboard page.
  *
- * Validates: Requirements 15.1, 15.2, 15.3, 15.4, 15.5, 15.6, 15.8
+ * Validates: Requirements 8.1, 8.2, 8.3, 8.4
  *
  * Cloudscape components render responsive layouts that may duplicate DOM nodes
  * (e.g. a "virtual" hidden copy for measurement). We use getAllByText where
  * multiple matches are expected and assert length >= 1.
  */
 
+const MOCK_STATS = {
+  total_events: 42,
+  total_memories: 17,
+  total_projects: 3,
+  total_concepts: 99,
+  observation_types: {},
+  event_kinds: {},
+  projects: [],
+};
+
+const MOCK_EVENTS = {
+  items: [],
+  total: 0,
+};
+
+const MOCK_HEALTHZ = { status: 'ok', version: '0.1.0' };
+
 beforeEach(() => {
-  // Mock fetch to return a successful healthz response
   vi.stubGlobal(
     'fetch',
-    vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({ status: 'ok', version: '0.8.0' }),
+    vi.fn().mockImplementation(async (url: string) => {
+      if (url === '/healthz') {
+        return { ok: true, json: async () => MOCK_HEALTHZ };
+      }
+      if (url === '/v1/stats') {
+        return { ok: true, json: async () => MOCK_STATS };
+      }
+      if (url.startsWith('/v1/events')) {
+        return { ok: true, json: async () => MOCK_EVENTS };
+      }
+      return { ok: false, json: async () => ({}) };
     }),
   );
 });
@@ -28,7 +52,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe('App scaffold smoke test', () => {
+describe('App dashboard smoke test', () => {
   it('renders the top navigation with "kiro-learn"', async () => {
     render(<App />);
     await waitFor(() => {
@@ -36,31 +60,24 @@ describe('App scaffold smoke test', () => {
     });
   });
 
-  it('renders the "Total Memories" metric card', async () => {
+  it('renders mocked metric values from /v1/stats', async () => {
     render(<App />);
     await waitFor(() => {
-      expect(screen.getAllByText('Total Memories').length).toBeGreaterThanOrEqual(1);
+      // total_memories = 17
+      expect(screen.getAllByText('17').length).toBeGreaterThanOrEqual(1);
+      // total_events = 42
+      expect(screen.getAllByText('42').length).toBeGreaterThanOrEqual(1);
+      // total_projects = 3
+      expect(screen.getAllByText('3').length).toBeGreaterThanOrEqual(1);
+      // total_concepts = 99
+      expect(screen.getAllByText('99').length).toBeGreaterThanOrEqual(1);
     });
   });
 
-  it('renders the "Total Events" metric card', async () => {
+  it('renders "Recent Events" text', async () => {
     render(<App />);
     await waitFor(() => {
-      expect(screen.getAllByText('Total Events').length).toBeGreaterThanOrEqual(1);
-    });
-  });
-
-  it('renders the "Projects" metric card', async () => {
-    render(<App />);
-    await waitFor(() => {
-      expect(screen.getAllByText('Projects').length).toBeGreaterThanOrEqual(1);
-    });
-  });
-
-  it('renders the "Concepts" metric card', async () => {
-    render(<App />);
-    await waitFor(() => {
-      expect(screen.getAllByText('Concepts').length).toBeGreaterThanOrEqual(1);
+      expect(screen.getAllByText(/Recent Events/).length).toBeGreaterThanOrEqual(1);
     });
   });
 
@@ -68,15 +85,6 @@ describe('App scaffold smoke test', () => {
     render(<App />);
     await waitFor(() => {
       expect(screen.getAllByText('Memory Graph').length).toBeGreaterThanOrEqual(1);
-    });
-  });
-
-  it('renders the graph placeholder body text', async () => {
-    render(<App />);
-    await waitFor(() => {
-      expect(
-        screen.getAllByText('Graph visualization coming soon').length,
-      ).toBeGreaterThanOrEqual(1);
     });
   });
 });

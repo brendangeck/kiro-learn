@@ -208,12 +208,16 @@ describe('GET /v1/memories', () => {
     }
   });
 
-  it('returns 400 with error message when namespace is missing (Req 2.2)', async () => {
+  it('returns all memories when namespace is omitted (Req 1.1 — visualizer-dashboard)', async () => {
     const res = await fetch(`${baseUrl}/v1/memories`);
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(200);
 
-    const data = (await res.json()) as { error: string };
-    expect(data.error).toBe('namespace parameter is required');
+    const data = (await res.json()) as { items: unknown[]; total: number; limit: number; offset: number };
+    // NS_A has 3 memories, NS_B has 1 → total 4
+    expect(data.total).toBe(4);
+    expect(data.items).toHaveLength(4);
+    expect(data.limit).toBe(100);
+    expect(data.offset).toBe(0);
   });
 
   it('returns 400 with error message for invalid namespace (Req 4.1)', async () => {
@@ -232,6 +236,30 @@ describe('GET /v1/memories', () => {
     const data = (await res.json()) as { items: unknown[]; total: number };
     expect(data.items).toEqual([]);
     expect(data.total).toBe(0);
+  });
+
+  it('pagination: limit and offset return correct slice and total (Req 1.2, 1.4)', async () => {
+    // Request 2 items starting at offset 1
+    const res = await fetch(`${baseUrl}/v1/memories?limit=2&offset=1`);
+    expect(res.status).toBe(200);
+
+    const data = (await res.json()) as { items: unknown[]; total: number; limit: number; offset: number };
+    // Total is still 4 (all memories across both namespaces)
+    expect(data.total).toBe(4);
+    expect(data.items).toHaveLength(2);
+    expect(data.limit).toBe(2);
+    expect(data.offset).toBe(1);
+  });
+
+  it('offset beyond total returns empty items array but correct total (Req 1.4)', async () => {
+    const res = await fetch(`${baseUrl}/v1/memories?offset=100`);
+    expect(res.status).toBe(200);
+
+    const data = (await res.json()) as { items: unknown[]; total: number; limit: number; offset: number };
+    expect(data.items).toEqual([]);
+    expect(data.total).toBe(4);
+    expect(data.limit).toBe(100);
+    expect(data.offset).toBe(100);
   });
 
   it('returns memories ordered by created_at descending — newest first (Req 2.4)', async () => {

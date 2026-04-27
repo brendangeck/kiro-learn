@@ -303,25 +303,49 @@ export function openSqliteStorage(opts: SqliteStorageOptions): StorageBackend {
     }));
   };
 
-  const listMemoryRecords = async (namespace: string): Promise<MemoryRecord[]> => {
+  const listMemoryRecords = async (params: {
+    namespace?: string;
+    limit: number;
+    offset: number;
+  }): Promise<{ items: MemoryRecord[]; total: number }> => {
     assertOpen();
-    const rows = stmts.selectMemoryRecordsByNamespace.all(namespace);
-    return rows.map(rowToMemoryRecord);
+    const { namespace, limit, offset } = params;
+
+    if (namespace !== undefined) {
+      // Scoped: use namespace query with LIMIT/OFFSET.
+      const rows = stmts.selectMemoryRecordsByNamespace.all(namespace, limit, offset);
+      const countRow = stmts.selectMemoryRecordCountByNamespace.get(namespace);
+      const total = countRow?.total ?? 0;
+      return { items: rows.map(rowToMemoryRecord), total };
+    }
+
+    // Global: no namespace filter.
+    const rows = stmts.selectMemoryRecordsAll.all(limit, offset);
+    const countRow = stmts.selectMemoryRecordCountAll.get();
+    const total = countRow?.total ?? 0;
+    return { items: rows.map(rowToMemoryRecord), total };
   };
 
   const listEvents = async (params: {
-    namespace: string;
+    namespace?: string;
     limit: number;
   }): Promise<{ items: KiroMemEvent[]; total: number }> => {
     assertOpen();
     const { namespace, limit } = params;
-    const rows = stmts.selectEventsByNamespace.all(namespace, limit);
-    const countRow = stmts.selectEventCountByNamespace.get(namespace);
+
+    if (namespace !== undefined) {
+      // Scoped path — existing behaviour.
+      const rows = stmts.selectEventsByNamespace.all(namespace, limit);
+      const countRow = stmts.selectEventCountByNamespace.get(namespace);
+      const total = countRow?.total ?? 0;
+      return { items: rows.map(rowToEvent), total };
+    }
+
+    // Global path — all namespaces.
+    const rows = stmts.selectEventsAll.all(limit);
+    const countRow = stmts.selectEventCountAll.get();
     const total = countRow?.total ?? 0;
-    return {
-      items: rows.map(rowToEvent),
-      total,
-    };
+    return { items: rows.map(rowToEvent), total };
   };
 
   const close = async (): Promise<void> => {

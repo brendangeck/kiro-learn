@@ -63,7 +63,7 @@ const mockStorage: StorageBackend = {
     });
   },
   listProjects() { return Promise.resolve([]); },
-  listMemoryRecords() { return Promise.resolve([]); },
+  listMemoryRecords() { return Promise.resolve({ items: [], total: 0 }); },
   listEvents() { return Promise.resolve({ items: [], total: 0 }); },
 };
 
