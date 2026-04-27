@@ -4,10 +4,10 @@ import TopNavigation from '@cloudscape-design/components/top-navigation';
 import Container from '@cloudscape-design/components/container';
 import Header from '@cloudscape-design/components/header';
 import SpaceBetween from '@cloudscape-design/components/space-between';
-import StatusIndicator from '@cloudscape-design/components/status-indicator';
 import Box from '@cloudscape-design/components/box';
 import ColumnLayout from '@cloudscape-design/components/column-layout';
 import Spinner from '@cloudscape-design/components/spinner';
+import { applyMode, Mode } from '@cloudscape-design/global-styles';
 import type { HealthzResponse } from './types/health.js';
 import type { StatsResponse, EventsResponse, MemoryRecord } from './types/api.js';
 import { normalizeMemoriesResponse } from './types/api.js';
@@ -40,6 +40,12 @@ function MetricCard({ title, value, loading, error: _error }: { title: string; v
 export default function App() {
   const [health, setHealth] = useState<'loading' | 'ok' | 'error'>('loading');
   const [version, setVersion] = useState<string>('unknown');
+  const [darkMode, setDarkMode] = useState<boolean>(() => {
+    const saved = localStorage.getItem('kiro-learn-dark-mode');
+    const isDark = saved === 'true';
+    applyMode(isDark ? Mode.Dark : Mode.Light);
+    return isDark;
+  });
 
   const [stats, setStats] = useState<StatsResponse | null>(null);
   const [events, setEvents] = useState<EventsResponse | null>(null);
@@ -163,20 +169,32 @@ export default function App() {
     <>
       <TopNavigation
         identity={{ href: '/ui', title: 'kiro-learn', logo: undefined }}
-        utilities={[{ type: 'button', text: `v${version}` }]}
+        utilities={[
+          {
+            type: 'button',
+            iconName: health === 'ok' ? 'status-positive' : health === 'error' ? 'status-negative' : 'status-pending',
+            text: health === 'ok' ? 'Collector Online' : health === 'error' ? 'Collector Offline' : 'Connecting…',
+            disableUtilityCollapse: true,
+          },
+          {
+            type: 'button',
+            iconName: 'light-dark',
+            ariaLabel: darkMode ? 'Switch to light mode' : 'Switch to dark mode',
+            onClick: () => {
+              const next = !darkMode;
+              setDarkMode(next);
+              applyMode(next ? Mode.Dark : Mode.Light);
+              localStorage.setItem('kiro-learn-dark-mode', String(next));
+            },
+          },
+          { type: 'button', text: `v${version}` },
+        ]}
       />
       <AppLayout
         navigationHide
         toolsHide
         content={
           <SpaceBetween size="l">
-            {/* Daemon health */}
-            <StatusIndicator
-              type={health === 'ok' ? 'success' : health === 'error' ? 'error' : 'loading'}
-            >
-              {health === 'ok' ? 'Daemon healthy' : health === 'error' ? 'Daemon unreachable' : 'Checking daemon...'}
-            </StatusIndicator>
-
             {/* Metric cards row */}
             <ColumnLayout columns={4}>
               <MetricCard title="Total Memories" value={stats?.total_memories ?? null} loading={statsLoading} error={statsError} />
@@ -192,6 +210,7 @@ export default function App() {
                 projects={projects}
                 loading={memoriesLoading}
                 error={memoriesError}
+                darkMode={darkMode}
                 onNodeClick={(memory, concept) => {
                   setSelectedMemory(memory);
                   setSelectedConcept(concept);

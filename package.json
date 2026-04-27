@@ -49,6 +49,7 @@
   },
   "devDependencies": {
     "@cloudscape-design/components": "^3.0.1284",
+    "@cloudscape-design/design-tokens": "^3.0.84",
     "@cloudscape-design/global-styles": "^1.0.57",
     "@semantic-release/changelog": "^6.0.3",
     "@semantic-release/commit-analyzer": "^13.0.1",

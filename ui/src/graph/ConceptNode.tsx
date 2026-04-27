@@ -1,37 +1,30 @@
 import { Handle, Position, type NodeProps } from '@xyflow/react';
-import { graphTheme } from './theme.js';
-import { NODE_DIMENSIONS } from './layout.js';
-
-/** Base dimensions — must match what dagre uses for layout. */
-const BASE = NODE_DIMENSIONS['conceptNode'] ?? { width: 140, height: 44 };
+import { PROJECT_PALETTE, graphTheme } from './theme.js';
 
 /**
  * Custom React Flow node for concept nodes.
  *
- * Renders a rounded rectangle labeled with the concept string.
- * Uses the same fixed dimensions that dagre allocates so rendering
- * and layout stay in sync.
- *
- * All concept nodes share the same green color from the
- * Cloudscape-derived theme. Handles are invisible but present
- * so React Flow can anchor edges.
+ * Currently unused in the graph (concepts are shown as tags in the
+ * detail panel instead), but kept as a valid component for potential
+ * future use.
  */
 export function ConceptNode({ data }: NodeProps) {
   const label = typeof data.label === 'string' ? data.label : '';
+  const scheme = PROJECT_PALETTE[4]!; // Emerald by default
 
   return (
     <div
       style={{
-        width: BASE.width,
-        height: BASE.height,
-        background: graphTheme.conceptNode.background,
-        border: `2px solid ${graphTheme.conceptNode.border}`,
+        width: 140,
+        height: 44,
+        background: scheme.background,
+        border: `2px solid ${scheme.border}`,
         borderRadius: 12,
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
         fontFamily: graphTheme.fontFamily,
-        color: graphTheme.conceptNode.text,
+        color: scheme.text,
         fontSize: 13,
         fontWeight: 500,
         padding: '0 10px',

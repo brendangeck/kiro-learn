@@ -1,5 +1,6 @@
 import type { Node, Edge } from '@xyflow/react';
 import type { MemoryRecord } from '../types/api.js';
+import { getPalette } from './theme.js';
 
 /**
  * Minimal project info needed for graph labeling.
@@ -34,6 +35,7 @@ export interface GraphData {
 export function transformToGraph(
   memories: MemoryRecord[],
   projects: ProjectInfo[],
+  darkMode = false,
 ): GraphData {
   const nodes: Node[] = [];
   const edges: Edge[] = [];
@@ -49,29 +51,35 @@ export function transformToGraph(
   // Build project display name lookup
   const displayNames = new Map(projects.map((p) => [p.namespace, p.display_name]));
 
+  const palette = getPalette(darkMode);
+
   let projectIndex = 0;
   for (const [namespace, mems] of byNamespace) {
-    const projectId = `project-${projectIndex}`;
+    const projectId = `project-${namespace}`;
     const displayName = displayNames.get(namespace) ?? extractFallbackLabel(namespace);
+
+    const colorIndex = projectIndex % palette.length;
 
     // Project hub node
     nodes.push({
       id: projectId,
       type: 'projectSupernode',
-      data: { label: displayName, namespace },
+      data: { label: displayName, namespace, colorIndex, darkMode },
       position: { x: 0, y: 0 },
     });
 
     // Memory nodes + edges to project hub
-    let memIndex = 0;
     for (const mem of mems) {
-      const memNodeId = `${projectId}-mem-${memIndex}`;
+      // Stable ID derived from record_id (immutable)
+      const memNodeId = `mem-${mem.record_id}`;
       nodes.push({
         id: memNodeId,
         type: 'memoryNode',
         data: {
           label: mem.title.length > 40 ? mem.title.slice(0, 40) + '…' : mem.title,
           memory: mem,
+          colorIndex,
+          darkMode,
         },
         position: { x: 0, y: 0 },
       });
@@ -82,8 +90,6 @@ export function transformToGraph(
         source: projectId,
         target: memNodeId,
       });
-
-      memIndex++;
     }
     projectIndex++;
   }

@@ -1,8 +1,6 @@
 import { useMemo, useCallback } from 'react';
 import {
   ReactFlow,
-  MiniMap,
-  Controls,
   Background,
   BackgroundVariant,
   useNodesState,
@@ -20,7 +18,7 @@ import { applyForceLayout } from '../graph/layout.js';
 import { ProjectSupernode } from '../graph/ProjectSupernode.js';
 import { MemoryNode } from '../graph/MemoryNode.js';
 import { GraphLegend } from '../graph/GraphLegend.js';
-import { graphTheme } from '../graph/theme.js';
+import { getGraphColors } from '../graph/theme.js';
 import type { MemoryRecord } from '../types/api.js';
 
 /**
@@ -32,17 +30,12 @@ const nodeTypes = {
   memoryNode: MemoryNode,
 };
 
-/** Default edge style with animated dashes for a floaty feel. */
-const defaultEdgeOptions = {
-  style: { stroke: graphTheme.edge.stroke, strokeWidth: 1.5 },
-  animated: true,
-};
-
 interface MemoryGraphProps {
   memories: MemoryRecord[];
   projects: ProjectInfo[];
   loading: boolean;
   error: string | null;
+  darkMode: boolean;
   onNodeClick: (memory: MemoryRecord | null, concept: string | null) => void;
 }
 
@@ -58,8 +51,11 @@ export function MemoryGraph({
   projects,
   loading,
   error,
+  darkMode,
   onNodeClick,
 }: MemoryGraphProps) {
+  const colors = getGraphColors(darkMode);
+
   // Stable content key — only recompute layout when actual data changes,
   // not on every 10s fetch that returns the same records.
   const contentKey = useMemo(
@@ -72,12 +68,12 @@ export function MemoryGraph({
     [projects],
   );
 
-  // Compute initial layout from data
+  // Compute initial layout from data (layout doesn't depend on darkMode)
   const { initialNodes, initialEdges } = useMemo(() => {
     if (memories.length === 0) {
       return { initialNodes: [] as Node[], initialEdges: [] as typeof styledEdges };
     }
-    const graph = transformToGraph(memories, projects);
+    const graph = transformToGraph(memories, projects, darkMode);
     const positioned = applyForceLayout(graph.nodes, graph.edges);
 
     // Build position lookup for closest-handle selection
@@ -96,13 +92,10 @@ export function MemoryGraph({
       if (sp && tp) {
         const dx = tp.x - sp.x;
         const dy = tp.y - sp.y;
-        // Pick the side closest to the other node
         if (Math.abs(dx) > Math.abs(dy)) {
-          // Horizontal dominant
           sourceHandle = dx > 0 ? 's-right' : 's-left';
           targetHandle = dx > 0 ? 't-left' : 't-right';
         } else {
-          // Vertical dominant
           sourceHandle = dy > 0 ? 's-bottom' : 's-top';
           targetHandle = dy > 0 ? 't-top' : 't-bottom';
         }
@@ -113,17 +106,17 @@ export function MemoryGraph({
         sourceHandle,
         targetHandle,
         animated: true,
-        style: { stroke: graphTheme.edge.stroke, strokeWidth: 1.5 },
+        style: { stroke: colors.edgeStroke, strokeWidth: 1.5 },
       };
     });
     return { initialNodes: positioned, initialEdges: styledEdges };
-  }, [contentKey, projectKey, memories, projects]);
+  }, [contentKey, projectKey, memories, projects, darkMode, colors.edgeStroke]);
 
   // Use React Flow's state hooks for interactive node dragging
   const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
 
-  // Sync when data changes (refresh cycle)
+  // Sync when data or theme changes
   useMemo(() => {
     setNodes(initialNodes);
     setEdges(initialEdges);
@@ -138,7 +131,12 @@ export function MemoryGraph({
     [onNodeClick],
   );
 
-  // --- Loading state ---
+  // Default edge options (updated per theme)
+  const defaultEdgeOptions = useMemo(() => ({
+    style: { stroke: colors.edgeStroke, strokeWidth: 1.5 },
+    animated: true,
+  }), [colors.edgeStroke]);
+
   if (loading) {
     return (
       <Box textAlign="center" padding={{ vertical: 'xxl' }}>
@@ -150,7 +148,6 @@ export function MemoryGraph({
     );
   }
 
-  // --- Error state ---
   if (error) {
     return (
       <Box textAlign="center" padding={{ vertical: 'xxl' }}>
@@ -159,7 +156,6 @@ export function MemoryGraph({
     );
   }
 
-  // --- Empty state ---
   if (memories.length === 0) {
     return (
       <Box textAlign="center" padding={{ vertical: 'xxl' }} color="text-body-secondary">
@@ -168,10 +164,9 @@ export function MemoryGraph({
     );
   }
 
-  // --- Graph canvas ---
   return (
     <>
-      <div style={{ height: 500, background: graphTheme.canvas.background }}>
+      <div style={{ height: 500, background: colors.canvasBackground }}>
         <ReactFlow
           nodes={nodes}
           edges={edges}
@@ -183,15 +178,15 @@ export function MemoryGraph({
           nodesDraggable={true}
           elementsSelectable={true}
           deleteKeyCode={null}
+          minZoom={0.1}
           fitView
           onNodeClick={handleNodeClick}
+          proOptions={{ hideAttribution: true }}
         >
-          <MiniMap />
-          <Controls />
-          <Background variant={BackgroundVariant.Dots} color={graphTheme.canvas.background} />
+          <Background variant={BackgroundVariant.Dots} color={colors.canvasBackground} />
         </ReactFlow>
       </div>
-      <GraphLegend />
+      <GraphLegend darkMode={darkMode} />
     </>
   );
 }

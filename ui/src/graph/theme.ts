@@ -1,74 +1,73 @@
 /**
- * Cloudscape-derived color constants for graph styling.
+ * Graph color palette and styling constants.
  *
- * Values are the resolved hex colors from Cloudscape's light-theme design tokens.
- * We hardcode them here because React Flow needs plain CSS values at render time
- * and we can't read CSS custom properties at build time.
- *
- * Token sources (Cloudscape light theme):
- *   colorBackgroundStatusInfo      → #0972d3  (blue)
- *   colorBackgroundStatusSuccess   → #037f0c  (green)
- *   colorBackgroundStatusWarning   → #8d6605  (amber)
- *   colorBorderDividerDefault      → #e9ebed
- *   colorBackgroundContainerContent→ #ffffff
- *   colorTextBodyDefault           → #000716
- *   colorBackgroundLayoutMain      → #f2f3f3
- *   colorBorderStatusInfo          → #0972d3
- *   colorBorderStatusSuccess       → #037f0c
- *   colorBorderStatusWarning       → #8d6605
+ * Six hues at ~60° intervals for project-based coloring.
+ * Each project gets a color from this palette (cycling).
+ * Memory nodes inherit their project's color.
  */
 
+export interface NodeColorScheme {
+  readonly border: string;
+  readonly background: string;
+  /** Text color for tinted-background nodes (dark, readable on light bg). */
+  readonly text: string;
+  /** Text color for solid-background nodes (white on saturated bg). */
+  readonly textInverse: string;
+}
+
+/** Light-mode palette — tinted pastel backgrounds. */
+export const LIGHT_PALETTE: readonly NodeColorScheme[] = [
+  { border: '#3B82F6', background: '#DBEAFE', text: '#1E3A5F', textInverse: '#FFFFFF' },  // Blue
+  { border: '#8B5CF6', background: '#EDE9FE', text: '#3B1F7E', textInverse: '#FFFFFF' },  // Violet
+  { border: '#F43F5E', background: '#FFE4E6', text: '#7F1D2B', textInverse: '#FFFFFF' },  // Rose
+  { border: '#F59E0B', background: '#FEF3C7', text: '#78350F', textInverse: '#FFFFFF' },  // Amber
+  { border: '#10B981', background: '#D1FAE5', text: '#064E3B', textInverse: '#FFFFFF' },  // Emerald
+  { border: '#14B8A6', background: '#CCFBF1', text: '#134E4A', textInverse: '#FFFFFF' },  // Teal
+] as const;
+
+/** Dark-mode palette — deeper tinted backgrounds with light text. */
+export const DARK_PALETTE: readonly NodeColorScheme[] = [
+  { border: '#60A5FA', background: '#1E3A5F', text: '#DBEAFE', textInverse: '#FFFFFF' },  // Blue
+  { border: '#A78BFA', background: '#3B1F7E', text: '#EDE9FE', textInverse: '#FFFFFF' },  // Violet
+  { border: '#FB7185', background: '#7F1D2B', text: '#FFE4E6', textInverse: '#FFFFFF' },  // Rose
+  { border: '#FBBF24', background: '#78350F', text: '#FEF3C7', textInverse: '#FFFFFF' },  // Amber
+  { border: '#34D399', background: '#064E3B', text: '#D1FAE5', textInverse: '#FFFFFF' },  // Emerald
+  { border: '#2DD4BF', background: '#134E4A', text: '#CCFBF1', textInverse: '#FFFFFF' },  // Teal
+] as const;
+
+/** Returns the palette for the given mode. */
+export function getPalette(darkMode: boolean): readonly NodeColorScheme[] {
+  return darkMode ? DARK_PALETTE : LIGHT_PALETTE;
+}
+
+/** Kept for backward compatibility — defaults to light palette. */
+export const PROJECT_PALETTE = LIGHT_PALETTE;
+
+interface GraphThemeColors {
+  readonly edgeStroke: string;
+  readonly canvasBackground: string;
+}
+
+/** Returns canvas/edge colors for the given mode. */
+export function getGraphColors(darkMode: boolean): GraphThemeColors {
+  return darkMode
+    ? { edgeStroke: '#4B5563', canvasBackground: '#0f1b2d' }
+    : { edgeStroke: '#7d8998', canvasBackground: '#f2f3f3' };
+}
+
 export const graphTheme = {
-  /** Project supernode — blue tones from status-info tokens. */
-  projectNode: {
-    /** Semi-transparent blue background for the supernode body. */
-    background: 'rgba(9, 114, 211, 0.06)',
-    /** Border derived from colorBorderStatusInfo. */
-    border: '#0972d3',
-    /** Header bar background from colorBackgroundStatusInfo. */
-    headerBackground: '#0972d3',
-    /** Header text — white on blue for contrast. */
-    headerText: '#ffffff',
-    /** Body text from colorTextBodyDefault. */
-    text: '#000716',
-  },
-
-  /** Concept node — green tones from status-success tokens. */
-  conceptNode: {
-    /** Light green background. */
-    background: 'rgba(3, 127, 12, 0.08)',
-    /** Border derived from colorBorderStatusSuccess. */
-    border: '#037f0c',
-    /** Label text from colorTextBodyDefault. */
-    text: '#000716',
-  },
-
-  /** Memory node — amber/warm tones from status-warning tokens. */
-  memoryNode: {
-    /** Light amber background. */
-    background: 'rgba(141, 102, 5, 0.08)',
-    /** Border derived from colorBorderStatusWarning. */
-    border: '#8d6605',
-    /** Label text from colorTextBodyDefault. */
-    text: '#000716',
-  },
-
-  /** Edge styling — uses a mid-gray derived from Cloudscape's text-secondary palette for visibility. */
+  /** Edge styling — mid-gray for visibility (light mode default). */
   edge: {
-    /** Stroke color — darker than colorBorderDividerDefault for visibility against the light canvas. */
     stroke: '#7d8998',
   },
 
-  /** Canvas background — matches Cloudscape layout background. */
+  /** Canvas background — light gray (light mode default). */
   canvas: {
-    /** Background from colorBackgroundLayoutMain. */
     background: '#f2f3f3',
   },
 
   /**
    * Font family matching Cloudscape's global styles.
-   * Cloudscape applies 'Amazon Ember' with a standard sans-serif fallback stack
-   * via @cloudscape-design/global-styles.
    */
   fontFamily:
     "'Amazon Ember', 'Helvetica Neue', Roboto, Arial, sans-serif",

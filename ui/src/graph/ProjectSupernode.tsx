@@ -1,33 +1,39 @@
 import { Handle, Position, type NodeProps } from '@xyflow/react';
-import { graphTheme } from './theme.js';
+import { getPalette, graphTheme } from './theme.js';
 
 /**
  * Custom React Flow node for project hub nodes.
  *
- * Handles on all four sides so edges connect to whichever side
- * is closest to the target node.
+ * Uses the project's assigned color from the palette.
+ * Saturated background with white text for prominence.
+ * Handles on all four sides for nearest-side edge routing.
  */
 export function ProjectSupernode({ data }: NodeProps) {
   const label = typeof data.label === 'string' ? data.label : '';
+  const colorIndex = typeof data.colorIndex === 'number' ? data.colorIndex : 0;
+  const isDark = typeof data.darkMode === 'boolean' ? data.darkMode : false;
+  const palette = getPalette(isDark);
+  const scheme = palette[colorIndex % palette.length]!;
 
   return (
     <div
       title={label}
       style={{
         minWidth: 160,
-        padding: '8px 16px',
-        background: graphTheme.projectNode.headerBackground,
-        color: graphTheme.projectNode.headerText,
-        border: `2px solid ${graphTheme.projectNode.border}`,
-        borderRadius: 8,
+        padding: '10px 20px',
+        background: scheme.border,
+        color: scheme.textInverse,
+        border: `2px solid ${scheme.border}`,
+        borderRadius: 10,
         fontFamily: graphTheme.fontFamily,
         fontSize: 14,
-        fontWeight: 600,
+        fontWeight: 700,
         textAlign: 'center',
         whiteSpace: 'nowrap',
         overflow: 'hidden',
         textOverflow: 'ellipsis',
         boxSizing: 'border-box',
+        boxShadow: `0 2px 8px ${scheme.border}40`,
       }}
     >
       <Handle type="source" position={Position.Top} id="s-top" style={{ visibility: 'hidden' }} />

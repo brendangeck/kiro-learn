@@ -1,26 +1,25 @@
 import Box from '@cloudscape-design/components/box';
 import SpaceBetween from '@cloudscape-design/components/space-between';
-import { graphTheme } from './theme.js';
+import { getPalette } from './theme.js';
 
 /**
  * Color legend for the memory graph.
  *
- * Shows a compact horizontal row mapping each node-type color to its
- * label: Project (blue), Concept (green), Memory (amber). Uses
- * Cloudscape layout components so the legend feels native to the page.
- *
- * Validates: Requirements 5.5, 10.4
+ * Shows Project (saturated) and Memory (tinted) styling using the
+ * first palette color as an example.
  */
+export function GraphLegend({ darkMode = false }: { darkMode?: boolean }) {
+  const palette = getPalette(darkMode);
+  const first = palette[0]!;
 
-const items: readonly { readonly label: string; readonly color: string }[] = [
-  { label: 'Project', color: graphTheme.projectNode.border },
-  { label: 'Memory', color: graphTheme.memoryNode.border },
-] as const;
+  const items = [
+    { label: 'Project', color: first.border },
+    { label: 'Memory', color: first.background, borderColor: first.border },
+  ];
 
-export function GraphLegend() {
   return (
     <SpaceBetween direction="horizontal" size="m">
-      {items.map(({ label, color }) => (
+      {items.map(({ label, color, borderColor }) => (
         <Box key={label} fontSize="body-s" color="text-body-secondary">
           <span
             style={{
@@ -29,6 +28,7 @@ export function GraphLegend() {
               height: 12,
               borderRadius: 2,
               background: color,
+              border: borderColor ? `1px solid ${borderColor}` : undefined,
               marginRight: 6,
               verticalAlign: 'middle',
             }}

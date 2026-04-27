@@ -57,16 +57,22 @@ function hashToUnit(str: string, seed: number): number {
 export function applyForceLayout(nodes: Node[], edges: Edge[]): Node[] {
   if (nodes.length === 0) return [];
 
-  // Build simulation nodes with deterministic initial positions
-  const simNodes: SimNode[] = nodes.map((node) => {
+  // Build simulation nodes with deterministic circular initial positions.
+  // Spreading nodes evenly around a circle prevents lopsided clustering.
+  const radius = Math.max(150, nodes.length * 15);
+  const simNodes: SimNode[] = nodes.map((node, i) => {
     const dims = NODE_DIMENSIONS[node.type ?? ''] ?? DEFAULT_DIMS;
+    // Deterministic angle from hash, spread around full circle
+    const angle = hashToUnit(node.id, 1) * 2 * Math.PI;
+    // Vary the radius slightly per node so they don't all start on the same ring
+    const r = radius * (0.3 + hashToUnit(node.id, 2) * 0.7);
     return {
       id: node.id,
       type: node.type ?? '',
       width: dims.width,
       height: dims.height,
-      x: (hashToUnit(node.id, 1) - 0.5) * 400,
-      y: (hashToUnit(node.id, 2) - 0.5) * 400,
+      x: Math.cos(angle) * r,
+      y: Math.sin(angle) * r,
     };
   });
 
@@ -82,14 +88,14 @@ export function applyForceLayout(nodes: Node[], edges: Edge[]): Node[] {
       'link',
       forceLink<SimNode, SimulationLinkDatum<SimNode>>(simLinks)
         .id((d) => d.id)
-        .distance(120)
-        .strength(0.7),
+        .distance(180)
+        .strength(0.4),
     )
-    .force('charge', forceManyBody<SimNode>().strength(-300))
+    .force('charge', forceManyBody<SimNode>().strength(-600))
     .force('center', forceCenter(0, 0))
     .force(
       'collide',
-      forceCollide<SimNode>().radius((d) => Math.max(d.width, d.height) * 0.6),
+      forceCollide<SimNode>().radius((d) => Math.max(d.width, d.height) * 0.8).strength(0.8),
     )
     .stop();
 

@@ -1,14 +1,19 @@
 import { Handle, Position, type NodeProps } from '@xyflow/react';
-import { graphTheme } from './theme.js';
+import { getPalette, graphTheme } from './theme.js';
 
 /**
  * Custom React Flow node for memory nodes.
  *
- * Fixed width with left-aligned text and ellipsis overflow.
- * Handles on all four sides so edges connect to the nearest side.
+ * Inherits its project's color from the palette.
+ * Tinted background with saturated border and dark text.
+ * Handles on all four sides for nearest-side edge routing.
  */
 export function MemoryNode({ data }: NodeProps) {
   const label = typeof data.label === 'string' ? data.label : '';
+  const colorIndex = typeof data.colorIndex === 'number' ? data.colorIndex : 0;
+  const isDark = typeof data.darkMode === 'boolean' ? data.darkMode : false;
+  const palette = getPalette(isDark);
+  const scheme = palette[colorIndex % palette.length]!;
   const fullTitle = typeof data.memory === 'object' && data.memory !== null && 'title' in data.memory
     ? String(data.memory.title)
     : label;
@@ -19,18 +24,19 @@ export function MemoryNode({ data }: NodeProps) {
       style={{
         width: 260,
         padding: '8px 12px',
-        background: graphTheme.memoryNode.background,
-        border: `2px solid ${graphTheme.memoryNode.border}`,
-        borderRadius: 6,
+        background: scheme.background,
+        border: `2px solid ${scheme.border}`,
+        borderRadius: 8,
         fontFamily: graphTheme.fontFamily,
-        color: graphTheme.memoryNode.text,
+        color: scheme.text,
         fontSize: 12,
-        fontWeight: 400,
+        fontWeight: 500,
         whiteSpace: 'nowrap',
         overflow: 'hidden',
         textOverflow: 'ellipsis',
         textAlign: 'left',
         boxSizing: 'border-box',
+        boxShadow: `0 1px 4px ${scheme.border}20`,
       }}
     >
       <Handle type="target" position={Position.Top} id="t-top" style={{ visibility: 'hidden' }} />
