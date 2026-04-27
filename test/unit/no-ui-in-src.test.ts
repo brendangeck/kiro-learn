@@ -69,25 +69,45 @@ describe('src/ modules — no ui/ imports', () => {
     //   - '../ui/'
     //   - '../../ui/'
     //   - etc.
+    // Also handles multiline imports by joining the full file content
+    // and scanning for import/export statements with ui/ specifiers.
     const uiPattern = /ui\//;
+    const importExportPattern = /(?:import|export)\s[\s\S]*?from\s+['"][^'"]*ui\/[^'"]*['"]/g;
 
     for (const file of files) {
-      const stripped = stripComments(readFileSync(file, 'utf8'));
+      const raw = readFileSync(file, 'utf8');
+      const stripped = stripComments(raw);
+
+      // Check for multiline import/export statements
+      const multilineMatches = stripped.matchAll(importExportPattern);
+      for (const match of multilineMatches) {
+        const matchStart = match.index ?? 0;
+        const lineNum = stripped.slice(0, matchStart).split('\n').length;
+        offenders.push({
+          file,
+          line: lineNum,
+          text: match[0].replace(/\s+/g, ' ').trim(),
+        });
+      }
+
+      // Also check single-line patterns as a fallback
       const lines = stripped.split('\n');
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i]!;
-        // Only check lines that look like import/export statements
-        // to avoid false positives from string literals or comments.
         if (
           (line.includes('import') || line.includes('export')) &&
           (line.includes("'") || line.includes('"')) &&
           uiPattern.test(line)
         ) {
-          offenders.push({
-            file,
-            line: i + 1,
-            text: line.trim(),
-          });
+          // Avoid double-reporting if already caught by multiline scan
+          const alreadyCaught = offenders.some((o) => o.file === file && o.line === i + 1);
+          if (!alreadyCaught) {
+            offenders.push({
+              file,
+              line: i + 1,
+              text: line.trim(),
+            });
+          }
         }
       }
     }

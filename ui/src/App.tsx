@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import AppLayout from '@cloudscape-design/components/app-layout';
 import TopNavigation from '@cloudscape-design/components/top-navigation';
 import Container from '@cloudscape-design/components/container';
@@ -26,7 +26,7 @@ export default function App() {
   const [version, setVersion] = useState<string>('unknown');
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const checkHealth = async () => {
+  const checkHealth = useCallback(async () => {
     try {
       const res = await fetch('/healthz');
       if (!res.ok) { setHealth('error'); return; }
@@ -40,7 +40,7 @@ export default function App() {
     } catch {
       setHealth('error');
     }
-  };
+  }, []);
 
   useEffect(() => {
     checkHealth();
@@ -48,7 +48,7 @@ export default function App() {
     return () => {
       if (intervalRef.current !== null) clearInterval(intervalRef.current);
     };
-  }, []);
+  }, [checkHealth]);
 
   return (
     <>

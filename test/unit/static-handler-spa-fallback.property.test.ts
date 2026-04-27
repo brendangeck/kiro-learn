@@ -47,7 +47,6 @@ function extensionlessPathArb(): fc.Arbitrary<string> {
       fc.stringMatching(/^[a-z0-9]{1,12}$/),
       { minLength: 1, maxLength: 4 },
     )
-    .filter((segments) => segments.every((s) => s.length >= 1))
     .map((segments) => '/' + segments.join('/'));
 }
 

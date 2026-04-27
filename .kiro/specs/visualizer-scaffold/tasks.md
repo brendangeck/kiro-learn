@@ -73,13 +73,13 @@ Every task cites the requirement sub-clauses it implements. Test tasks cite the 
     - _Requirements: 6.1, 6.2, 6.3, 6.5, 7.1, 7.2, 7.3, 7.4, 8.1, 8.2, 9.1, 9.2, 9.3, N4, N5_
 
   - [x] 3.2 Implement `loadDaemonVersion()` in `src/collector/receiver/index.ts`
-    - Read `package.json` version once at module load via `readFileSync`, relative to the compiled receiver file (`../../package.json`).
+    - Read `package.json` version once at module load via `readFileSync`, resolving the path relative to the compiled receiver file (three `..` traversals from `dist/collector/receiver/` to reach the root `package.json`).
     - Cache in a module-level `const daemonVersion`.
     - On read failure, log `[kiro-learn] could not read package version` to stderr and default to `'unknown'`.
     - _Requirements: 10.1, 10.2, 10.3, 10.4_
 
   - [x] 3.3 Wire static handler and `/healthz` version into `startReceiver`
-    - Compute `assetRoot` once at startup: `path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'ui')`.
+    - Compute `assetRoot` once at startup: `path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'ui')` (two `..` from `dist/collector/receiver/` to `dist/`, then `ui`).
     - Check `existsSync(assetRoot)` at startup, store as `uiBundleAvailable` boolean.
     - Add routing block for `/ui`, `/ui/`, `/ui/*` before the existing 404 fallback:
       - Non-GET methods on `/ui*` → 405 with `Allow: GET` header.
@@ -231,7 +231,7 @@ Every task cites the requirement sub-clauses it implements. Test tasks cite the 
     - Verify `dist/ui/index.html` exists and references `/ui/`-prefixed assets.
     - _Requirements: all, N1_
 
-  - [ ]* 12.2 Manual end-to-end smoke
+  - [ ] 12.2 Manual end-to-end smoke
     - Optional. Build, run `kiro-learn start`, open `http://127.0.0.1:21100/ui` in a browser. Confirm:
       - Cloudscape page renders with top nav showing "kiro-learn" and version.
       - StatusIndicator shows "Daemon healthy".
@@ -239,11 +239,11 @@ Every task cites the requirement sub-clauses it implements. Test tasks cite the 
       - Graph placeholder area visible with "Memory Graph" header and "Graph visualization coming soon" text.
     - Not automated — every behaviour is covered by the test suite above.
 
-  - [ ]* 12.3 Verify `npm pack` includes `dist/ui/`
+  - [ ] 12.3 Verify `npm pack` includes `dist/ui/`
     - Optional. Run `npm pack --dry-run` after build and confirm `dist/ui/index.html` appears in the file list.
     - _Requirements: 4.1, 4.2_
 
-  - [ ]* 12.4 Bundle size check
+  - [ ] 12.4 Bundle size check
     - Optional. After build, check `du -sh dist/ui/` and confirm total is under 2 MiB uncompressed.
     - _Requirements: N3_
 

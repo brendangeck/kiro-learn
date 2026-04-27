@@ -715,15 +715,19 @@ function urlSegmentArb(): fc.Arbitrary<string> {
 function traversalPathArb(): fc.Arbitrary<string> {
   return fc
     .tuple(
-      fc.array(fc.constantFrom('..', urlSegmentArb()), { minLength: 1, maxLength: 6 }),
+      // Generate 0–5 segments that may or may not be '..'
+      fc.array(urlSegmentArb(), { minLength: 0, maxLength: 5 }),
+      // Pick a random index to force a '..' into
+      fc.nat(),
       fc.option(urlSegmentArb(), { nil: undefined }),
     )
-    .chain(([segments, tail]) => {
-      // Resolve the fc.constantFrom / urlSegmentArb union
-      const resolvedSegments: fc.Arbitrary<string[]> = fc.tuple(
-        ...segments.map((s) => (typeof s === 'string' ? fc.constant(s) : s)),
-      );
-      return resolvedSegments.map((segs) => {
+    .chain(([otherSegments, insertIdx, tail]) => {
+      // Insert a guaranteed '..' at a random position
+      const idx = otherSegments.length === 0 ? 0 : insertIdx % (otherSegments.length + 1);
+      const segments = [...otherSegments];
+      segments.splice(idx, 0, '..');
+
+      return fc.tuple(...segments.map((s) => fc.constant(s))).map((segs) => {
         const path = '/' + segs.join('/');
         return tail !== undefined ? `${path}/${tail}` : path;
       });

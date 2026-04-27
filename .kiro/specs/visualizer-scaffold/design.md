@@ -266,7 +266,7 @@ function loadDaemonVersion(): string {
   try {
     const pkgPath = path.resolve(
       path.dirname(fileURLToPath(import.meta.url)),
-      '..', '..', 'package.json',
+      '..', '..', '..', 'package.json',
     );
     const raw = readFileSync(pkgPath, 'utf8');
     const pkg = JSON.parse(raw) as { version?: string };
@@ -278,7 +278,7 @@ function loadDaemonVersion(): string {
 }
 ```
 
-Called once at module load. The result is captured in a module-level `const daemonVersion`. No re-reads on subsequent `/healthz` calls (Requirement 10.2).
+Called once at module load. The result is captured in a module-level `const daemonVersion`. No re-reads on subsequent `/healthz` calls (Requirement 10.2). The compiled receiver lives at `dist/collector/receiver/index.js`, so three `..` traversals reach the root `package.json`.
 
 ### Component 4: Installer `deployPayload` Update
 

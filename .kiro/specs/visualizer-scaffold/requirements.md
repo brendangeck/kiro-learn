@@ -2,7 +2,7 @@
 
 ## Introduction
 
-This document defines the requirements for the second spec in the v1 visualizer sequence: standing up the UI build toolchain, shipping a static bundle with the package, and serving it from the collector daemon. The goal is to de-risk the full UI plumbing — React + Vite + Cloudscape build, `npm pack` inclusion, daemon static-asset serving — without introducing any real dashboard content, data rendering, or graph visualisation.
+This document defines the requirements for the second spec in the v1 visualizer sequence: standing up the UI build toolchain, shipping a static bundle with the package, and serving it from the collector daemon. The goal is to de-risk the full UI plumbing — React + Vite + Cloudscape build, `npm pack` inclusion, daemon static-asset serving — without introducing any real dashboard content, data rendering, or graph visualization.
 
 After this spec, `GET /ui` on the running daemon returns a "coming soon" page that proves the end-to-end chain works: Vite builds a React app into `dist/ui/`, the installer deploys it alongside existing payload subdirectories, the daemon serves it over HTTP on loopback, and the page polls `/healthz` to confirm connectivity. Everything beyond that — read APIs, metric cards, the React Flow graph — is deferred to subsequent specs (`visualizer-read-api`, `visualizer-dashboard`, `visualizer-graph`).
 

@@ -29,7 +29,7 @@ import type { RetrievalAssembler } from '../retrieval/index.js';
 
 /**
  * Read the package version once at module load. The compiled receiver
- * lives at `dist/collector/receiver/index.js`, so `../../package.json`
+ * lives at `dist/collector/receiver/index.js`, so `../../../package.json`
  * resolves to the root `package.json`.
  *
  * @see Requirements 10.1, 10.2, 10.3, 10.4
@@ -38,7 +38,7 @@ function loadDaemonVersion(): string {
   try {
     const pkgPath = path.resolve(
       path.dirname(fileURLToPath(import.meta.url)),
-      '..', '..', 'package.json',
+      '..', '..', '..', 'package.json',
     );
     const raw = readFileSync(pkgPath, 'utf8');
     const pkg = JSON.parse(raw) as { version?: string };

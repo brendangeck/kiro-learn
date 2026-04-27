@@ -73,6 +73,11 @@ export function resolveAsset(urlPath: string, assetRoot: string): AssetResolutio
     return { kind: 'reject', status: 400 };
   }
 
+  // Phase 2b: post-decode null byte check — catches %00 encoded nulls
+  if (decoded.includes('\x00')) {
+    return { kind: 'reject', status: 400 };
+  }
+
   // Phase 3: resolve to absolute path (Req 7.1)
   // Prepend '.' so '/../../etc/passwd' becomes './../../etc/passwd'
   // which path.resolve normalizes against assetRoot.
@@ -148,26 +153,44 @@ export async function serveAsset(
   }
 
   if (resolution.kind === 'spa-fallback') {
-    const content = await readFile(resolution.indexPath);
-    res.writeHead(200, {
-      'Content-Type': 'text/html; charset=utf-8',
-      'Content-Length': content.length,
-      'Cache-Control': 'no-cache',
-    });
-    res.end(content);
+    try {
+      const content = await readFile(resolution.indexPath);
+      res.writeHead(200, {
+        'Content-Type': 'text/html; charset=utf-8',
+        'Content-Length': content.length,
+        'Cache-Control': 'no-cache',
+      });
+      res.end(content);
+    } catch {
+      const payload = JSON.stringify({ error: 'not found' });
+      res.writeHead(404, {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(payload),
+      });
+      res.end(payload);
+    }
     return;
   }
 
   // kind === 'serve'
-  const content = await readFile(resolution.absolutePath);
-  const cacheControl = resolution.isHashed
-    ? 'public, max-age=31536000, immutable'
-    : 'no-cache';
+  try {
+    const content = await readFile(resolution.absolutePath);
+    const cacheControl = resolution.isHashed
+      ? 'public, max-age=31536000, immutable'
+      : 'no-cache';
 
-  res.writeHead(200, {
-    'Content-Type': resolution.mimeType,
-    'Content-Length': content.length,
-    'Cache-Control': cacheControl,
-  });
-  res.end(content);
+    res.writeHead(200, {
+      'Content-Type': resolution.mimeType,
+      'Content-Length': content.length,
+      'Cache-Control': cacheControl,
+    });
+    res.end(content);
+  } catch {
+    const payload = JSON.stringify({ error: 'not found' });
+    res.writeHead(404, {
+      'Content-Type': 'application/json',
+      'Content-Length': Buffer.byteLength(payload),
+    });
+    res.end(payload);
+  }
 }

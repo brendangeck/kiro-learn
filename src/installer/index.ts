@@ -330,7 +330,21 @@ export function deployPayload(): void {
   mkdirSync(libDir, { recursive: true });
 
   // Copy each subdirectory: shim/, collector/, installer/, types/, ui/
-  for (const subdir of ['shim', 'collector', 'installer', 'types', 'ui']) {
+  const requiredSubdirs = ['shim', 'collector', 'installer', 'types'] as const;
+  const optionalSubdirs = ['ui'] as const;
+
+  for (const subdir of requiredSubdirs) {
+    const src = path.join(distDir, subdir);
+    const dst = path.join(libDir, subdir);
+    if (!existsSync(src)) {
+      throw new Error(
+        `[kiro-learn] required payload directory missing: ${src} (distDir: ${distDir})`,
+      );
+    }
+    cpSync(src, dst, { recursive: true });
+  }
+
+  for (const subdir of optionalSubdirs) {
     const src = path.join(distDir, subdir);
     const dst = path.join(libDir, subdir);
     if (!existsSync(src)) continue; // graceful skip for pre-visualizer builds

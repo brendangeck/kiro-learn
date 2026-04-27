@@ -58,8 +58,11 @@ beforeAll(() => {
     // Only create if not already created above
     try {
       writeFileSync(filePath, `content for ${ext}`, { flag: 'wx' });
-    } catch {
-      // File already exists — skip
+    } catch (err: unknown) {
+      // Only ignore EEXIST — rethrow unexpected errors
+      if (!(err instanceof Error && 'code' in err && err.code === 'EEXIST')) {
+        throw err;
+      }
     }
   }
 
@@ -152,6 +155,11 @@ describe('resolveAsset', () => {
 
   it('returns 400 for null byte in path', () => {
     const result = resolveAsset('/index\x00.html', assetRoot);
+    expect(result).toEqual({ kind: 'reject', status: 400 });
+  });
+
+  it('returns 400 for encoded null byte (%00) in path', () => {
+    const result = resolveAsset('/index%00.html', assetRoot);
     expect(result).toEqual({ kind: 'reject', status: 400 });
   });
 
