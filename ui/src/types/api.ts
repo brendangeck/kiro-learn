@@ -28,3 +28,33 @@ export interface EventItem {
   body: { type: string; content?: string; turns?: Array<{ role: string; content: string }>; data?: unknown };
   valid_time: string;
 }
+
+/** Observation type classification for a memory record. */
+export type ObservationType = 'tool_use' | 'decision' | 'error' | 'discovery' | 'pattern';
+
+/**
+ * A single memory record as returned by the `/v1/memories` endpoint.
+ * Fields mirror the backend `MemoryRecordSchema` — duplicated here to
+ * avoid importing from `src/`.
+ */
+export interface MemoryRecord {
+  record_id: string;
+  namespace: string;
+  strategy: string;
+  title: string;
+  summary: string;
+  facts: string[];
+  source_event_ids: string[];
+  created_at: string;
+  concepts: string[];
+  files_touched: string[];
+  observation_type: ObservationType;
+}
+
+/** Paginated response from `GET /v1/memories`. */
+export interface MemoriesResponse {
+  items: MemoryRecord[];
+  total: number;
+  limit: number;
+  offset: number;
+}

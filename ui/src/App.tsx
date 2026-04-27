@@ -9,8 +9,11 @@ import Box from '@cloudscape-design/components/box';
 import ColumnLayout from '@cloudscape-design/components/column-layout';
 import Spinner from '@cloudscape-design/components/spinner';
 import type { HealthzResponse } from './types/health.js';
-import type { StatsResponse, EventsResponse } from './types/api.js';
+import type { StatsResponse, EventsResponse, MemoriesResponse, MemoryRecord } from './types/api.js';
+import type { ProjectInfo } from './graph/transform.js';
 import EventTail from './components/EventTail.js';
+import { MemoryGraph } from './components/MemoryGraph.js';
+import { MemoryDetailPanel } from './components/MemoryDetailPanel.js';
 
 const POLL_INTERVAL_MS = 10_000;
 
@@ -44,6 +47,13 @@ export default function App() {
   const [statsError, setStatsError] = useState<string | null>(null);
   const [eventsError, setEventsError] = useState<string | null>(null);
 
+  const [memories, setMemories] = useState<MemoryRecord[]>([]);
+  const [memoriesLoading, setMemoriesLoading] = useState<boolean>(true);
+  const [memoriesError, setMemoriesError] = useState<string | null>(null);
+
+  const [selectedMemory, setSelectedMemory] = useState<MemoryRecord | null>(null);
+  const [selectedConcept, setSelectedConcept] = useState<string | null>(null);
+
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const checkHealth = useCallback(async () => {
@@ -63,9 +73,10 @@ export default function App() {
   }, []);
 
   const fetchData = useCallback(async () => {
-    const [statsResult, eventsResult] = await Promise.allSettled([
+    const [statsResult, eventsResult, memoriesResult] = await Promise.allSettled([
       fetch('/v1/stats'),
       fetch('/v1/events?limit=50'),
+      fetch('/v1/memories?limit=500'),
     ]);
 
     // Stats
@@ -107,6 +118,26 @@ export default function App() {
     } finally {
       setEventsLoading(false);
     }
+
+    // Memories (Req 2.1, 2.2 — fetched on mount and every 10s refresh)
+    try {
+      if (memoriesResult.status === 'fulfilled') {
+        const memoriesRes = memoriesResult.value;
+        if (memoriesRes.ok) {
+          const data = await memoriesRes.json() as MemoriesResponse;
+          setMemories(data.items);
+          setMemoriesError(null);
+        } else {
+          setMemoriesError('Failed to load memories');
+        }
+      } else {
+        setMemoriesError('Failed to load memories');
+      }
+    } catch {
+      setMemoriesError('Failed to load memories');
+    } finally {
+      setMemoriesLoading(false);
+    }
   }, []);
 
   useEffect(() => {
@@ -120,6 +151,12 @@ export default function App() {
       if (intervalRef.current !== null) clearInterval(intervalRef.current);
     };
   }, [checkHealth, fetchData]);
+
+  // Derive project info from stats for the graph (Req 3.1 — project display names)
+  const projects: ProjectInfo[] = (stats?.projects ?? []).map((p) => ({
+    namespace: p.namespace,
+    display_name: p.display_name,
+  }));
 
   return (
     <>
@@ -147,15 +184,18 @@ export default function App() {
               <MetricCard title="Concepts" value={stats?.total_concepts ?? null} loading={statsLoading} error={statsError} />
             </ColumnLayout>
 
-            {/* Graph placeholder */}
+            {/* Memory Graph (Req 4.1 — replaces "coming soon" placeholder) */}
             <Container header={<Header variant="h2">Memory Graph</Header>}>
-              <div style={{ minHeight: 400, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                <SpaceBetween size="s" direction="vertical" alignItems="center">
-                  <StatusIndicator type="pending">
-                    Graph visualization coming soon
-                  </StatusIndicator>
-                </SpaceBetween>
-              </div>
+              <MemoryGraph
+                memories={memories}
+                projects={projects}
+                loading={memoriesLoading}
+                error={memoriesError}
+                onNodeClick={(memory, concept) => {
+                  setSelectedMemory(memory);
+                  setSelectedConcept(concept);
+                }}
+              />
             </Container>
 
             {/* Event tail */}
@@ -167,6 +207,17 @@ export default function App() {
             />
           </SpaceBetween>
         }
+      />
+
+      {/* Detail panel — slides in when a memory or concept node is clicked (Req 6.1, 6.5) */}
+      <MemoryDetailPanel
+        memory={selectedMemory}
+        concept={selectedConcept}
+        memories={memories}
+        onClose={() => {
+          setSelectedMemory(null);
+          setSelectedConcept(null);
+        }}
       />
     </>
   );
