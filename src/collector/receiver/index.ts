@@ -276,8 +276,8 @@ export function startReceiver(
     // ── GET /v1/stats ─────────────────────────────────────────────
     if (method === 'GET' && pathname === '/v1/stats') {
       const ns = url.searchParams.get('namespace') ?? undefined;
-      if (ns !== undefined && !NAMESPACE_RE.test(ns)) {
-        jsonResponse(res, 400, { error: 'invalid namespace' });
+      if (ns !== undefined && (ns.length > 500 || !NAMESPACE_RE.test(ns))) {
+        jsonResponse(res, 400, { error: ns.length > 500 ? 'parameter too long' : 'invalid namespace' });
         return;
       }
       try {
@@ -304,6 +304,10 @@ export function startReceiver(
         jsonResponse(res, 400, { error: 'namespace parameter is required' });
         return;
       }
+      if (ns.length > 500) {
+        jsonResponse(res, 400, { error: 'parameter too long' });
+        return;
+      }
       if (!NAMESPACE_RE.test(ns)) {
         jsonResponse(res, 400, { error: 'invalid namespace' });
         return;
@@ -322,6 +326,10 @@ export function startReceiver(
       const ns = url.searchParams.get('namespace');
       if (ns === null) {
         jsonResponse(res, 400, { error: 'namespace parameter is required' });
+        return;
+      }
+      if (ns.length > 500) {
+        jsonResponse(res, 400, { error: 'parameter too long' });
         return;
       }
       if (!NAMESPACE_RE.test(ns)) {
@@ -350,6 +358,11 @@ export function startReceiver(
     // ── Method enforcement for read routes ────────────────────────
     if (pathname === '/v1/stats' || pathname === '/v1/memories') {
       res.setHeader('Allow', 'GET');
+      jsonResponse(res, 405, { error: 'method not allowed' });
+      return;
+    }
+    if (pathname === '/v1/events') {
+      res.setHeader('Allow', 'GET, POST');
       jsonResponse(res, 405, { error: 'method not allowed' });
       return;
     }

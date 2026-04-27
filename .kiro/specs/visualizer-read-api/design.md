@@ -10,7 +10,7 @@ The work breaks into three layers: new types (`StatsResult`, `ProjectInfo`), new
 
 ### Endpoint surface
 
-```
+```text
 GET /v1/stats?namespace=...          →  StatsResult + projects array
 GET /v1/memories?namespace=...       →  { items: MemoryRecord[], total }
 GET /v1/events?namespace=...&limit=N →  { items: KiroMemEvent[], total }
@@ -18,7 +18,7 @@ GET /v1/events?namespace=...&limit=N →  { items: KiroMemEvent[], total }
 
 ### Routing order in the receiver
 
-```
+```text
 1. GET /healthz                      (existing)
 2. POST /v1/events                   (existing — ingest)
 3. GET /v1/stats                     (NEW)
@@ -32,7 +32,7 @@ Route 5 (`GET /v1/events`) shares a path with route 2 (`POST /v1/events`). The e
 
 ### Data flow
 
-```
+```text
 Browser → GET /v1/stats → receiver → storage.getStats() → SQL → JSON response
 Browser → GET /v1/memories → receiver → storage.listMemoryRecords() → SQL → JSON response
 Browser → GET /v1/events → receiver → storage.listEvents() → SQL → JSON response

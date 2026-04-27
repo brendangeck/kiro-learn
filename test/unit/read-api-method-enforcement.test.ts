@@ -83,19 +83,29 @@ afterAll(async () => {
 // ── Tests ───────────────────────────────────────────────────────────────
 
 describe('Method enforcement on read API routes (Req 5.2)', () => {
-  it('POST /v1/stats returns 405 or 404', async () => {
+  it('POST /v1/stats returns 405 with Allow: GET header', async () => {
     const res = await fetch(`${baseUrl}/v1/stats`, { method: 'POST' });
-    expect([404, 405]).toContain(res.status);
+    expect(res.status).toBe(405);
+    expect(res.headers.get('allow')).toBe('GET');
   });
 
-  it('POST /v1/memories returns 405 or 404', async () => {
+  it('POST /v1/memories returns 405 with Allow: GET header', async () => {
     const res = await fetch(`${baseUrl}/v1/memories`, { method: 'POST' });
-    expect([404, 405]).toContain(res.status);
+    expect(res.status).toBe(405);
+    expect(res.headers.get('allow')).toBe('GET');
   });
 
-  it('DELETE /v1/stats returns 405 or 404', async () => {
+  it('DELETE /v1/stats returns 405 with Allow: GET header', async () => {
     const res = await fetch(`${baseUrl}/v1/stats`, { method: 'DELETE' });
-    expect([404, 405]).toContain(res.status);
+    expect(res.status).toBe(405);
+    expect(res.headers.get('allow')).toBe('GET');
+  });
+
+  it('DELETE /v1/events returns 405 with Allow: GET, POST header', async () => {
+    const ns = '/actor/alice/project/aaa111bbb222ccc333ddd444eee555ff/';
+    const res = await fetch(`${baseUrl}/v1/events?namespace=${encodeURIComponent(ns)}`, { method: 'DELETE' });
+    expect(res.status).toBe(405);
+    expect(res.headers.get('allow')).toBe('GET, POST');
   });
 
   it('GET /v1/events still works and is not blocked by POST /v1/events handler', async () => {

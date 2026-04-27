@@ -105,6 +105,8 @@ describe('Read API — property: namespace isolation on memories and events (P1 
             // For each namespace, verify isolation.
             for (const ns of namespaces) {
               const memories = await s.storage.listMemoryRecords(ns);
+              const expectedMemories = memoriesByNs.get(ns) ?? 0;
+              expect(memories.length).toBe(expectedMemories);
               for (const mem of memories) {
                 expect(mem.namespace).toBe(ns);
               }
@@ -113,6 +115,8 @@ describe('Read API — property: namespace isolation on memories and events (P1 
                 namespace: ns,
                 limit: 200,
               });
+              const expectedEvents = eventsByNs.get(ns) ?? 0;
+              expect(events.length).toBe(expectedEvents);
               for (const evt of events) {
                 expect(evt.namespace).toBe(ns);
               }

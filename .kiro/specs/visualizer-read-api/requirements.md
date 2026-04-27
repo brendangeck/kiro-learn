@@ -10,7 +10,7 @@ The API is read-only. Three `GET` endpoints on the existing daemon, same port (`
 
 **Three endpoints, three UX regions:**
 
-```
+```text
 ┌─────────────────────────────────────────────────┐
 │  Stats   │  GET /v1/stats                       │
 │          │  Counts, breakdowns, project list     │
