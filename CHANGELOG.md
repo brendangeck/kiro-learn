@@ -1,3 +1,9 @@
+## [0.10.0](https://github.com/brendangeck/kiro-learn/compare/v0.9.0...v0.10.0) (2026-04-27)
+
+### Features
+
+* add visualizer read API endpoints (GET /v1/stats, /v1/memories, /v1/events) ([#16](https://github.com/brendangeck/kiro-learn/issues/16)) ([6fe59de](https://github.com/brendangeck/kiro-learn/commit/6fe59de24702b771f5217f0e940aec2b57b401ef))
+
 ## [0.9.0](https://github.com/brendangeck/kiro-learn/compare/v0.8.0...v0.9.0) (2026-04-27)
 
 ### Features
