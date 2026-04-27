@@ -64,48 +64,56 @@ describe('src/ modules — no ui/ imports', () => {
 
     const offenders: Array<{ file: string; line: number; text: string }> = [];
 
-    // Match import specifiers that reference ui/ in any form:
-    //   - 'ui/'
-    //   - '../ui/'
-    //   - '../../ui/'
-    //   - etc.
-    // Also handles multiline imports by joining the full file content
-    // and scanning for import/export statements with ui/ specifiers.
-    const uiPattern = /ui\//;
-    const importExportPattern = /(?:import|export)\s[\s\S]*?from\s+['"][^'"]*ui\/[^'"]*['"]/g;
+    // Patterns that detect ui/ references in any import/export form:
+    //
+    // 1. Static import/export with `from`:
+    //    import { foo } from 'ui/bar'
+    //    export { foo } from '../ui/bar'
+    //    import type { X } from '../../ui/bar'
+    //    (handles multiline: import {\n  foo\n} from 'ui/bar')
+    //
+    // 2. Side-effect (bare) imports:
+    //    import 'ui/styles.css'
+    //    import '../ui/global.css'
+    //
+    // 3. Dynamic imports:
+    //    import('ui/foo')
+    //    import('../ui/foo')
+    //    (handles whitespace: import  ( 'ui/foo' ))
+    //
+    // 4. require() calls:
+    //    require('ui/foo')
+    //    require('../ui/foo')
+    const patterns: RegExp[] = [
+      // Static import/export ... from '...ui/...'
+      /(?:import|export)\s[\s\S]*?from\s+['"][^'"]*ui\/[^'"]*['"]/g,
+      // Side-effect import: import '...ui/...' (no `from`, no braces/identifiers before the string)
+      /import\s+['"][^'"]*ui\/[^'"]*['"]/g,
+      // Dynamic import: import('...ui/...')
+      /import\s*\(\s*['"][^'"]*ui\/[^'"]*['"]\s*\)/g,
+      // require('...ui/...')
+      /require\s*\(\s*['"][^'"]*ui\/[^'"]*['"]\s*\)/g,
+    ];
 
     for (const file of files) {
       const raw = readFileSync(file, 'utf8');
       const stripped = stripComments(raw);
 
-      // Check for multiline import/export statements
-      const multilineMatches = stripped.matchAll(importExportPattern);
-      for (const match of multilineMatches) {
-        const matchStart = match.index ?? 0;
-        const lineNum = stripped.slice(0, matchStart).split('\n').length;
-        offenders.push({
-          file,
-          line: lineNum,
-          text: match[0].replace(/\s+/g, ' ').trim(),
-        });
-      }
+      const seen = new Set<string>(); // deduplicate overlapping matches
 
-      // Also check single-line patterns as a fallback
-      const lines = stripped.split('\n');
-      for (let i = 0; i < lines.length; i++) {
-        const line = lines[i]!;
-        if (
-          (line.includes('import') || line.includes('export')) &&
-          (line.includes("'") || line.includes('"')) &&
-          uiPattern.test(line)
-        ) {
-          // Avoid double-reporting if already caught by multiline scan
-          const alreadyCaught = offenders.some((o) => o.file === file && o.line === i + 1);
-          if (!alreadyCaught) {
+      for (const pattern of patterns) {
+        // Reset lastIndex for each file since we reuse the regex objects
+        pattern.lastIndex = 0;
+        for (const match of stripped.matchAll(pattern)) {
+          const matchStart = match.index ?? 0;
+          const lineNum = stripped.slice(0, matchStart).split('\n').length;
+          const key = `${file}:${lineNum}`;
+          if (!seen.has(key)) {
+            seen.add(key);
             offenders.push({
               file,
-              line: i + 1,
-              text: line.trim(),
+              line: lineNum,
+              text: match[0].replace(/\s+/g, ' ').trim(),
             });
           }
         }

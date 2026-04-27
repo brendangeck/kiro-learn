@@ -209,12 +209,8 @@ Every task cites the requirement sub-clauses it implements. Test tasks cite the 
     - Mock `global.fetch` to return `{ status: 'ok', version: '0.8.0' }`.
     - Render `<App />` via `@testing-library/react`'s `render`.
     - Assert the rendered output contains the text `"kiro-learn"` (top nav).
-    - Assert the rendered output contains `"Total Memories"` (metric card).
-    - Assert the rendered output contains `"Total Events"` (metric card).
-    - Assert the rendered output contains `"Projects"` (metric card).
-    - Assert the rendered output contains `"Concepts"` (metric card).
-    - Assert the rendered output contains `"Memory Graph"` (graph placeholder header).
-    - Assert the rendered output contains `"Graph visualization coming soon"` (graph placeholder body).
+    - Assert the rendered output contains each metric card label: `"Total Memories"`, `"Total Events"`, `"Projects"`, `"Concepts"`.
+    - Assert the rendered output contains the graph placeholder: `"Memory Graph"` (header) and `"Graph visualization coming soon"` (body).
     - _Requirements: 15.1, 15.2, 15.3, 15.4, 15.5, 15.6, 15.8_
 
 - [x] 11. Checkpoint — intermediate green build
@@ -231,7 +227,7 @@ Every task cites the requirement sub-clauses it implements. Test tasks cite the 
     - Verify `dist/ui/index.html` exists and references `/ui/`-prefixed assets.
     - _Requirements: all, N1_
 
-  - [ ] 12.2 Manual end-to-end smoke
+  - [x] 12.2 Manual end-to-end smoke
     - Optional. Build, run `kiro-learn start`, open `http://127.0.0.1:21100/ui` in a browser. Confirm:
       - Cloudscape page renders with top nav showing "kiro-learn" and version.
       - StatusIndicator shows "Daemon healthy".
@@ -239,17 +235,17 @@ Every task cites the requirement sub-clauses it implements. Test tasks cite the 
       - Graph placeholder area visible with "Memory Graph" header and "Graph visualization coming soon" text.
     - Not automated — every behaviour is covered by the test suite above.
 
-  - [ ] 12.3 Verify `npm pack` includes `dist/ui/`
+  - [x] 12.3 Verify `npm pack` includes `dist/ui/`
     - Optional. Run `npm pack --dry-run` after build and confirm `dist/ui/index.html` appears in the file list.
     - _Requirements: 4.1, 4.2_
 
-  - [ ] 12.4 Bundle size check
+  - [x] 12.4 Bundle size check
     - Optional. After build, check `du -sh dist/ui/` and confirm total is under 2 MiB uncompressed.
     - _Requirements: N3_
 
 ## Notes
 
-- Tasks marked with `*` are optional polish. All non-`*` tasks cover every acceptance criterion and correctness property.
+- Tasks 12.2, 12.3, and 12.4 are optional polish (marked "Optional." in their description). All other tasks cover every acceptance criterion and correctness property.
 - The static handler (`static-handler.ts`) is the security-critical piece. Property test for path-traversal (Task 7.3) is the most important test in this spec.
 - The UI smoke test (Task 10.2) imports from `ui/src/` into a test file under `test/unit/`. This is a test-time cross-reference, not a production import — it does not violate the guard tests which scan `src/` and `ui/src/` only.
 - No React Router is installed. The scaffold is a single view. Routing is added by a later spec.

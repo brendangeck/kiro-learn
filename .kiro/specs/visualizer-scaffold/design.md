@@ -91,7 +91,7 @@ ui/                                    ← NEW: UI source directory
 
 src/collector/receiver/
   index.ts                             ← MODIFIED: adds static-handler routing
-  static-handler.ts                    ← NEW: resolveAsset, serveFile, MIME_TABLE
+  static-handler.ts                    ← NEW: resolveAsset, serveAsset, MIME_TABLE
 
 src/installer/
   index.ts                             ← MODIFIED: deployPayload adds 'ui' to subdirs
@@ -214,7 +214,7 @@ export const MIME_TABLE: Readonly<Record<string, string>> = {
 
 **Changes to `startReceiver`:**
 
-1. Compute `assetRoot` once at startup: `path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'ui')`. This resolves to `dist/ui/` relative to the compiled receiver at `dist/collector/receiver/index.js`.
+1. Compute `assetRoot` once at startup: `path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'ui')`. This resolves to `dist/ui/` relative to the compiled receiver at `dist/collector/receiver/index.js` (two `..` traversals: `receiver/` → `collector/` → `dist/`, then into `ui/`).
 2. Check if `assetRoot` exists at startup. Store a boolean `uiBundleAvailable`.
 3. In the request handler, add routing for `/ui` paths before the existing 404 fallback:
 
@@ -289,11 +289,18 @@ Called once at module load. The result is captured in a module-level `const daem
 ```typescript
 // src/installer/index.ts — inside deployPayload()
 
-// Was:
+// Required subdirectories — hard-fail if missing:
 for (const subdir of ['shim', 'collector', 'installer', 'types']) {
+  const src = path.join(distDir, subdir);
+  const dst = path.join(libDir, subdir);
+  if (!existsSync(src)) {
+    throw new Error(`[kiro-learn] required payload directory missing: ${src}`);
+  }
+  cpSync(src, dst, { recursive: true });
+}
 
-// Becomes:
-for (const subdir of ['shim', 'collector', 'installer', 'types', 'ui']) {
+// Optional subdirectories — skip gracefully if missing:
+for (const subdir of ['ui']) {
   const src = path.join(distDir, subdir);
   const dst = path.join(libDir, subdir);
   if (!existsSync(src)) continue;  // graceful skip for pre-visualizer builds
@@ -301,7 +308,7 @@ for (const subdir of ['shim', 'collector', 'installer', 'types', 'ui']) {
 }
 ```
 
-The `existsSync` guard is new — it makes `deployPayload` tolerant of missing subdirectories. This is needed for `ui/` (which won't exist in pre-visualizer builds) but also makes the function more robust in general. Existing subdirectories (`shim`, `collector`, `installer`, `types`) are always present after a successful build, so the guard is a no-op for them (Requirement 5.3).
+Required subdirectories (`shim`, `collector`, `installer`, `types`) throw if missing — they must always be present after a successful build. Only `ui/` is optional, allowing pre-visualizer builds to deploy without error (Requirement 5.3).
 
 ### Component 5: UI Source (`ui/`)
 
