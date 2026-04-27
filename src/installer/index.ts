@@ -28,6 +28,15 @@ import { fileURLToPath } from 'node:url';
 
 // ── Constants ───────────────────────────────────────────────────────────
 
+/** Default collector daemon bind address. */
+const DEFAULT_COLLECTOR_HOST = '127.0.0.1';
+
+/** Default collector daemon bind port. */
+const DEFAULT_COLLECTOR_PORT = 21100;
+
+/** The URL of the visualizer UI served by the collector daemon. */
+const UI_URL = `http://${DEFAULT_COLLECTOR_HOST}:${DEFAULT_COLLECTOR_PORT}/ui`;
+
 /** The install directory. Always under the user's home. */
 export const INSTALL_DIR: string = path.join(homedir(), '.kiro-learn');
 
@@ -147,6 +156,39 @@ export const PROJECT_MARKERS: readonly string[] = [
   'deno.json',
   'deno.jsonc',
 ] as const;
+
+// ── Browser helper ──────────────────────────────────────────────────────
+
+/**
+ * Open a URL in the user's default browser. Non-fatal — errors are
+ * silently ignored so a failed browser launch never breaks init.
+ *
+ * Uses the platform-appropriate command:
+ * - macOS: `open`
+ * - Linux: `xdg-open`
+ * - Windows: `start` (via cmd.exe)
+ *
+ * Skips entirely when stdout is not a TTY (likely CI) or when the
+ * `CI` environment variable is set.
+ */
+function openBrowser(url: string): void {
+  // Skip in non-interactive / CI environments
+  if (!process.stdout.isTTY || process.env['CI'] !== undefined) return;
+
+  try {
+    const platform = process.platform;
+    if (platform === 'darwin') {
+      spawn('open', [url], { detached: true, stdio: 'ignore' }).unref();
+    } else if (platform === 'win32') {
+      spawn('cmd', ['/c', 'start', url], { detached: true, stdio: 'ignore' }).unref();
+    } else {
+      // Linux and other Unix-like
+      spawn('xdg-open', [url], { detached: true, stdio: 'ignore' }).unref();
+    }
+  } catch {
+    // Non-fatal — browser open is best-effort
+  }
+}
 
 // ── Types ───────────────────────────────────────────────────────────────
 
@@ -473,8 +515,8 @@ export function writeSettings(): void {
 
   const defaults = {
     collector: {
-      host: '127.0.0.1',
-      port: 21100,
+      host: DEFAULT_COLLECTOR_HOST,
+      port: DEFAULT_COLLECTOR_PORT,
     },
     shim: {
       timeoutMs: 2000,
@@ -1326,6 +1368,7 @@ export async function cmdInit(opts: InitOptions): Promise<number> {
     process.stdout.write(`[kiro-learn]   version:     ${version}\n`);
     process.stdout.write(`[kiro-learn]   install_dir: ${INSTALL_DIR}\n`);
     process.stdout.write(`[kiro-learn]   daemon PID:  ${pid ?? 'not running'}\n`);
+    process.stdout.write(`[kiro-learn]   console:     ${pid !== null ? UI_URL : 'start daemon to access'}\n`);
     process.stdout.write(
       `[kiro-learn]   scope:       ${scope.projectRoot ? `global + project (${scope.projectRoot})` : 'global-only'}\n`,
     );
@@ -1338,6 +1381,11 @@ export async function cmdInit(opts: InitOptions): Promise<number> {
       );
     }
     process.stdout.write('\n');
+
+    // Open the visualizer UI in the default browser when the daemon is running
+    if (pid !== null) {
+      openBrowser(UI_URL);
+    }
 
     return 0;
   } catch (err: unknown) {
