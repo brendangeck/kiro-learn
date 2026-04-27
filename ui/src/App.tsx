@@ -4,13 +4,17 @@ import TopNavigation from '@cloudscape-design/components/top-navigation';
 import Container from '@cloudscape-design/components/container';
 import Header from '@cloudscape-design/components/header';
 import SpaceBetween from '@cloudscape-design/components/space-between';
-import StatusIndicator from '@cloudscape-design/components/status-indicator';
 import Box from '@cloudscape-design/components/box';
 import ColumnLayout from '@cloudscape-design/components/column-layout';
 import Spinner from '@cloudscape-design/components/spinner';
+import { applyMode, Mode } from '@cloudscape-design/global-styles';
 import type { HealthzResponse } from './types/health.js';
-import type { StatsResponse, EventsResponse } from './types/api.js';
+import type { StatsResponse, EventsResponse, MemoryRecord } from './types/api.js';
+import { normalizeMemoriesResponse } from './types/api.js';
+import type { ProjectInfo } from './graph/transform.js';
 import EventTail from './components/EventTail.js';
+import { MemoryGraph } from './components/MemoryGraph.js';
+import { MemoryDetailPanel } from './components/MemoryDetailPanel.js';
 
 const POLL_INTERVAL_MS = 10_000;
 
@@ -36,6 +40,12 @@ function MetricCard({ title, value, loading, error: _error }: { title: string; v
 export default function App() {
   const [health, setHealth] = useState<'loading' | 'ok' | 'error'>('loading');
   const [version, setVersion] = useState<string>('unknown');
+  const [darkMode, setDarkMode] = useState<boolean>(() => {
+    const saved = localStorage.getItem('kiro-learn-dark-mode');
+    const isDark = saved === 'true';
+    applyMode(isDark ? Mode.Dark : Mode.Light);
+    return isDark;
+  });
 
   const [stats, setStats] = useState<StatsResponse | null>(null);
   const [events, setEvents] = useState<EventsResponse | null>(null);
@@ -43,6 +53,13 @@ export default function App() {
   const [eventsLoading, setEventsLoading] = useState<boolean>(true);
   const [statsError, setStatsError] = useState<string | null>(null);
   const [eventsError, setEventsError] = useState<string | null>(null);
+
+  const [memories, setMemories] = useState<MemoryRecord[]>([]);
+  const [memoriesLoading, setMemoriesLoading] = useState<boolean>(true);
+  const [memoriesError, setMemoriesError] = useState<string | null>(null);
+
+  const [selectedMemory, setSelectedMemory] = useState<MemoryRecord | null>(null);
+  const [selectedConcept, setSelectedConcept] = useState<string | null>(null);
 
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -63,9 +80,10 @@ export default function App() {
   }, []);
 
   const fetchData = useCallback(async () => {
-    const [statsResult, eventsResult] = await Promise.allSettled([
+    const [statsResult, eventsResult, memoriesResult] = await Promise.allSettled([
       fetch('/v1/stats'),
       fetch('/v1/events?limit=50'),
+      fetch('/v1/memories?limit=500'),
     ]);
 
     // Stats
@@ -107,6 +125,26 @@ export default function App() {
     } finally {
       setEventsLoading(false);
     }
+
+    // Memories (Req 2.1, 2.2 — fetched on mount and every 10s refresh)
+    try {
+      if (memoriesResult.status === 'fulfilled') {
+        const memoriesRes = memoriesResult.value;
+        if (memoriesRes.ok) {
+          const data = normalizeMemoriesResponse(await memoriesRes.json());
+          setMemories(data.items);
+          setMemoriesError(null);
+        } else {
+          setMemoriesError('Failed to load memories');
+        }
+      } else {
+        setMemoriesError('Failed to load memories');
+      }
+    } catch {
+      setMemoriesError('Failed to load memories');
+    } finally {
+      setMemoriesLoading(false);
+    }
   }, []);
 
   useEffect(() => {
@@ -121,24 +159,42 @@ export default function App() {
     };
   }, [checkHealth, fetchData]);
 
+  // Derive project info from stats for the graph (Req 3.1 — project display names)
+  const projects: ProjectInfo[] = (stats?.projects ?? []).map((p) => ({
+    namespace: p.namespace,
+    display_name: p.display_name,
+  }));
+
   return (
     <>
       <TopNavigation
         identity={{ href: '/ui', title: 'kiro-learn', logo: undefined }}
-        utilities={[{ type: 'button', text: `v${version}` }]}
+        utilities={[
+          {
+            type: 'button',
+            iconName: health === 'ok' ? 'status-positive' : health === 'error' ? 'status-negative' : 'status-pending',
+            text: health === 'ok' ? 'Collector Online' : health === 'error' ? 'Collector Offline' : 'Connecting…',
+            disableUtilityCollapse: true,
+          },
+          {
+            type: 'button',
+            iconName: 'light-dark',
+            ariaLabel: darkMode ? 'Switch to light mode' : 'Switch to dark mode',
+            onClick: () => {
+              const next = !darkMode;
+              setDarkMode(next);
+              applyMode(next ? Mode.Dark : Mode.Light);
+              localStorage.setItem('kiro-learn-dark-mode', String(next));
+            },
+          },
+          { type: 'button', text: `v${version}` },
+        ]}
       />
       <AppLayout
         navigationHide
         toolsHide
         content={
           <SpaceBetween size="l">
-            {/* Daemon health */}
-            <StatusIndicator
-              type={health === 'ok' ? 'success' : health === 'error' ? 'error' : 'loading'}
-            >
-              {health === 'ok' ? 'Daemon healthy' : health === 'error' ? 'Daemon unreachable' : 'Checking daemon...'}
-            </StatusIndicator>
-
             {/* Metric cards row */}
             <ColumnLayout columns={4}>
               <MetricCard title="Total Memories" value={stats?.total_memories ?? null} loading={statsLoading} error={statsError} />
@@ -147,15 +203,19 @@ export default function App() {
               <MetricCard title="Concepts" value={stats?.total_concepts ?? null} loading={statsLoading} error={statsError} />
             </ColumnLayout>
 
-            {/* Graph placeholder */}
+            {/* Memory Graph (Req 4.1 — replaces "coming soon" placeholder) */}
             <Container header={<Header variant="h2">Memory Graph</Header>}>
-              <div style={{ minHeight: 400, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                <SpaceBetween size="s" direction="vertical" alignItems="center">
-                  <StatusIndicator type="pending">
-                    Graph visualization coming soon
-                  </StatusIndicator>
-                </SpaceBetween>
-              </div>
+              <MemoryGraph
+                memories={memories}
+                projects={projects}
+                loading={memoriesLoading}
+                error={memoriesError}
+                darkMode={darkMode}
+                onNodeClick={(memory, concept) => {
+                  setSelectedMemory(memory);
+                  setSelectedConcept(concept);
+                }}
+              />
             </Container>
 
             {/* Event tail */}
@@ -167,6 +227,17 @@ export default function App() {
             />
           </SpaceBetween>
         }
+      />
+
+      {/* Detail panel — slides in when a memory or concept node is clicked (Req 6.1, 6.5) */}
+      <MemoryDetailPanel
+        memory={selectedMemory}
+        concept={selectedConcept}
+        memories={memories}
+        onClose={() => {
+          setSelectedMemory(null);
+          setSelectedConcept(null);
+        }}
       />
     </>
   );
