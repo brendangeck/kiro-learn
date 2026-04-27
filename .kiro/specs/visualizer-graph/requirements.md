@@ -159,8 +159,8 @@ The dashboard already fetches `/v1/stats` and `/v1/events`. This spec adds a fet
 1. THE graph SHALL NOT allow users to create new nodes via any interaction (drag from empty space, double-click, context menu, etc.).
 2. THE graph SHALL NOT allow users to create new edges by dragging between nodes. React Flow's connection handles SHALL be disabled.
 3. THE graph SHALL NOT allow users to delete nodes or edges via keyboard (Backspace/Delete) or any other interaction.
-4. THE graph SHALL allow users to drag individual nodes to reposition them for exploration. Repositioned nodes are not persisted — a refresh resets positions.
-5. THE React Flow component SHALL be configured with `nodesConnectable={false}`, `nodesDraggable={true}`, `elementsSelectable={true}`, and `deleteKeyCode={null}` (or equivalent) to enforce read-only behavior while preserving exploration.
+4. THE graph SHALL NOT allow users to drag or select individual nodes or edges. The graph is view-only — pan and zoom are the only interactions besides clicking nodes to open the detail panel.
+5. THE React Flow component SHALL be configured with `nodesConnectable={false}`, `nodesDraggable={false}`, `edgesFocusable={false}`, `elementsSelectable={false}`, and `deleteKeyCode={null}` to enforce fully read-only behavior.
 
 ### Requirement 12: Graph Refreshes with Data
 
@@ -213,6 +213,5 @@ The dashboard already fetches `/v1/stats` and `/v1/events`. This spec adds a fet
 - New backend endpoints — the graph derives everything from `/v1/memories` and `/v1/stats`.
 - Cross-project concept merging — same concept string in different projects stays separate.
 - Time-based visualization / decay / recency — all nodes rendered equally.
-- Drag-to-rearrange nodes (React Flow supports this but we don't need custom persistence).
 - Export/save graph as image.
 - React Router.

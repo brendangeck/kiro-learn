@@ -237,7 +237,7 @@ export function MemoryGraph({
           onNodeClick={handleNodeClick}
           proOptions={{ hideAttribution: true }}
         >
-          <Background variant={BackgroundVariant.Dots} color={colors.canvasBackground} />
+          <Background variant={BackgroundVariant.Dots} color={colors.gridDot} />
         </ReactFlow>
       </div>
     </>

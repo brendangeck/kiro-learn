@@ -36,13 +36,14 @@ export function getNodeColors(darkMode: boolean) {
 interface GraphThemeColors {
   readonly edgeStroke: string;
   readonly canvasBackground: string;
+  readonly gridDot: string;
 }
 
 /** Returns canvas/edge colors for the given mode. */
 export function getGraphColors(darkMode: boolean): GraphThemeColors {
   return darkMode
-    ? { edgeStroke: '#4B5563', canvasBackground: '#0f1b2d' }
-    : { edgeStroke: '#7d8998', canvasBackground: '#f2f3f3' };
+    ? { edgeStroke: '#4B5563', canvasBackground: '#0f1b2d', gridDot: '#1e293b' }
+    : { edgeStroke: '#7d8998', canvasBackground: '#f2f3f3', gridDot: '#d1d5db' };
 }
 
 export const graphTheme = {

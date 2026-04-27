@@ -76,7 +76,7 @@ export function transformToGraph(
       nodes.push({
         id: conceptNodeId,
         type: 'conceptNode',
-        data: { label: concept, count, darkMode },
+        data: { label: concept, count, darkMode, namespace },
         position: { x: 0, y: 0 },
       });
 

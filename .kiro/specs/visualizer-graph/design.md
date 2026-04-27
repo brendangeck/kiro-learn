@@ -94,7 +94,7 @@ Key behaviors:
 - Animated bezier edges with mode-aware stroke color.
 - Canvas background adapts to dark mode.
 - No MiniMap, Controls, or attribution. `minZoom={0.1}`. `fitView` on initial render.
-- Read-only: `nodesConnectable={false}`, `nodesDraggable={true}`, `elementsSelectable={true}`, `deleteKeyCode={null}`.
+- Read-only: `nodesConnectable={false}`, `nodesDraggable={false}`, `edgesFocusable={false}`, `elementsSelectable={false}`, `deleteKeyCode={null}`.
 - Handles clicks on memory nodes (opens detail panel with full record) and concept nodes (opens detail panel with related memories).
 
 ### Component 4: MemoryDetailPanel (`ui/src/components/MemoryDetailPanel.tsx`)
@@ -186,4 +186,4 @@ This approach replaced dagre, which produced rigid hierarchical layouts. d3-forc
 | Symbol | Change |
 |---|---|
 | `App` in `ui/src/App.tsx` | Adds memories fetch with `normalizeMemoriesResponse`, replaces placeholder with MemoryGraph, adds detail panel, dark mode toggle, collector status in TopNavigation |
-| `package.json` devDeps | Adds `@xyflow/react`, `d3-force`, `@types/d3-force`, `dagre`, `@types/dagre` |
+| `package.json` devDeps | Adds `@xyflow/react`, `d3-force`, `@types/d3-force` |

@@ -82,7 +82,7 @@ Dependencies first, then graph logic, then UI components, then wiring, then test
     - Filter nodes by checkbox state; filter edges by `linkType` using `getAllowedLinkTypes()` rules.
     - Assign `sourceHandle`/`targetHandle` per edge based on relative node positions for nearest-side routing.
     - Animated bezier edges with mode-aware stroke color.
-    - Configure read-only: `nodesConnectable={false}`, `nodesDraggable={true}`, `elementsSelectable={true}`, `deleteKeyCode={null}`.
+    - Configure read-only: `nodesConnectable={false}`, `nodesDraggable={false}`, `edgesFocusable={false}`, `elementsSelectable={false}`, `deleteKeyCode={null}`.
     - `<Background>` with dot grid. No MiniMap, Controls, or attribution (`proOptions={{ hideAttribution: true }}`).
     - Register all three custom node types via `nodeTypes` prop.
     - Handle `onNodeClick` for memory and concept nodes.
@@ -129,7 +129,7 @@ Dependencies first, then graph logic, then UI components, then wiring, then test
     - Empty memories → empty graph.
     - Single memory with 2 concepts → correct node/edge counts.
     - Shared concept → degree 2, 2 edges.
-    - Two namespaces → 2 project supernodes.
+    - Two namespaces → 2 project nodes.
     - Empty concepts array → memory node, no edges.
     - _Requirements: 3.6_
 
