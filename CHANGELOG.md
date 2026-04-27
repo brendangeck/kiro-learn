@@ -1,3 +1,9 @@
+## [0.11.0](https://github.com/brendangeck/kiro-learn/compare/v0.10.0...v0.11.0) (2026-04-27)
+
+### Features
+
+* wire visualizer dashboard to live data ([#17](https://github.com/brendangeck/kiro-learn/issues/17)) ([b82aeeb](https://github.com/brendangeck/kiro-learn/commit/b82aeeb46910652cf5894dc94336b4e409984272))
+
 ## [0.10.0](https://github.com/brendangeck/kiro-learn/compare/v0.9.0...v0.10.0) (2026-04-27)
 
 ### Features

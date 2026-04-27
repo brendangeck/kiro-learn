@@ -1,6 +1,6 @@
 {
   "name": "kiro-learn",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "description": "Continuous learning for Kiro agent sessions on AWS. Passive tool-use capture, LLM extraction, and synchronous context injection — inspired by claude-mem, aligned with Bedrock AgentCore Memory.",
   "license": "Apache-2.0",
   "type": "module",
