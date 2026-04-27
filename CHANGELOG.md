@@ -1,3 +1,9 @@
+## [0.12.0](https://github.com/brendangeck/kiro-learn/compare/v0.11.0...v0.12.0) (2026-04-27)
+
+### Features
+
+* add interactive memory graph with React Flow ([#18](https://github.com/brendangeck/kiro-learn/issues/18)) ([13e6900](https://github.com/brendangeck/kiro-learn/commit/13e690086ed51268bf4af970c6d8bb2079ae6307))
+
 ## [0.11.0](https://github.com/brendangeck/kiro-learn/compare/v0.10.0...v0.11.0) (2026-04-27)
 
 ### Features
