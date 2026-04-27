@@ -43,7 +43,9 @@ import type {
   EventSource,
   KiroMemEvent,
   MemoryRecord,
+  ProjectInfo,
   SearchParams,
+  StatsResult,
   StorageBackend,
 } from '../../../types/index.js';
 
@@ -51,6 +53,7 @@ import { escapeLikePattern, sanitizeForFts5 } from './fts5.js';
 import { MIGRATIONS, runMigrations } from './migrations/index.js';
 import {
   prepareStatements,
+  type CountByLabelRow,
   type EventRow,
   type MemoryRecordRow,
 } from './statements.js';
@@ -233,6 +236,94 @@ export function openSqliteStorage(opts: SqliteStorageOptions): StorageBackend {
     return rows.map(rowToMemoryRecord);
   };
 
+  /**
+   * Convert an array of {@link CountByLabelRow} into a `Record<string, number>`.
+   *
+   * Each row's `label` becomes a key and `count` becomes the value.
+   */
+  const countByLabelToRecord = (rows: CountByLabelRow[]): Record<string, number> => {
+    const result: Record<string, number> = {};
+    for (const row of rows) {
+      result[row.label] = row.count;
+    }
+    return result;
+  };
+
+  const getStats = async (namespace?: string): Promise<StatsResult> => {
+    assertOpen();
+
+    if (namespace !== undefined) {
+      // Scoped mode: counts filtered to a single namespace.
+      const statsRow = stmts.selectStatsScoped.get(namespace, namespace);
+      const totalEvents = statsRow?.total_events ?? 0;
+      const totalMemories = statsRow?.total_memories ?? 0;
+
+      const observationTypeRows = stmts.selectObservationTypeCountsScoped.all(namespace);
+      const eventKindRows = stmts.selectEventKindCountsScoped.all(namespace);
+      const conceptsRow = stmts.selectDistinctConceptsScoped.get(namespace);
+
+      return {
+        total_events: totalEvents,
+        total_memories: totalMemories,
+        total_projects: 1,
+        total_concepts: conceptsRow?.total_concepts ?? 0,
+        observation_types: countByLabelToRecord(observationTypeRows),
+        event_kinds: countByLabelToRecord(eventKindRows),
+      };
+    }
+
+    // Global mode: counts across all namespaces.
+    const statsRow = stmts.selectStats.get();
+    const totalEvents = statsRow?.total_events ?? 0;
+    const totalMemories = statsRow?.total_memories ?? 0;
+    const totalProjects = statsRow?.total_projects ?? 0;
+
+    const observationTypeRows = stmts.selectObservationTypeCounts.all();
+    const eventKindRows = stmts.selectEventKindCounts.all();
+    const conceptsRow = stmts.selectDistinctConcepts.get();
+
+    return {
+      total_events: totalEvents,
+      total_memories: totalMemories,
+      total_projects: totalProjects,
+      total_concepts: conceptsRow?.total_concepts ?? 0,
+      observation_types: countByLabelToRecord(observationTypeRows),
+      event_kinds: countByLabelToRecord(eventKindRows),
+    };
+  };
+
+  const listProjects = async (): Promise<ProjectInfo[]> => {
+    assertOpen();
+    const rows = stmts.selectProjects.all();
+    return rows.map((row) => ({
+      namespace: row.namespace,
+      project_path: row.project_path,
+      event_count: row.event_count,
+      memory_count: row.memory_count,
+    }));
+  };
+
+  const listMemoryRecords = async (namespace: string): Promise<MemoryRecord[]> => {
+    assertOpen();
+    const rows = stmts.selectMemoryRecordsByNamespace.all(namespace);
+    return rows.map(rowToMemoryRecord);
+  };
+
+  const listEvents = async (params: {
+    namespace: string;
+    limit: number;
+  }): Promise<{ items: KiroMemEvent[]; total: number }> => {
+    assertOpen();
+    const { namespace, limit } = params;
+    const rows = stmts.selectEventsByNamespace.all(namespace, limit);
+    const countRow = stmts.selectEventCountByNamespace.get(namespace);
+    const total = countRow?.total ?? 0;
+    return {
+      items: rows.map(rowToEvent),
+      total,
+    };
+  };
+
   const close = async (): Promise<void> => {
     if (closed) return;
     closed = true;
@@ -245,6 +336,10 @@ export function openSqliteStorage(opts: SqliteStorageOptions): StorageBackend {
     putMemoryRecord,
     searchMemoryRecords,
     close,
+    getStats,
+    listProjects,
+    listMemoryRecords,
+    listEvents,
   };
 }
 

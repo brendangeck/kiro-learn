@@ -106,6 +106,35 @@ export interface RetrievalResult {
 }
 
 /**
+ * Aggregate stats returned by `GET /v1/stats`. Contains global or
+ * namespace-scoped counts plus breakdowns by observation type and event kind.
+ *
+ * @see Requirements 6.2 (visualizer-read-api)
+ */
+export interface StatsResult {
+  total_events: number;
+  total_memories: number;
+  total_projects: number;
+  total_concepts: number;
+  observation_types: Record<string, number>;
+  event_kinds: Record<string, number>;
+}
+
+/**
+ * Project info returned as part of the stats response. Carries the raw
+ * `project_path` from storage; the receiver handler derives `project_id`
+ * and `display_name` from it — storage stays platform-agnostic.
+ *
+ * @see Requirements 6.2 (visualizer-read-api)
+ */
+export interface ProjectInfo {
+  namespace: string;
+  project_path: string | null;
+  event_count: number;
+  memory_count: number;
+}
+
+/**
  * Storage backend interface. Any backend (SQLite, pgvector, AgentCore) must
  * implement this identically. v1 ships only the SQLite implementation.
  *
@@ -118,7 +147,15 @@ export interface RetrievalResult {
  *   namespaces start with the supplied `namespace` prefix.
  * - `close` is safe to call more than once.
  *
- * @see Requirements 4.1–4.6
+ * Read methods (added by visualizer-read-api spec):
+ * - `getStats` returns aggregate counts, optionally scoped to a namespace.
+ * - `listProjects` returns distinct namespaces with counts and most recent
+ *   `project_path`.
+ * - `listMemoryRecords` returns all memory records for a namespace, newest
+ *   first.
+ * - `listEvents` returns the last N events for a namespace plus total count.
+ *
+ * @see Requirements 4.1–4.6, 6.1, 6.4 (visualizer-read-api)
  */
 export interface StorageBackend {
   putEvent(event: KiroMemEvent): Promise<void>;
@@ -126,4 +163,19 @@ export interface StorageBackend {
   putMemoryRecord(record: MemoryRecord): Promise<void>;
   searchMemoryRecords(params: SearchParams): Promise<MemoryRecord[]>;
   close(): Promise<void>;
+
+  /** Aggregate counts, optionally scoped to a namespace. @see Requirements 6.1 */
+  getStats(namespace?: string): Promise<StatsResult>;
+
+  /** Distinct namespaces with counts and most recent project_path. @see Requirements 6.1 */
+  listProjects(): Promise<ProjectInfo[]>;
+
+  /** All memory records for a namespace, newest first. @see Requirements 6.1 */
+  listMemoryRecords(namespace: string): Promise<MemoryRecord[]>;
+
+  /** Last N events for a namespace, newest first, plus total count. @see Requirements 6.1, 6.4 */
+  listEvents(params: {
+    namespace: string;
+    limit: number;
+  }): Promise<{ items: KiroMemEvent[]; total: number }>;
 }

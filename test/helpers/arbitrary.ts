@@ -16,6 +16,7 @@ import fc from 'fast-check';
 
 import { OBSERVATION_TYPES } from '../../src/types/schemas.js';
 import type { KiroMemEvent, MemoryRecord } from '../../src/types/schemas.js';
+import type { StatsResult, ProjectInfo } from '../../src/types/index.js';
 
 /** Crockford base32 alphabet used in ULIDs (no I, L, O, U). */
 const ULID_ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
@@ -324,6 +325,91 @@ export function arbitraryMemoryRecord(): fc.Arbitrary<MemoryRecord> {
       { minLength: 0, maxLength: 10 },
     ),
     observation_type: fc.constantFrom(...OBSERVATION_TYPES),
+  });
+}
+
+// ── Read-API type generators (visualizer-read-api Task 9.1) ────────────
+
+/** Known observation types used in `StatsResult.observation_types`. */
+const STATS_OBSERVATION_TYPES = [
+  'tool_use',
+  'decision',
+  'error',
+  'discovery',
+  'pattern',
+] as const;
+
+/** Known event kinds used in `StatsResult.event_kinds`. */
+const STATS_EVENT_KINDS = [
+  'prompt',
+  'tool_use',
+  'session_summary',
+  'note',
+] as const;
+
+/**
+ * Arbitrary valid `StatsResult` with reasonable random values.
+ *
+ * Generates non-negative integer counts and breakdowns by observation type
+ * and event kind. Each breakdown key maps to a non-negative count.
+ *
+ * @see .kiro/specs/visualizer-read-api/requirements.md § N11
+ */
+export function arbitraryStatsResult(): fc.Arbitrary<StatsResult> {
+  const countArb = fc.nat({ max: 10000 });
+
+  const observationTypesArb = fc
+    .tuple(...STATS_OBSERVATION_TYPES.map(() => countArb))
+    .map((counts) => {
+      const record: Record<string, number> = {};
+      for (let i = 0; i < STATS_OBSERVATION_TYPES.length; i++) {
+        const key = STATS_OBSERVATION_TYPES[i];
+        const val = counts[i];
+        if (key !== undefined && val !== undefined) {
+          record[key] = val;
+        }
+      }
+      return record;
+    });
+
+  const eventKindsArb = fc
+    .tuple(...STATS_EVENT_KINDS.map(() => countArb))
+    .map((counts) => {
+      const record: Record<string, number> = {};
+      for (let i = 0; i < STATS_EVENT_KINDS.length; i++) {
+        const key = STATS_EVENT_KINDS[i];
+        const val = counts[i];
+        if (key !== undefined && val !== undefined) {
+          record[key] = val;
+        }
+      }
+      return record;
+    });
+
+  return fc.record({
+    total_events: countArb,
+    total_memories: countArb,
+    total_projects: countArb,
+    total_concepts: countArb,
+    observation_types: observationTypesArb,
+    event_kinds: eventKindsArb,
+  });
+}
+
+/**
+ * Arbitrary valid `ProjectInfo` with reasonable random values.
+ *
+ * Uses {@link namespaceArb} for the namespace and {@link projectPathArb}
+ * for the optional project path. Counts are non-negative integers.
+ *
+ * @see .kiro/specs/visualizer-read-api/requirements.md § N11
+ */
+export function arbitraryProjectInfo(): fc.Arbitrary<ProjectInfo> {
+  return fc.record({
+    namespace: namespaceArb(),
+    project_path: fc.option(projectPathArb(), { nil: null }),
+    event_count: fc.nat({ max: 10000 }),
+    memory_count: fc.nat({ max: 10000 }),
   });
 }
 

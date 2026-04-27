@@ -13,4 +13,6 @@ export type {
   EventIngestResponse,
   RetrievalResult,
   StorageBackend,
+  StatsResult,
+  ProjectInfo,
 } from './types/index.js';

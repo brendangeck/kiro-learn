@@ -17,7 +17,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { startReceiver } from '../../src/collector/receiver/index.js';
 import type { ReceiverHandle } from '../../src/collector/receiver/index.js';
-import type { KiroMemEvent, EventIngestResponse } from '../../src/types/index.js';
+import type { KiroMemEvent, EventIngestResponse, StorageBackend } from '../../src/types/index.js';
 import type { Pipeline } from '../../src/collector/pipeline/index.js';
 import type { RetrievalAssembler } from '../../src/collector/retrieval/index.js';
 
@@ -63,7 +63,24 @@ const mockRetrieval: RetrievalAssembler = {
   },
 };
 
-const deps = { pipeline: mockPipeline, retrieval: mockRetrieval };
+const mockStorage: StorageBackend = {
+  putEvent() { return Promise.resolve(); },
+  getEventById() { return Promise.resolve(null); },
+  putMemoryRecord() { return Promise.resolve(); },
+  searchMemoryRecords() { return Promise.resolve([]); },
+  close() { return Promise.resolve(); },
+  getStats() {
+    return Promise.resolve({
+      total_events: 0, total_memories: 0, total_projects: 0,
+      total_concepts: 0, observation_types: {}, event_kinds: {},
+    });
+  },
+  listProjects() { return Promise.resolve([]); },
+  listMemoryRecords() { return Promise.resolve([]); },
+  listEvents() { return Promise.resolve({ items: [], total: 0 }); },
+};
+
+const deps = { pipeline: mockPipeline, retrieval: mockRetrieval, storage: mockStorage };
 const opts = { host: '127.0.0.1', port: 0, maxBodyBytes: 2 * 1024 * 1024, retrievalBudgetMs: 500 };
 
 // ── Helpers ─────────────────────────────────────────────────────────────
