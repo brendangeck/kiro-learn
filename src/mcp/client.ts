@@ -181,14 +181,34 @@ export async function postMemory(
     }
 
     try {
-      const parsed = JSON.parse(body) as {
-        record_id?: string;
-        stored?: boolean;
-      };
+      const parsed: unknown = JSON.parse(body);
+      if (
+        parsed === null ||
+        typeof parsed !== 'object' ||
+        Array.isArray(parsed)
+      ) {
+        return {
+          ok: false,
+          error: {
+            type: 'parse_error' as const,
+            message: 'Unexpected response from collector: expected object',
+          },
+        };
+      }
+      const obj = parsed as Record<string, unknown>;
+      if (typeof obj['record_id'] !== 'string' || typeof obj['stored'] !== 'boolean') {
+        return {
+          ok: false,
+          error: {
+            type: 'parse_error' as const,
+            message: 'Unexpected response from collector: missing record_id or stored',
+          },
+        };
+      }
       return {
         ok: true,
-        record_id: parsed.record_id ?? record.record_id,
-        stored: parsed.stored ?? true,
+        record_id: obj['record_id'],
+        stored: obj['stored'],
       };
     } catch {
       return {
@@ -283,6 +303,24 @@ export async function searchMemories(
             message: 'Unexpected response from collector: expected array',
           },
         };
+      }
+      // Validate each element has the minimum required shape
+      for (const item of parsed) {
+        if (
+          item === null ||
+          typeof item !== 'object' ||
+          typeof (item as Record<string, unknown>)['record_id'] !== 'string' ||
+          typeof (item as Record<string, unknown>)['title'] !== 'string' ||
+          typeof (item as Record<string, unknown>)['summary'] !== 'string'
+        ) {
+          return {
+            ok: false,
+            error: {
+              type: 'parse_error' as const,
+              message: 'Unexpected response from collector: invalid record shape',
+            },
+          };
+        }
       }
       const records = parsed as MemoryRecordPayload[];
       return { ok: true, records };

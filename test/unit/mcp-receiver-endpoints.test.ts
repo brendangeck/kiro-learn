@@ -149,6 +149,22 @@ describe('POST /v1/memories', () => {
       expect(err).toBeInstanceOf(TypeError);
     }
   });
+
+  it('returns 409 for a duplicate record_id', async () => {
+    // VALID_RECORD was already stored by the first test in this suite.
+    // Posting it again should trigger a PK conflict → 409.
+    const res = await fetch(`${baseUrl}/v1/memories`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(VALID_RECORD),
+    });
+
+    expect(res.status).toBe(409);
+
+    const data = await res.json() as { error: string; detail: string };
+    expect(data.error).toBe('conflict');
+    expect(data.detail).toBe('duplicate record_id');
+  });
 });
 
 describe('GET /v1/memories/search', () => {

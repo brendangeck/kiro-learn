@@ -219,6 +219,9 @@ export function validateSessionSummaryArgs(
     if (typeof value !== 'string') {
       return { error: `${field} must be a string` };
     }
+    if (value.trim().length === 0) {
+      return { error: `${field} must be a non-empty string` };
+    }
     result[field] = value;
   }
 

@@ -1165,11 +1165,11 @@ export function arbitrarySessionSummaryArgs(): fc.Arbitrary<{
   files_modified: string[];
 }> {
   return fc.record({
-    request: fc.string({ minLength: 1, maxLength: 2000 }).filter((s) => s.length > 0),
-    investigated: fc.string({ minLength: 1, maxLength: 2000 }).filter((s) => s.length > 0),
-    learned: fc.string({ minLength: 1, maxLength: 2000 }).filter((s) => s.length > 0),
-    completed: fc.string({ minLength: 1, maxLength: 2000 }).filter((s) => s.length > 0),
-    next_steps: fc.string({ minLength: 1, maxLength: 2000 }).filter((s) => s.length > 0),
+    request: fc.string({ minLength: 1, maxLength: 2000 }).filter((s) => s.trim().length > 0),
+    investigated: fc.string({ minLength: 1, maxLength: 2000 }).filter((s) => s.trim().length > 0),
+    learned: fc.string({ minLength: 1, maxLength: 2000 }).filter((s) => s.trim().length > 0),
+    completed: fc.string({ minLength: 1, maxLength: 2000 }).filter((s) => s.trim().length > 0),
+    next_steps: fc.string({ minLength: 1, maxLength: 2000 }).filter((s) => s.trim().length > 0),
     files_read: fc.array(
       fc.string({ minLength: 1, maxLength: 500 }).filter((s) => s.length > 0),
       { minLength: 0, maxLength: 50 },

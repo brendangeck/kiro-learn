@@ -1747,13 +1747,16 @@ export function cmdUninstall(opts: UninstallOptions): number {
           if (servers !== undefined && servers !== null && typeof servers === 'object' && !Array.isArray(servers)) {
             delete servers['kiro-learn-memory'];
             if (Object.keys(servers).length === 0) {
-              unlinkSync(mcpConfigPath);
-            } else {
-              config['mcpServers'] = servers;
-              writeFileSync(mcpConfigPath, JSON.stringify(config, null, 2) + '\n');
+              delete config['mcpServers'];
             }
-          } else {
+          } else if (servers !== undefined) {
+            delete config['mcpServers'];
+          }
+          // Delete file only if config has no remaining keys
+          if (Object.keys(config).length === 0) {
             unlinkSync(mcpConfigPath);
+          } else {
+            writeFileSync(mcpConfigPath, JSON.stringify(config, null, 2) + '\n');
           }
         } catch {
           // Parse error — remove the file
