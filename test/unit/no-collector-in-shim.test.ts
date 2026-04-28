@@ -2,7 +2,7 @@
  * Lint-style guard test.
  *
  * Asserts that no source file under the shim module directories
- * (`src/shim/shared/`, `src/shim/cli-agent/`) imports from
+ * (`src/shim/shared/`, `src/shim/cli-agent/`, `src/shim/ide-hook/`) imports from
  * `src/collector/` or `src/installer/`.
  *
  * Additionally asserts that `src/shim/shared/` does not import from
@@ -67,6 +67,7 @@ describe('shim modules — no collector/installer imports', () => {
   const COLLECTOR_INSTALLER_GUARDED_DIRS = [
     fileURLToPath(new URL('../../src/shim/shared', import.meta.url)),
     fileURLToPath(new URL('../../src/shim/cli-agent', import.meta.url)),
+    fileURLToPath(new URL('../../src/shim/ide-hook', import.meta.url)),
   ];
 
   it('does not import from collector/ or installer/ in any shim module', () => {

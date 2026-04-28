@@ -499,6 +499,17 @@ export function writeBinWrappers(): void {
   const cliPath = path.join(binDir, 'kiro-learn');
   writeFileSync(cliPath, cliContent);
   chmodSync(cliPath, 0o755);
+
+  // IDE shim wrapper
+  const ideShimContent = [
+    '#!/usr/bin/env node',
+    'import { main } from "../lib/shim/ide-hook/index.js";',
+    'main().catch(() => {});',
+  ].join('\n') + '\n';
+
+  const ideShimPath = path.join(binDir, 'ide-shim');
+  writeFileSync(ideShimPath, ideShimContent);
+  chmodSync(ideShimPath, 0o755);
 }
 
 /**
@@ -524,6 +535,120 @@ export function writeSettings(): void {
   };
 
   writeFileSync(settingsPath, JSON.stringify(defaults, null, 2) + '\n');
+}
+
+// ── IDE hook file generation ────────────────────────────────────────────
+
+/**
+ * The three kiro-learn IDE hook file names. Each maps to a Kiro IDE
+ * hook event type.
+ *
+ * @see Requirements 1.3, 13.3
+ */
+export const IDE_HOOK_FILES = [
+  'kiro-learn-prompt.kiro.hook',
+  'kiro-learn-stop.kiro.hook',
+  'kiro-learn-tool.kiro.hook',
+] as const;
+
+/**
+ * Absolute path to the IDE shim executable. Built from {@link INSTALL_DIR}.
+ *
+ * @see Requirements 3.4, 9.3
+ */
+const IDE_SHIM_PATH: string = path.join(INSTALL_DIR, 'bin', 'ide-shim');
+
+/**
+ * `IDE_SHIM_PATH` wrapped in double quotes for safe inclusion in a shell
+ * command — handles home directories with spaces or special characters.
+ */
+const QUOTED_IDE_SHIM: string = `"${IDE_SHIM_PATH}"`;
+
+/**
+ * Write the three kiro-learn `.kiro.hook` files to `<projectRoot>/.kiro/hooks/`.
+ *
+ * Creates the hooks directory if it doesn't exist. Each file is valid JSON
+ * with fields in the order: `enabled`, `name`, `description`, `version`,
+ * `when`, `then`. On upgrade, overwrites existing kiro-learn hook files;
+ * non-kiro-learn hooks are preserved.
+ *
+ * @param projectRoot Absolute path to the project root.
+ *
+ * @see Requirements 1.1–1.8, 2.1–2.5, 13.1, 13.3, 13.4, 13.5
+ */
+export function writeIdeHookFiles(projectRoot: string): void {
+  const hooksDir = path.join(projectRoot, '.kiro', 'hooks');
+  mkdirSync(hooksDir, { recursive: true, mode: 0o755 });
+
+  const hooks = [
+    {
+      enabled: true,
+      name: 'kiro-learn-prompt',
+      description: 'kiro-learn: capture user prompts for memory',
+      version: '1',
+      when: { type: 'promptSubmit' },
+      then: {
+        type: 'runCommand',
+        command: `${QUOTED_IDE_SHIM} promptSubmit || true`,
+      },
+    },
+    {
+      enabled: true,
+      name: 'kiro-learn-stop',
+      description: 'kiro-learn: capture session summaries for memory',
+      version: '1',
+      when: { type: 'agentStop' },
+      then: {
+        type: 'runCommand',
+        command: `${QUOTED_IDE_SHIM} agentStop || true`,
+      },
+    },
+    {
+      enabled: true,
+      name: 'kiro-learn-tool',
+      description: 'kiro-learn: capture tool-use events for memory',
+      version: '1',
+      when: { type: 'postToolUse', toolTypes: ['*'] },
+      then: {
+        type: 'runCommand',
+        command: `${QUOTED_IDE_SHIM} postToolUse || true`,
+      },
+    },
+  ] as const;
+
+  const fileNames = IDE_HOOK_FILES;
+
+  for (let i = 0; i < hooks.length; i++) {
+    const hook = hooks[i]!;
+    const fileName = fileNames[i]!;
+    writeFileSync(
+      path.join(hooksDir, fileName),
+      JSON.stringify(hook, null, 2) + '\n',
+    );
+  }
+}
+
+/**
+ * Remove the three kiro-learn `.kiro.hook` files from
+ * `<projectRoot>/.kiro/hooks/`. Non-kiro-learn hook files and the
+ * directory itself are preserved. Missing files are skipped without error.
+ *
+ * @param projectRoot Absolute path to the project root.
+ *
+ * @see Requirements 10.1–10.4
+ */
+export function removeIdeHookFiles(projectRoot: string): void {
+  const hooksDir = path.join(projectRoot, '.kiro', 'hooks');
+
+  for (const fileName of IDE_HOOK_FILES) {
+    const filePath = path.join(hooksDir, fileName);
+    try {
+      unlinkSync(filePath);
+    } catch (err: unknown) {
+      const e = err as NodeJS.ErrnoException;
+      if (e.code !== 'ENOENT') throw err;
+    }
+  }
 }
 
 // ── Agent seed-then-merge helpers ───────────────────────────────────────
@@ -1343,6 +1468,11 @@ export async function cmdInit(opts: InitOptions): Promise<number> {
     process.stdout.write('[kiro-learn] writing agent configs...\n');
     writeAgentConfigs(scope);
 
+    // ── Write IDE hook files (project-scoped only) ──
+    if (scope.projectRoot !== undefined) {
+      process.stdout.write('[kiro-learn] writing IDE hook files...\n');
+      writeIdeHookFiles(scope.projectRoot);
+    }
     // ── Optionally set default agent ──
     if (opts.setDefault) {
       setDefaultAgent();
@@ -1536,6 +1666,9 @@ export function cmdUninstall(opts: UninstallOptions): number {
       if (existsSync(projectAgent)) {
         unlinkSync(projectAgent);
       }
+
+      // Remove kiro-learn IDE hook files (preserve non-kiro-learn hooks)
+      removeIdeHookFiles(scope.projectRoot);
     }
 
     // Remove install directory
