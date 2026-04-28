@@ -98,7 +98,10 @@ export function loadCollectorConfig(): CollectorClientConfig {
           ? collector['host']
           : defaults.host,
       port:
-        typeof collector?.['port'] === 'number'
+        typeof collector?.['port'] === 'number' &&
+        Number.isInteger(collector['port']) &&
+        collector['port'] >= 1 &&
+        collector['port'] <= 65535
           ? collector['port']
           : defaults.port,
       timeoutMs: defaults.timeoutMs,
@@ -271,7 +274,17 @@ export async function searchMemories(
     }
 
     try {
-      const records = JSON.parse(body) as MemoryRecordPayload[];
+      const parsed: unknown = JSON.parse(body);
+      if (!Array.isArray(parsed)) {
+        return {
+          ok: false,
+          error: {
+            type: 'parse_error' as const,
+            message: 'Unexpected response from collector: expected array',
+          },
+        };
+      }
+      const records = parsed as MemoryRecordPayload[];
       return { ok: true, records };
     } catch {
       return {
@@ -318,7 +331,7 @@ function classifyError(err: unknown): CollectorError {
   ) {
     return {
       type: 'timeout',
-      message: 'Request to collector timed out after 5 seconds.',
+      message: 'Request to collector timed out.',
     };
   }
 

@@ -660,20 +660,36 @@ export function writeMcpConfig(projectRoot: string): void {
   const settingsDir = path.join(projectRoot, '.kiro', 'settings');
   mkdirSync(settingsDir, { recursive: true });
 
+  const mcpConfigPath = path.join(settingsDir, 'mcp.json');
   const mcpServerBin = path.join(INSTALL_DIR, 'bin', 'mcp-server');
-  const config = {
-    mcpServers: {
-      'kiro-learn-memory': {
-        command: mcpServerBin,
-        args: [] as string[],
-      },
-    },
+
+  // Read existing config if present, preserving other MCP servers
+  let config: Record<string, unknown> = {};
+  try {
+    const raw = readFileSync(mcpConfigPath, 'utf8');
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      config = parsed;
+    }
+  } catch {
+    // File missing or invalid JSON — start fresh
+  }
+
+  // Ensure mcpServers object exists
+  let mcpServers = config['mcpServers'] as Record<string, unknown> | undefined;
+  if (mcpServers === undefined || mcpServers === null || typeof mcpServers !== 'object' || Array.isArray(mcpServers)) {
+    mcpServers = {};
+  }
+
+  // Upsert only the kiro-learn-memory entry
+  mcpServers['kiro-learn-memory'] = {
+    command: mcpServerBin,
+    args: [] as string[],
   };
 
-  writeFileSync(
-    path.join(settingsDir, 'mcp.json'),
-    JSON.stringify(config, null, 2) + '\n',
-  );
+  config['mcpServers'] = mcpServers;
+
+  writeFileSync(mcpConfigPath, JSON.stringify(config, null, 2) + '\n');
 }
 
 /**
@@ -1721,10 +1737,28 @@ export function cmdUninstall(opts: UninstallOptions): number {
       // Remove kiro-learn IDE hook files (preserve non-kiro-learn hooks)
       removeIdeHookFiles(scope.projectRoot);
 
-      // Remove MCP config
+      // Remove kiro-learn-memory entry from MCP config (preserve other servers)
       const mcpConfigPath = path.join(scope.projectRoot, '.kiro', 'settings', 'mcp.json');
       if (existsSync(mcpConfigPath)) {
-        unlinkSync(mcpConfigPath);
+        try {
+          const raw = readFileSync(mcpConfigPath, 'utf8');
+          const config = JSON.parse(raw) as Record<string, unknown>;
+          const servers = config['mcpServers'] as Record<string, unknown> | undefined;
+          if (servers !== undefined && servers !== null && typeof servers === 'object' && !Array.isArray(servers)) {
+            delete servers['kiro-learn-memory'];
+            if (Object.keys(servers).length === 0) {
+              unlinkSync(mcpConfigPath);
+            } else {
+              config['mcpServers'] = servers;
+              writeFileSync(mcpConfigPath, JSON.stringify(config, null, 2) + '\n');
+            }
+          } else {
+            unlinkSync(mcpConfigPath);
+          }
+        } catch {
+          // Parse error — remove the file
+          unlinkSync(mcpConfigPath);
+        }
       }
     }
 

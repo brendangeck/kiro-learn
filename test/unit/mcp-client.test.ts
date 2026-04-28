@@ -19,6 +19,7 @@ import type { CollectorClientConfig, MemoryRecordPayload } from '../../src/mcp/c
 
 describe('loadCollectorConfig', () => {
   it('valid settings.json → correct host/port', async () => {
+    vi.resetModules();
     vi.doMock('node:fs', () => ({
       readFileSync: vi.fn().mockReturnValue(
         JSON.stringify({
@@ -39,6 +40,7 @@ describe('loadCollectorConfig', () => {
   });
 
   it('missing file → defaults (127.0.0.1:21100)', async () => {
+    vi.resetModules();
     vi.doMock('node:fs', () => ({
       readFileSync: vi.fn().mockImplementation(() => {
         throw new Error('ENOENT');
@@ -221,10 +223,19 @@ describe('HTTP transport', () => {
     it('connection refused → typed error with type "connection_refused"', async () => {
       const { postMemory } = await import('../../src/mcp/client.js');
 
-      // Use a port that nothing is listening on
+      // Reserve an ephemeral port and close it so nothing is listening
+      const { createServer: createTcpServer } = await import('node:net');
+      const tmpServer = createTcpServer();
+      const freePort = await new Promise<number>((resolve) => {
+        tmpServer.listen(0, '127.0.0.1', () => {
+          resolve((tmpServer.address() as AddressInfo).port);
+          tmpServer.close();
+        });
+      });
+
       const result = await postMemory(makeRecord(), {
         host: '127.0.0.1',
-        port: 19999,
+        port: freePort,
         timeoutMs: 5000,
       });
 

@@ -19,10 +19,16 @@ import { userInfo } from 'node:os';
  */
 export function getActorId(): string {
   try {
-    return userInfo().username;
+    const name = userInfo().username;
+    if (name.trim().length > 0) return name;
   } catch {
-    return process.env['USER'] ?? process.env['USERNAME'] ?? 'unknown';
+    // fall through to env vars
   }
+  const user = process.env['USER'];
+  if (user !== undefined && user.trim().length > 0) return user;
+  const username = process.env['USERNAME'];
+  if (username !== undefined && username.trim().length > 0) return username;
+  return 'unknown';
 }
 
 /**

@@ -208,6 +208,16 @@ describe('GET /v1/memories/search', () => {
     const data = await res.json() as { error: string };
     expect(data.error).toBe('invalid namespace');
   });
+  it('returns 400 when namespace parameter is missing (Req 8.3)', async () => {
+    const res = await fetch(
+      `${baseUrl}/v1/memories/search?query=test`,
+    );
+
+    expect(res.status).toBe(400);
+
+    const data = await res.json() as { error: string };
+    expect(data.error).toBe('namespace parameter is required');
+  });
 });
 
 describe('Method enforcement on memory endpoints (Req 8.1, 8.3)', () => {

@@ -425,7 +425,12 @@ export function startReceiver(
       // Store via storage backend
       try {
         await storage.putMemoryRecord(record);
-      } catch {
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : '';
+        if (message.includes('UNIQUE constraint failed')) {
+          jsonResponse(res, 409, { error: 'conflict', detail: 'duplicate record_id' });
+          return;
+        }
         jsonResponse(res, 500, { error: 'internal error' });
         return;
       }

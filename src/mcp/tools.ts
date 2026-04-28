@@ -134,11 +134,14 @@ export function validateObservationArgs(
   if (typeof observationType !== 'string') {
     return { error: 'observation_type must be a string' };
   }
+  const ALLOWED_OBSERVATION_TYPES = OBSERVATION_TYPES.filter(
+    (t) => t !== 'session_summary',
+  );
   if (
-    !(OBSERVATION_TYPES as readonly string[]).includes(observationType)
+    !(ALLOWED_OBSERVATION_TYPES as readonly string[]).includes(observationType)
   ) {
     return {
-      error: `observation_type must be one of: ${OBSERVATION_TYPES.join(', ')}`,
+      error: `observation_type must be one of: ${ALLOWED_OBSERVATION_TYPES.join(', ')}`,
     };
   }
 
@@ -315,7 +318,18 @@ function buildSessionSummaryText(args: SessionSummaryArgs): string {
     return full;
   }
 
-  return full.slice(0, 4000);
+  // Remove sections from the bottom until under limit
+  const included = [...sections];
+  while (included.length > 0) {
+    const candidate = included.join('\n\n');
+    if (candidate.length + '\n\n[truncated]'.length <= 4000) {
+      return candidate + '\n\n[truncated]';
+    }
+    included.pop();
+  }
+
+  // All sections too long individually — truncate the first section
+  return sections[0]!.slice(0, 4000 - '\n\n[truncated]'.length) + '\n\n[truncated]';
 }
 
 // ── Tool Handlers ───────────────────────────────────────────────────────
@@ -413,7 +427,7 @@ export async function handleSaveObservation(
       return errorResult(result.error.message);
     }
 
-    return successResult(`Saved observation ${recordId}`);
+    return successResult(`Saved observation ${result.record_id}`);
   } catch (err: unknown) {
     const message =
       err instanceof Error ? err.message : 'An unexpected error occurred';
@@ -472,7 +486,7 @@ export async function handleSaveSessionSummary(
       return errorResult(result.error.message);
     }
 
-    return successResult(`Saved session summary ${recordId}`);
+    return successResult(`Saved session summary ${result.record_id}`);
   } catch (err: unknown) {
     const message =
       err instanceof Error ? err.message : 'An unexpected error occurred';

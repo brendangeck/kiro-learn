@@ -49,12 +49,14 @@ describe('Config loading — property tests', () => {
           expectedPort: c.port,
         })),
       // Valid JSON without collector section
-      fc.jsonValue().map((v) => ({
-        type: 'no-collector' as const,
-        content: JSON.stringify(v),
-        expectedHost: '127.0.0.1',
-        expectedPort: 21100,
-      })),
+      fc.jsonValue()
+        .filter((v) => v === null || typeof v !== 'object' || Array.isArray(v) || !('collector' in (v as object)))
+        .map((v) => ({
+          type: 'no-collector' as const,
+          content: JSON.stringify(v),
+          expectedHost: '127.0.0.1',
+          expectedPort: 21100,
+        })),
       // Invalid JSON
       fc
         .string({ minLength: 1, maxLength: 500 })
@@ -103,11 +105,9 @@ describe('Config loading — property tests', () => {
         expect(typeof config.port).toBe('number');
         expect(config.port).toBeGreaterThan(0);
 
-        // When missing or malformed, defaults apply
-        if (scenario.type === 'missing' || scenario.type === 'invalid-json') {
-          expect(config.host).toBe('127.0.0.1');
-          expect(config.port).toBe(21100);
-        }
+        // Assert scenario-specific expectations
+        expect(config.host).toBe(scenario.expectedHost);
+        expect(config.port).toBe(scenario.expectedPort);
       }),
       { numRuns: 100 },
     );

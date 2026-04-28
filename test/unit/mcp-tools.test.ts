@@ -7,7 +7,7 @@
  * @see Requirements 2.1–2.4, 3.1–3.6, 4.1–4.5, 5.1–5.4, 7.1–7.5, 13.1–13.3
  */
 
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { CollectorClientConfig, MemoryRecordPayload } from '../../src/mcp/client.js';
 import type { ToolContext } from '../../src/mcp/tools.js';
@@ -51,6 +51,10 @@ function makeRecord(overrides: Partial<MemoryRecordPayload> = {}): MemoryRecordP
     ...overrides,
   };
 }
+
+beforeEach(() => {
+  vi.clearAllMocks();
+});
 
 // ── handleSearchMemory ──────────────────────────────────────────────────
 
@@ -168,7 +172,7 @@ describe('handleSaveSessionSummary', () => {
     );
 
     expect(result.isError).toBeUndefined();
-    expect(postMemory).toHaveBeenCalled();
+    expect(postMemory).toHaveBeenCalledTimes(1);
   });
 
   it('summary truncation to 4000 chars — very long fields', async () => {
@@ -193,7 +197,7 @@ describe('handleSaveSessionSummary', () => {
     );
 
     expect(result.isError).toBeUndefined();
-    expect(postMemory).toHaveBeenCalled();
+    expect(postMemory).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -220,7 +224,7 @@ describe('error handling', () => {
       ok: false,
       error: {
         type: 'timeout',
-        message: 'Request to collector timed out after 5 seconds.',
+        message: 'Request to collector timed out.',
       },
     });
 

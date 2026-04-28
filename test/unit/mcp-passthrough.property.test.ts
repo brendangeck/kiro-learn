@@ -67,7 +67,8 @@ describe('Private tag passthrough — property tests', () => {
 
         const result = validateObservationArgs(args);
 
-        // If validation passes, check fields are preserved byte-for-byte
+        // Validation must succeed for valid-shaped inputs with private tags
+        expect(result).not.toHaveProperty('error');
         if (!('error' in result)) {
           expect(result.title).toBe(title);
           expect(result.summary).toBe(summary);

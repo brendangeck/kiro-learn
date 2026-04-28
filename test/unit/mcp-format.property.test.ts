@@ -85,12 +85,18 @@ describe('formatSearchResults — property tests', () => {
           const payloads = records.map(toPayload);
           const output = formatSearchResults(payloads);
 
-          // Check blank-line separators: split on double-newline
-          const blocks = output.split('\n\n');
-          // With N records, there should be at least N-1 blank-line separators
-          // (each block may itself contain \n\n for concepts/files sections,
-          // so we check that the count is >= N-1)
-          expect(blocks.length).toBeGreaterThanOrEqual(payloads.length);
+          // Count true record boundaries by searching for "\n\n### " markers
+          const headerMarker = '\n\n### ';
+          let boundaryCount = 0;
+          let searchIdx = 0;
+          while (true) {
+            const idx = output.indexOf(headerMarker, searchIdx);
+            if (idx === -1) break;
+            boundaryCount++;
+            searchIdx = idx + 1;
+          }
+          // N records should have N-1 boundary markers between them
+          expect(boundaryCount).toBe(payloads.length - 1);
 
           // Check titles appear in input order
           let searchFrom = 0;

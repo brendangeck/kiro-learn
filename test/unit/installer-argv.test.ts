@@ -12,9 +12,6 @@
  * Validates: Requirements 1.3, 1.4, 1.5, 1.6
  */
 
-import { readFileSync } from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
 
 // Mock the command handlers so dispatch never runs real init/start/stop/etc.
@@ -27,9 +24,6 @@ vi.mock('../../src/installer/index.js', () => ({
 }));
 
 const { dispatch } = await import('../../src/installer/bin.js');
-
-const thisDir = path.dirname(fileURLToPath(import.meta.url));
-const projectRoot = path.resolve(thisDir, '../..');
 
 describe('installer argv parsing', () => {
   it('--version prints version and sets exitCode 0', async () => {
@@ -81,30 +75,39 @@ describe('installer argv parsing', () => {
     expect(result.exitCode).toBe(1);
   });
 
-  it('flags are correctly parsed — source verifies dispatch table', () => {
+  it('init flags are correctly parsed and dispatched', async () => {
     /**
      * Validates: Requirements 1.5
-     *
-     * Verify the bin.ts source contains the correct flag parsing logic
-     * for init flags (--no-set-default, --yes, -y, --global-only) and
-     * uninstall flags (--keep-data).
      */
-    const binSource = readFileSync(
-      path.join(projectRoot, 'src', 'installer', 'bin.ts'),
-      'utf8',
-    );
+    const { cmdInit } = await import('../../src/installer/index.js');
 
-    // init flags
-    expect(binSource).toContain("'--no-set-default'");
-    expect(binSource).toContain("'--yes'");
-    expect(binSource).toContain("'-y'");
-    expect(binSource).toContain("'--global-only'");
+    await dispatch(['init', '--no-set-default', '--yes', '--global-only']);
+    expect(cmdInit).toHaveBeenCalledWith({
+      setDefault: false,
+      yes: true,
+      globalOnly: true,
+    });
 
-    // uninstall flags
-    expect(binSource).toContain("'--keep-data'");
+    vi.mocked(cmdInit).mockClear();
+    await dispatch(['init', '-y']);
+    expect(cmdInit).toHaveBeenCalledWith({
+      setDefault: true,
+      yes: true,
+      globalOnly: false,
+    });
+  });
 
-    // Verify the flag logic is correct:
-    // setDefault should be negated (NOT includes --no-set-default)
-    expect(binSource).toContain("!flags.includes('--no-set-default')");
+  it('uninstall flags are correctly parsed and dispatched', async () => {
+    /**
+     * Validates: Requirements 1.5
+     */
+    const { cmdUninstall } = await import('../../src/installer/index.js');
+
+    await dispatch(['uninstall', '--keep-data']);
+    expect(cmdUninstall).toHaveBeenCalledWith({ keepData: true });
+
+    vi.mocked(cmdUninstall).mockClear();
+    await dispatch(['uninstall']);
+    expect(cmdUninstall).toHaveBeenCalledWith({ keepData: false });
   });
 });

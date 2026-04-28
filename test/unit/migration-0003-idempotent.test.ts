@@ -7,7 +7,7 @@ import {
 } from '../../src/collector/storage/sqlite/migrations/index.js';
 
 /**
- * Migration 0003 — idempotent re-apply.
+ * Migration idempotent re-apply.
  *
  * Task 5.4 in `.kiro/specs/project-path-capture/tasks.md`:
  *
@@ -18,9 +18,9 @@ import {
  * This is an example-level counterpart to the property-based idempotency
  * check in `migrations.idempotency.property.test.ts` (which covers
  * arbitrary prefixes of `MIGRATIONS`). Here we pin the full canonical
- * migration list once — so that a regression landing alongside migration
- * 0003 surfaces from a named, file-scoped test even if fast-check's
- * universe is ever narrowed.
+ * migration list (currently 4 migrations, head version 4) once — so that
+ * a regression surfaces from a named, file-scoped test even if
+ * fast-check's universe is ever narrowed.
  *
  * The contract under test: re-invoking `runMigrations` against a database
  * already at the current head must be a complete no-op at both the schema
@@ -59,7 +59,7 @@ interface MigrationRow {
   applied_at: string;
 }
 
-describe('migration 0003 — idempotent re-apply of the full MIGRATIONS list', () => {
+describe('migration idempotent re-apply — full MIGRATIONS list', () => {
   let db: Database.Database;
 
   beforeEach(() => {
@@ -71,7 +71,7 @@ describe('migration 0003 — idempotent re-apply of the full MIGRATIONS list', (
   });
 
   it('leaves sqlite_master and _migrations byte-identical on a second invocation (Requirement 8.6)', () => {
-    // First invocation: bring the DB up to the current head (version 3).
+    // First invocation: bring the DB up to the current head (version 4).
     runMigrations(db, MIGRATIONS);
 
     const schemaAfterFirst = db
@@ -86,7 +86,7 @@ describe('migration 0003 — idempotent re-apply of the full MIGRATIONS list', (
       .all();
 
     // Sanity-check the precondition: the first run must have recorded all
-    // three migrations. Without this, the "no-op on second invocation"
+    // four migrations. Without this, the "no-op on second invocation"
     // check below would hold vacuously on, say, a broken runner that
     // silently skipped migrations.
     expect(migrationsAfterFirst.map((r) => r.version)).toEqual([1, 2, 3, 4]);
