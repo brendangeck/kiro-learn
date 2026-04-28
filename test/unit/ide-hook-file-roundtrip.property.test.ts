@@ -16,7 +16,7 @@
 import { describe, expect, it } from 'vitest';
 import fc from 'fast-check';
 
-import { ideHookFileArb, shimPathArb } from '../helpers/arbitrary.js';
+import { ideHookFileArb } from '../helpers/arbitrary.js';
 
 // ── Property tests ──────────────────────────────────────────────────────
 
@@ -53,28 +53,6 @@ describe('IDE hook files — P6 + P7 property tests', () => {
 
           // P7: command must start with a quoted path
           expect(command).toMatch(/^"[^"]+"/);
-        },
-      ),
-      { numRuns: 100 },
-    );
-  });
-
-  it('P7: shim paths with spaces are properly quoted in commands', () => {
-    fc.assert(
-      fc.property(
-        shimPathArb(),
-        fc.constantFrom('promptSubmit', 'agentStop', 'postToolUse'),
-        (shimPath, eventType) => {
-          const command = `"${shimPath}" ${eventType} || true`;
-
-          // P7: command must end with ` || true`
-          expect(command).toMatch(/ \|\| true$/);
-
-          // P7: the shim path must be quoted
-          expect(command.startsWith(`"${shimPath}"`)).toBe(true);
-
-          // P7: command must contain the event type
-          expect(command).toContain(eventType);
         },
       ),
       { numRuns: 100 },

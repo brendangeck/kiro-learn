@@ -378,7 +378,7 @@ When fields are missing from the IDE payload, defaults are applied:
 
 All errors are handled within the shim — nothing propagates to the IDE. The error handling follows a defense-in-depth strategy:
 
-1. **Layer 1: Per-operation try/catch** — Each handler function catches its own errors (JSON parse failures, transport errors) and logs to stderr.
+1. **Layer 1: Per-operation error handling** — Transport errors (connection refused, timeout, non-2xx) are caught inside `postEvent` in `src/shim/shared/index.ts`, which returns `null` and logs to stderr. JSON parse failures in `handleToolUse` are caught by a local try/catch that falls back to defaults.
 2. **Layer 2: Top-level try/catch** — The `main()` function wraps the entire dispatch in a try/catch. Any uncaught exception is logged to stderr and swallowed.
 3. **Layer 3: `|| true` suffix** — The hook file command includes `|| true` so even a Node.js crash (segfault, OOM) doesn't propagate a non-zero exit to the IDE.
 

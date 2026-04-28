@@ -580,50 +580,55 @@ export function writeIdeHookFiles(projectRoot: string): void {
   const hooksDir = path.join(projectRoot, '.kiro', 'hooks');
   mkdirSync(hooksDir, { recursive: true, mode: 0o755 });
 
-  const hooks = [
+  const hookEntries: ReadonlyArray<{ fileName: string; payload: object }> = [
     {
-      enabled: true,
-      name: 'kiro-learn-prompt',
-      description: 'kiro-learn: capture user prompts for memory',
-      version: '1',
-      when: { type: 'promptSubmit' },
-      then: {
-        type: 'runCommand',
-        command: `${QUOTED_IDE_SHIM} promptSubmit || true`,
+      fileName: 'kiro-learn-prompt.kiro.hook',
+      payload: {
+        enabled: true,
+        name: 'kiro-learn-prompt',
+        description: 'kiro-learn: capture user prompts for memory',
+        version: '1',
+        when: { type: 'promptSubmit' },
+        then: {
+          type: 'runCommand',
+          command: `${QUOTED_IDE_SHIM} promptSubmit || true`,
+        },
       },
     },
     {
-      enabled: true,
-      name: 'kiro-learn-stop',
-      description: 'kiro-learn: capture session summaries for memory',
-      version: '1',
-      when: { type: 'agentStop' },
-      then: {
-        type: 'runCommand',
-        command: `${QUOTED_IDE_SHIM} agentStop || true`,
+      fileName: 'kiro-learn-stop.kiro.hook',
+      payload: {
+        enabled: true,
+        name: 'kiro-learn-stop',
+        description: 'kiro-learn: capture session summaries for memory',
+        version: '1',
+        when: { type: 'agentStop' },
+        then: {
+          type: 'runCommand',
+          command: `${QUOTED_IDE_SHIM} agentStop || true`,
+        },
       },
     },
     {
-      enabled: true,
-      name: 'kiro-learn-tool',
-      description: 'kiro-learn: capture tool-use events for memory',
-      version: '1',
-      when: { type: 'postToolUse', toolTypes: ['*'] },
-      then: {
-        type: 'runCommand',
-        command: `${QUOTED_IDE_SHIM} postToolUse || true`,
+      fileName: 'kiro-learn-tool.kiro.hook',
+      payload: {
+        enabled: true,
+        name: 'kiro-learn-tool',
+        description: 'kiro-learn: capture tool-use events for memory',
+        version: '1',
+        when: { type: 'postToolUse', toolTypes: ['*'] },
+        then: {
+          type: 'runCommand',
+          command: `${QUOTED_IDE_SHIM} postToolUse || true`,
+        },
       },
     },
-  ] as const;
+  ];
 
-  const fileNames = IDE_HOOK_FILES;
-
-  for (let i = 0; i < hooks.length; i++) {
-    const hook = hooks[i]!;
-    const fileName = fileNames[i]!;
+  for (const { fileName, payload } of hookEntries) {
     writeFileSync(
       path.join(hooksDir, fileName),
-      JSON.stringify(hook, null, 2) + '\n',
+      JSON.stringify(payload, null, 2) + '\n',
     );
   }
 }

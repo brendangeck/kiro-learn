@@ -82,7 +82,8 @@ async function handleToolUse(userPrompt: string, cwd: string): Promise<void> {
     if (
       parsed['toolArgs'] !== null &&
       parsed['toolArgs'] !== undefined &&
-      typeof parsed['toolArgs'] === 'object'
+      typeof parsed['toolArgs'] === 'object' &&
+      !Array.isArray(parsed['toolArgs'])
     ) {
       toolInput = parsed['toolArgs'] as Record<string, unknown>;
     }
