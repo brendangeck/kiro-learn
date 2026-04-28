@@ -1,3 +1,9 @@
+## [0.13.0](https://github.com/brendangeck/kiro-learn/compare/v0.12.1...v0.13.0) (2026-04-28)
+
+### Features
+
+* add Kiro IDE hook shim ([#20](https://github.com/brendangeck/kiro-learn/issues/20)) ([bce185c](https://github.com/brendangeck/kiro-learn/commit/bce185c2719d8f31f487b45fb6f2e4c4d9dac7ed))
+
 ## [0.12.1](https://github.com/brendangeck/kiro-learn/compare/v0.12.0...v0.12.1) (2026-04-27)
 
 ### Bug Fixes
