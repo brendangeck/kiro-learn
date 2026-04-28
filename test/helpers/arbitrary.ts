@@ -1056,6 +1056,13 @@ export function ideHookFileArb(): fc.Arbitrary<KiroHookFile> {
  * @see .kiro/specs/kiro-ide-hook-shim/design.md § Hook Command Format
  */
 export function shimPathArb(): fc.Arbitrary<string> {
+  // Segments use a safe alphabet: alphanumerics, dash, underscore, dot, space.
+  // This avoids generating paths with shell-unsafe characters (backticks, $, \, newlines)
+  // that would produce misleading test data.
+  const safeSegment = fc
+    .stringMatching(/^[a-zA-Z0-9 _.-]{1,15}$/)
+    .filter((s) => s.length >= 1 && s.length <= 15);
+
   return fc.oneof(
     // Simple path
     fc.constant('/home/user/.kiro-learn/bin/ide-shim'),
@@ -1063,12 +1070,9 @@ export function shimPathArb(): fc.Arbitrary<string> {
     fc.constant('~/.kiro-learn/bin/ide-shim'),
     // Path with spaces
     fc.constant('/home/my user/.kiro-learn/bin/ide-shim'),
-    // Random path segments
+    // Random path segments with safe characters
     fc
-      .array(
-        fc.string({ minLength: 1, maxLength: 15 }).filter((s) => s.length > 0 && !s.includes('"')),
-        { minLength: 1, maxLength: 5 },
-      )
+      .array(safeSegment, { minLength: 1, maxLength: 5 })
       .map((segments) => '/' + segments.join('/') + '/ide-shim'),
   );
 }

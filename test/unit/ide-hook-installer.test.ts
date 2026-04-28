@@ -13,32 +13,54 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   statSync,
   writeFileSync,
 } from 'node:fs';
+import type * as nodeOs from 'node:os';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import {
+// Resolve symlinks (macOS /var → /private/var).
+const tmpHome: string = realpathSync(
+  mkdtempSync(join(tmpdir(), 'kiro-learn-ide-installer-test-')),
+);
+
+// Mock homedir BEFORE importing the installer module so INSTALL_DIR
+// resolves to a temp directory instead of the real ~/.kiro-learn.
+vi.mock('node:os', async (importOriginal) => {
+  const original = (await importOriginal()) as typeof nodeOs;
+  return {
+    ...original,
+    homedir: () => tmpHome,
+  };
+});
+
+const {
   IDE_HOOK_FILES,
-  removeIdeHookFiles,
-  writeIdeHookFiles,
-  writeBinWrappers,
   INSTALL_DIR,
-} from '../../src/installer/index.js';
+  removeIdeHookFiles,
+  writeBinWrappers,
+  writeIdeHookFiles,
+} = await import('../../src/installer/index.js');
 
 // ── Setup / teardown ────────────────────────────────────────────────────
 
 let tmpProjectRoot: string;
 
 beforeEach(() => {
-  tmpProjectRoot = mkdtempSync(join(tmpdir(), 'kiro-learn-installer-test-'));
+  tmpProjectRoot = mkdtempSync(join(tmpdir(), 'kiro-learn-ide-proj-'));
 });
 
 afterEach(() => {
   rmSync(tmpProjectRoot, { recursive: true, force: true });
+  rmSync(INSTALL_DIR, { recursive: true, force: true });
+});
+
+afterAll(() => {
+  rmSync(tmpHome, { recursive: true, force: true });
 });
 
 // ── Tests ───────────────────────────────────────────────────────────────
@@ -224,11 +246,8 @@ describe('removeIdeHookFiles', () => {
 
 describe('writeBinWrappers — ide-shim', () => {
   it('writes ide-shim wrapper with correct content', () => {
-    // Only test if INSTALL_DIR/bin exists (may not in test env)
     const binDir = join(INSTALL_DIR, 'bin');
-    if (!existsSync(binDir)) {
-      mkdirSync(binDir, { recursive: true });
-    }
+    mkdirSync(binDir, { recursive: true });
 
     writeBinWrappers();
 
