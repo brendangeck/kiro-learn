@@ -18,6 +18,7 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  writeFileSync,
 } from 'node:fs';
 import type * as nodeOs from 'node:os';
 import { tmpdir } from 'node:os';
@@ -38,7 +39,37 @@ vi.mock('node:os', async (importOriginal) => {
   };
 });
 
-// Import after mock so vitest intercepts the module.
+// Mock child_process so runSeedCommand doesn't spawn real kiro-cli.
+// execFileSync writes a minimal valid seed payload to the target file
+// (derived from the --directory argv), simulating a successful seed.
+vi.mock('node:child_process', () => ({
+  execFileSync: vi.fn((_cmd: string, args: readonly string[]) => {
+    // Extract --directory <dir> from argv
+    const dirIdx = args.indexOf('--directory');
+    if (dirIdx === -1 || dirIdx + 1 >= args.length) return Buffer.from('');
+    const targetDir = args[dirIdx + 1]!;
+    const targetFile = join(targetDir, 'kiro-learn.json');
+
+    // Write a minimal valid seed payload
+    const seed = {
+      name: 'kiro-learn',
+      description: 'seeded',
+      prompt: 'default prompt',
+      tools: ['tool1'],
+      hooks: {},
+    };
+    writeFileSync(targetFile, JSON.stringify(seed, null, 2) + '\n');
+    return Buffer.from('');
+  }),
+  execSync: vi.fn(() => Buffer.from('')),
+  spawn: vi.fn(() => ({
+    pid: 1,
+    unref: vi.fn(),
+    on: vi.fn(),
+  })),
+}));
+
+// Import after mocks so vitest intercepts the modules.
 const { writeAgentConfigs, INSTALL_DIR } = await import(
   '../../src/installer/index.js'
 );

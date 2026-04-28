@@ -199,6 +199,8 @@ export interface EventBuildParams {
   cwd: string;
   /** Optional parent event ID for causal linking. */
   parentEventId?: string;
+  /** Source surface identifier. Defaults to `'kiro-cli'` when omitted. */
+  surface?: 'kiro-cli' | 'kiro-ide';
 }
 
 /**
@@ -246,7 +248,7 @@ export function buildEvent(params: EventBuildParams): KiroMemEvent {
     body: params.body,
     valid_time: new Date().toISOString(),
     source: {
-      surface: 'kiro-cli',
+      surface: params.surface ?? 'kiro-cli',
       version: PACKAGE_VERSION,
       client_id: hostname(),
       project_path: projectPath,

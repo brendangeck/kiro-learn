@@ -965,3 +965,114 @@ export function arbitraryUrlPath(): fc.Arbitrary<string> {
     { weight: 2, arbitrary: fc.string({ minLength: 0, maxLength: 200 }) },
   );
 }
+
+// ── IDE hook shim generators (kiro-ide-hook-shim spec) ─────────────────
+
+/**
+ * Shape of the IDE's `postToolUse` payload in `USER_PROMPT`.
+ * All fields are optional — the shim applies defaults for missing fields.
+ */
+export interface IdeToolUsePayload {
+  toolName?: string;
+  toolArgs?: Record<string, unknown>;
+  toolResult?: string;
+  toolSuccess?: boolean;
+}
+
+/**
+ * Arbitrary camelCase IDE `postToolUse` payload.
+ *
+ * Generates payloads with all four fields present. Tests that need partial
+ * payloads can `.map()` to delete fields.
+ *
+ * @see .kiro/specs/kiro-ide-hook-shim/design.md § postToolUse Field Mapping
+ */
+export function ideToolUsePayloadArb(): fc.Arbitrary<IdeToolUsePayload> {
+  return fc.record({
+    toolName: fc.string({ minLength: 1, maxLength: 50 }).filter((s) => s.length > 0),
+    toolArgs: fc.dictionary(
+      fc.string({ minLength: 1, maxLength: 20 }).filter((s) => s.length > 0),
+      fc.oneof(fc.string({ maxLength: 50 }), fc.integer(), fc.boolean()),
+      { minKeys: 0, maxKeys: 5 },
+    ),
+    toolResult: fc.string({ maxLength: 200 }),
+    toolSuccess: fc.boolean(),
+  });
+}
+
+/**
+ * Shape of a Kiro IDE `.kiro.hook` file.
+ */
+export interface KiroHookFile {
+  enabled: boolean;
+  name: string;
+  description: string;
+  version: string;
+  when: {
+    type: string;
+    toolTypes?: string[];
+  };
+  then: {
+    type: string;
+    command: string;
+  };
+}
+
+/**
+ * Arbitrary IDE hook file object.
+ *
+ * @see .kiro/specs/kiro-ide-hook-shim/design.md § IDE Hook File Format
+ */
+export function ideHookFileArb(): fc.Arbitrary<KiroHookFile> {
+  return fc
+    .record({
+      name: fc.string({ minLength: 1, maxLength: 40 }).filter((s) => s.length > 0),
+      description: fc.string({ minLength: 1, maxLength: 100 }).filter((s) => s.length > 0),
+      eventType: fc.constantFrom('promptSubmit', 'agentStop', 'postToolUse'),
+      shimPath: shimPathArb(),
+    })
+    .map(({ name, description, eventType, shimPath }) => {
+      const when: KiroHookFile['when'] = { type: eventType };
+      if (eventType === 'postToolUse') {
+        when.toolTypes = ['*'];
+      }
+      return {
+        enabled: true,
+        name,
+        description,
+        version: '1',
+        when,
+        then: {
+          type: 'runCommand',
+          command: `"${shimPath}" ${eventType} || true`,
+        },
+      };
+    });
+}
+
+/**
+ * Arbitrary shim executable path (including paths with spaces).
+ *
+ * @see .kiro/specs/kiro-ide-hook-shim/design.md § Hook Command Format
+ */
+export function shimPathArb(): fc.Arbitrary<string> {
+  // Segments use a safe alphabet: alphanumerics, dash, underscore, dot, space.
+  // This avoids generating paths with shell-unsafe characters (backticks, $, \, newlines)
+  // that would produce misleading test data.
+  const safeSegment = fc
+    .stringMatching(/^[a-zA-Z0-9 _.-]{1,15}$/)
+    .filter((s) => s.length >= 1 && s.length <= 15);
+
+  return fc.oneof(
+    // Simple path
+    fc.constant('/home/user/.kiro-learn/bin/ide-shim'),
+    // Path with tilde
+    fc.constant('~/.kiro-learn/bin/ide-shim'),
+    // Path with spaces
+    fc.constant('/home/my user/.kiro-learn/bin/ide-shim'),
+    // Random path segments with safe characters
+    fc
+      .array(safeSegment, { minLength: 1, maxLength: 5 })
+      .map((segments) => '/' + segments.join('/') + '/ide-shim'),
+  );
+}
