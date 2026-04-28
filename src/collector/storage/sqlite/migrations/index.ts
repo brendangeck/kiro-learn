@@ -26,6 +26,7 @@
 import { migration0001 } from './0001_init.js';
 import { migration0002 } from './0002_xml_extraction_fields.js';
 import { migration0003 } from './0003_project_path.js';
+import { migration0004 } from './0004_session_summary_type.js';
 import type { Migration } from './types.js';
 
 export { runMigrations } from './runner.js';
@@ -49,4 +50,5 @@ export const MIGRATIONS: readonly Migration[] = [
   migration0001,
   migration0002,
   migration0003,
+  migration0004,
 ];

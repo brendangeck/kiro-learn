@@ -131,6 +131,10 @@ async function handleToolUse(userPrompt: string, cwd: string): Promise<void> {
  * @see Requirements 4.8, 5.1, 7.3, 8.4
  */
 async function handleStop(userPrompt: string, cwd: string): Promise<void> {
+  // Skip posting empty session summaries — the IDE doesn't provide
+  // summary text in USER_PROMPT for agentStop events.
+  if (userPrompt === '') return;
+
   const config = loadConfig();
   const sessionId = readSession(cwd);
 

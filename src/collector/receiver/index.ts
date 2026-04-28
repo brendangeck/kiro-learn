@@ -21,7 +21,7 @@ import { ZodError } from 'zod';
 
 import { resolveAsset, serveAsset } from './static-handler.js';
 
-import { NAMESPACE_RE, parseEvent } from '../../types/index.js';
+import { NAMESPACE_RE, parseEvent, parseMemoryRecord } from '../../types/index.js';
 import type { EventIngestResponse, StorageBackend } from '../../types/index.js';
 import type { Pipeline } from '../pipeline/index.js';
 import type { RetrievalAssembler } from '../retrieval/index.js';
@@ -384,8 +384,116 @@ export function startReceiver(
       return;
     }
 
+    // ── POST /v1/memories (ingest memory record) ────────────────
+    if (method === 'POST' && pathname === '/v1/memories') {
+      // Enforce Content-Type when header is present
+      const contentType = req.headers['content-type'];
+      if (contentType !== undefined && !contentType.startsWith('application/json')) {
+        jsonResponse(res, 415, { error: 'unsupported content type' });
+        return;
+      }
+
+      // Read body incrementally with size limit
+      const body = await readBody(req, res, maxBodyBytes);
+      if (body === null) return; // 413 already sent
+
+      // Parse JSON
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(body);
+      } catch {
+        jsonResponse(res, 400, { error: 'invalid JSON' });
+        return;
+      }
+
+      // Validate via parseMemoryRecord (Zod)
+      let record;
+      try {
+        record = parseMemoryRecord(parsed);
+      } catch (err: unknown) {
+        if (err instanceof ZodError) {
+          jsonResponse(res, 400, {
+            error: 'validation failed',
+            details: err.issues,
+          });
+          return;
+        }
+        jsonResponse(res, 400, { error: 'validation failed' });
+        return;
+      }
+
+      // Store via storage backend
+      try {
+        await storage.putMemoryRecord(record);
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : '';
+        if (message.includes('UNIQUE constraint failed')) {
+          jsonResponse(res, 409, { error: 'conflict', detail: 'duplicate record_id' });
+          return;
+        }
+        jsonResponse(res, 500, { error: 'internal error' });
+        return;
+      }
+
+      jsonResponse(res, 200, { record_id: record.record_id, stored: true });
+      return;
+    }
+
+    // ── GET /v1/memories/search ───────────────────────────────────
+    if (method === 'GET' && pathname === '/v1/memories/search') {
+      const ns = url.searchParams.get('namespace');
+      if (ns === null || ns === '') {
+        jsonResponse(res, 400, { error: 'namespace parameter is required' });
+        return;
+      }
+      if (ns.length > 500) {
+        jsonResponse(res, 400, { error: 'parameter too long' });
+        return;
+      }
+      if (!NAMESPACE_RE.test(ns)) {
+        jsonResponse(res, 400, { error: 'invalid namespace' });
+        return;
+      }
+
+      const query = url.searchParams.get('query');
+      if (query === null || query === '') {
+        jsonResponse(res, 400, { error: 'query parameter is required' });
+        return;
+      }
+
+      // Parse limit (default 10, clamped to [1, 100])
+      const rawLimit = url.searchParams.get('limit');
+      let limit = 10;
+      if (rawLimit !== null) {
+        const parsed = Number(rawLimit);
+        if (!Number.isInteger(parsed)) {
+          jsonResponse(res, 400, { error: 'limit must be an integer' });
+          return;
+        }
+        limit = Math.max(1, Math.min(100, parsed));
+      }
+
+      try {
+        const results = await storage.searchMemoryRecords({ namespace: ns, query, limit });
+        jsonResponse(res, 200, results);
+      } catch {
+        jsonResponse(res, 500, { error: 'internal error' });
+      }
+      return;
+    }
+
     // ── Method enforcement for read routes ────────────────────────
-    if (pathname === '/v1/stats' || pathname === '/v1/memories') {
+    if (pathname === '/v1/stats') {
+      res.setHeader('Allow', 'GET');
+      jsonResponse(res, 405, { error: 'method not allowed' });
+      return;
+    }
+    if (pathname === '/v1/memories') {
+      res.setHeader('Allow', 'GET, POST');
+      jsonResponse(res, 405, { error: 'method not allowed' });
+      return;
+    }
+    if (pathname === '/v1/memories/search') {
       res.setHeader('Allow', 'GET');
       jsonResponse(res, 405, { error: 'method not allowed' });
       return;

@@ -89,10 +89,10 @@ describe('Method enforcement on read API routes (Req 5.2)', () => {
     expect(res.headers.get('allow')).toBe('GET');
   });
 
-  it('POST /v1/memories returns 405 with Allow: GET header', async () => {
-    const res = await fetch(`${baseUrl}/v1/memories`, { method: 'POST' });
+  it('DELETE /v1/memories returns 405 with Allow: GET, POST header', async () => {
+    const res = await fetch(`${baseUrl}/v1/memories`, { method: 'DELETE' });
     expect(res.status).toBe(405);
-    expect(res.headers.get('allow')).toBe('GET');
+    expect(res.headers.get('allow')).toBe('GET, POST');
   });
 
   it('DELETE /v1/stats returns 405 with Allow: GET header', async () => {

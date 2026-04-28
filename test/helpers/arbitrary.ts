@@ -1076,3 +1076,304 @@ export function shimPathArb(): fc.Arbitrary<string> {
       .map((segments) => '/' + segments.join('/') + '/ide-shim'),
   );
 }
+
+// ── MCP tool argument generators (mcp-memory-server Task 14) ───────────
+
+/**
+ * Arbitrary valid `search_memory` tool arguments.
+ *
+ * - `query`: non-empty string ≤1000 chars
+ * - `limit`: optional number 1–100
+ *
+ * @see .kiro/specs/mcp-memory-server/design.md § Testing Strategy
+ * @see .kiro/specs/mcp-memory-server/requirements.md § 3.1, 11.1
+ */
+export function arbitrarySearchMemoryArgs(): fc.Arbitrary<{
+  query: string;
+  limit?: number;
+}> {
+  return fc
+    .record({
+      query: fc.string({ minLength: 1, maxLength: 1000 }).filter((s) => s.length > 0),
+      limit: fc.option(fc.integer({ min: 1, max: 100 }), { nil: undefined }),
+    })
+    .map((r) => {
+      if (r.limit === undefined) {
+        return { query: r.query };
+      }
+      return { query: r.query, limit: r.limit };
+    });
+}
+
+/**
+ * Arbitrary valid `save_observation` tool arguments.
+ *
+ * Respects all size constraints from the design:
+ * - `title`: non-empty string ≤200 chars
+ * - `summary`: non-empty string ≤4000 chars
+ * - `observation_type`: one of OBSERVATION_TYPES
+ * - `concepts`: array of strings, 0–50 entries, each 1–100 chars
+ * - `files_touched`: array of strings, 0–100 entries, each 1–500 chars
+ * - `facts`: array of strings, 0–50 entries, each 1–200 chars
+ *
+ * @see .kiro/specs/mcp-memory-server/design.md § Testing Strategy
+ * @see .kiro/specs/mcp-memory-server/requirements.md § 4.1, 11.2–11.4
+ */
+export function arbitraryObservationArgs(): fc.Arbitrary<{
+  title: string;
+  summary: string;
+  observation_type: string;
+  concepts: string[];
+  files_touched: string[];
+  facts: string[];
+}> {
+  return fc.record({
+    title: fc.string({ minLength: 1, maxLength: 200 }).filter((s) => s.length > 0),
+    summary: fc.string({ minLength: 1, maxLength: 4000 }).filter((s) => s.length > 0),
+    observation_type: fc.constantFrom(...OBSERVATION_TYPES),
+    concepts: fc.array(
+      fc.string({ minLength: 1, maxLength: 100 }).filter((s) => s.length > 0),
+      { minLength: 0, maxLength: 50 },
+    ),
+    files_touched: fc.array(
+      fc.string({ minLength: 1, maxLength: 500 }).filter((s) => s.length > 0),
+      { minLength: 0, maxLength: 100 },
+    ),
+    facts: fc.array(
+      fc.string({ minLength: 1, maxLength: 200 }).filter((s) => s.length > 0),
+      { minLength: 0, maxLength: 50 },
+    ),
+  });
+}
+
+/**
+ * Arbitrary valid `save_session_summary` tool arguments.
+ *
+ * All string fields: non-empty strings ≤2000 chars.
+ * Array fields: arrays of strings, 0–50 entries, each 1–500 chars.
+ *
+ * @see .kiro/specs/mcp-memory-server/design.md § Testing Strategy
+ * @see .kiro/specs/mcp-memory-server/requirements.md § 5.1
+ */
+export function arbitrarySessionSummaryArgs(): fc.Arbitrary<{
+  request: string;
+  investigated: string;
+  learned: string;
+  completed: string;
+  next_steps: string;
+  files_read: string[];
+  files_modified: string[];
+}> {
+  return fc.record({
+    request: fc.string({ minLength: 1, maxLength: 2000 }).filter((s) => s.trim().length > 0),
+    investigated: fc.string({ minLength: 1, maxLength: 2000 }).filter((s) => s.trim().length > 0),
+    learned: fc.string({ minLength: 1, maxLength: 2000 }).filter((s) => s.trim().length > 0),
+    completed: fc.string({ minLength: 1, maxLength: 2000 }).filter((s) => s.trim().length > 0),
+    next_steps: fc.string({ minLength: 1, maxLength: 2000 }).filter((s) => s.trim().length > 0),
+    files_read: fc.array(
+      fc.string({ minLength: 1, maxLength: 500 }).filter((s) => s.length > 0),
+      { minLength: 0, maxLength: 50 },
+    ),
+    files_modified: fc.array(
+      fc.string({ minLength: 1, maxLength: 500 }).filter((s) => s.length > 0),
+      { minLength: 0, maxLength: 50 },
+    ),
+  });
+}
+
+/**
+ * Arbitrary structurally invalid tool arguments.
+ *
+ * Generates different kinds of malformed args:
+ * - Missing required fields (empty object)
+ * - Wrong types: `query` as number, `concepts` as string, `title` as number
+ * - Extra fields with wrong types
+ *
+ * @see .kiro/specs/mcp-memory-server/design.md § Testing Strategy
+ * @see .kiro/specs/mcp-memory-server/requirements.md § 7.3
+ */
+export function arbitraryMalformedToolArgs(): fc.Arbitrary<Record<string, unknown>> {
+  return fc.oneof(
+    // Missing required fields — empty object
+    fc.constant({} as Record<string, unknown>),
+    // query as number instead of string
+    fc.integer().map((n) => ({ query: n }) as Record<string, unknown>),
+    // concepts as string instead of array
+    fc.string({ maxLength: 100 }).map(
+      (s) =>
+        ({
+          title: 'valid title',
+          summary: 'valid summary',
+          observation_type: 'discovery',
+          concepts: s,
+          files_touched: [],
+          facts: [],
+        }) as Record<string, unknown>,
+    ),
+    // title as number instead of string
+    fc.integer().map(
+      (n) =>
+        ({
+          title: n,
+          summary: 'valid summary',
+          observation_type: 'discovery',
+          concepts: [],
+          files_touched: [],
+          facts: [],
+        }) as Record<string, unknown>,
+    ),
+    // Extra fields with wrong types
+    fc.record({
+      query: fc.constant(true),
+      limit: fc.constant('not a number'),
+      extra_field: fc.constant(42),
+    }) as fc.Arbitrary<Record<string, unknown>>,
+  );
+}
+
+/**
+ * Arbitrary observation args where at least one field exceeds its limit.
+ *
+ * Uses `fc.oneof()` to pick which field to exceed:
+ * - `title` > 200 chars (201–500 char string)
+ * - `summary` > 4000 chars (4001–5000 char string)
+ * - `concepts` > 50 entries
+ * - `files_touched` > 100 entries
+ * - `facts` > 50 entries
+ *
+ * All other fields are valid.
+ *
+ * @see .kiro/specs/mcp-memory-server/design.md § Testing Strategy
+ * @see .kiro/specs/mcp-memory-server/requirements.md § 4.4, 4.5, 11.1–11.4
+ */
+export function arbitraryOverLimitObservationArgs(): fc.Arbitrary<{
+  title: string;
+  summary: string;
+  observation_type: string;
+  concepts: string[];
+  files_touched: string[];
+  facts: string[];
+}> {
+  // Valid base values for fields not being exceeded
+  const validTitle = fc.string({ minLength: 1, maxLength: 200 }).filter((s) => s.length > 0);
+  const validSummary = fc.string({ minLength: 1, maxLength: 4000 }).filter((s) => s.length > 0);
+  const validObsType = fc.constantFrom(...OBSERVATION_TYPES);
+  const validConcepts = fc.array(
+    fc.string({ minLength: 1, maxLength: 100 }).filter((s) => s.length > 0),
+    { minLength: 0, maxLength: 50 },
+  );
+  const validFilesTouched = fc.array(
+    fc.string({ minLength: 1, maxLength: 500 }).filter((s) => s.length > 0),
+    { minLength: 0, maxLength: 100 },
+  );
+  const validFacts = fc.array(
+    fc.string({ minLength: 1, maxLength: 200 }).filter((s) => s.length > 0),
+    { minLength: 0, maxLength: 50 },
+  );
+
+  // title > 200 chars
+  const overTitle = fc
+    .tuple(
+      fc.string({ minLength: 201, maxLength: 500 }).filter((s) => s.length >= 201),
+      validSummary,
+      validObsType,
+      validConcepts,
+      validFilesTouched,
+      validFacts,
+    )
+    .map(([title, summary, observation_type, concepts, files_touched, facts]) => ({
+      title,
+      summary,
+      observation_type,
+      concepts,
+      files_touched,
+      facts,
+    }));
+
+  // summary > 4000 chars
+  const overSummary = fc
+    .tuple(
+      validTitle,
+      fc.string({ minLength: 4001, maxLength: 5000 }).filter((s) => s.length >= 4001),
+      validObsType,
+      validConcepts,
+      validFilesTouched,
+      validFacts,
+    )
+    .map(([title, summary, observation_type, concepts, files_touched, facts]) => ({
+      title,
+      summary,
+      observation_type,
+      concepts,
+      files_touched,
+      facts,
+    }));
+
+  // concepts > 50 entries
+  const overConcepts = fc
+    .tuple(
+      validTitle,
+      validSummary,
+      validObsType,
+      fc.array(
+        fc.string({ minLength: 1, maxLength: 100 }).filter((s) => s.length > 0),
+        { minLength: 51, maxLength: 60 },
+      ),
+      validFilesTouched,
+      validFacts,
+    )
+    .map(([title, summary, observation_type, concepts, files_touched, facts]) => ({
+      title,
+      summary,
+      observation_type,
+      concepts,
+      files_touched,
+      facts,
+    }));
+
+  // files_touched > 100 entries
+  const overFiles = fc
+    .tuple(
+      validTitle,
+      validSummary,
+      validObsType,
+      validConcepts,
+      fc.array(
+        fc.string({ minLength: 1, maxLength: 500 }).filter((s) => s.length > 0),
+        { minLength: 101, maxLength: 110 },
+      ),
+      validFacts,
+    )
+    .map(([title, summary, observation_type, concepts, files_touched, facts]) => ({
+      title,
+      summary,
+      observation_type,
+      concepts,
+      files_touched,
+      facts,
+    }));
+
+  // facts > 50 entries
+  const overFacts = fc
+    .tuple(
+      validTitle,
+      validSummary,
+      validObsType,
+      validConcepts,
+      validFilesTouched,
+      fc.array(
+        fc.string({ minLength: 1, maxLength: 200 }).filter((s) => s.length > 0),
+        { minLength: 51, maxLength: 60 },
+      ),
+    )
+    .map(([title, summary, observation_type, concepts, files_touched, facts]) => ({
+      title,
+      summary,
+      observation_type,
+      concepts,
+      files_touched,
+      facts,
+    }));
+
+  return fc.oneof(overTitle, overSummary, overConcepts, overFiles, overFacts);
+}

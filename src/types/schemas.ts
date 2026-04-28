@@ -131,6 +131,7 @@ export const OBSERVATION_TYPES = [
   'error',
   'discovery',
   'pattern',
+  'session_summary',
 ] as const;
 
 /**

@@ -111,6 +111,12 @@ describe('IDE hook shim — P1 + P2 property tests', () => {
         async (eventType, userPrompt) => {
           const event = await runShim(eventType, userPrompt);
 
+          // agentStop with empty payload is intentionally skipped
+          if (eventType === 'agentStop' && userPrompt === '') {
+            expect(event).toBeNull();
+            return;
+          }
+
           // Event should always be produced for valid event types
           expect(event).not.toBeNull();
           if (event !== null) {
@@ -130,6 +136,12 @@ describe('IDE hook shim — P1 + P2 property tests', () => {
         fc.string({ maxLength: 500 }),
         async (eventType, userPrompt) => {
           const event = await runShim(eventType, userPrompt);
+
+          // agentStop with empty payload is intentionally skipped
+          if (eventType === 'agentStop' && userPrompt === '') {
+            expect(event).toBeNull();
+            return;
+          }
 
           expect(event).not.toBeNull();
           if (event !== null) {

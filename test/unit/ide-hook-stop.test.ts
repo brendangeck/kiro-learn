@@ -103,13 +103,13 @@ describe('IDE hook shim — stop handler', () => {
     expect(capturedEvent!.body).toEqual({ type: 'text', content: 'session summary text' });
   });
 
-  it('uses empty string when USER_PROMPT is empty', async () => {
+  it('skips posting when USER_PROMPT is empty', async () => {
     process.env['USER_PROMPT'] = '';
 
     await main();
 
-    expect(capturedEvent).not.toBeNull();
-    expect(capturedEvent!.body).toEqual({ type: 'text', content: '' });
+    // Empty agentStop payloads are skipped — no event posted
+    expect(capturedEvent).toBeNull();
   });
 
   it('produces no stdout output', async () => {
