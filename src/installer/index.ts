@@ -372,7 +372,7 @@ export function deployPayload(): void {
   mkdirSync(libDir, { recursive: true });
 
   // Copy each subdirectory: shim/, collector/, installer/, types/, ui/
-  const requiredSubdirs = ['shim', 'collector', 'installer', 'types'] as const;
+  const requiredSubdirs = ['shim', 'collector', 'installer', 'types', 'mcp'] as const;
   const optionalSubdirs = ['ui'] as const;
 
   for (const subdir of requiredSubdirs) {
@@ -414,6 +414,7 @@ export function writePackageJson(): void {
     type: 'module',
     dependencies: {
       '@agentclientprotocol/sdk': '0.20.0',
+      '@modelcontextprotocol/sdk': '1.12.1',
       'better-sqlite3': '12.0.0',
       ulidx: '2.4.1',
       zod: '3.25.76',
@@ -510,6 +511,17 @@ export function writeBinWrappers(): void {
   const ideShimPath = path.join(binDir, 'ide-shim');
   writeFileSync(ideShimPath, ideShimContent);
   chmodSync(ideShimPath, 0o755);
+
+  // MCP server wrapper
+  const mcpServerContent = [
+    '#!/usr/bin/env node',
+    'import { main } from "../lib/mcp/index.js";',
+    'main().catch((err) => { process.stderr.write(String(err) + \'\\n\'); process.exit(1); });',
+  ].join('\n') + '\n';
+
+  const mcpServerPath = path.join(binDir, 'mcp-server');
+  writeFileSync(mcpServerPath, mcpServerContent);
+  chmodSync(mcpServerPath, 0o755);
 }
 
 /**
@@ -631,6 +643,37 @@ export function writeIdeHookFiles(projectRoot: string): void {
       JSON.stringify(payload, null, 2) + '\n',
     );
   }
+}
+
+/**
+ * Write the MCP server config to `<projectRoot>/.kiro/settings/mcp.json`.
+ *
+ * Creates the `.kiro/settings/` directory if it doesn't exist. The config
+ * registers the `kiro-learn-memory` MCP server with the Kiro IDE, pointing
+ * at the `mcp-server` bin wrapper in the install directory.
+ *
+ * @param projectRoot Absolute path to the project root.
+ *
+ * @see Requirements 9.1, 9.2
+ */
+export function writeMcpConfig(projectRoot: string): void {
+  const settingsDir = path.join(projectRoot, '.kiro', 'settings');
+  mkdirSync(settingsDir, { recursive: true });
+
+  const mcpServerBin = path.join(INSTALL_DIR, 'bin', 'mcp-server');
+  const config = {
+    mcpServers: {
+      'kiro-learn-memory': {
+        command: mcpServerBin,
+        args: [] as string[],
+      },
+    },
+  };
+
+  writeFileSync(
+    path.join(settingsDir, 'mcp.json'),
+    JSON.stringify(config, null, 2) + '\n',
+  );
 }
 
 /**
@@ -1477,6 +1520,9 @@ export async function cmdInit(opts: InitOptions): Promise<number> {
     if (scope.projectRoot !== undefined) {
       process.stdout.write('[kiro-learn] writing IDE hook files...\n');
       writeIdeHookFiles(scope.projectRoot);
+
+      process.stdout.write('[kiro-learn] writing MCP config...\n');
+      writeMcpConfig(scope.projectRoot);
     }
     // ── Optionally set default agent ──
     if (opts.setDefault) {
@@ -1674,6 +1720,12 @@ export function cmdUninstall(opts: UninstallOptions): number {
 
       // Remove kiro-learn IDE hook files (preserve non-kiro-learn hooks)
       removeIdeHookFiles(scope.projectRoot);
+
+      // Remove MCP config
+      const mcpConfigPath = path.join(scope.projectRoot, '.kiro', 'settings', 'mcp.json');
+      if (existsSync(mcpConfigPath)) {
+        unlinkSync(mcpConfigPath);
+      }
     }
 
     // Remove install directory

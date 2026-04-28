@@ -1,102 +1,84 @@
 /**
  * Unit tests for argv parsing in `src/installer/bin.ts`.
  *
- * Tests the CLI dispatch logic by reading the source file and verifying
- * the USAGE string, then testing the actual dispatch by mocking handlers
- * and running the IIFE via a child process.
+ * Tests the CLI dispatch logic by importing the `dispatch` function
+ * directly and exercising it in-process — no child process spawning.
+ * The `dispatch` function captures stdout/stderr into a result object,
+ * so we can assert on output without wiring spies or spawning `npx tsx`.
+ *
+ * Command handlers (`cmdInit`, `cmdStart`, etc.) are mocked so only the
+ * bin's own parsing and routing logic is exercised.
  *
  * Validates: Requirements 1.3, 1.4, 1.5, 1.6
  */
 
-import { execSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+
+// Mock the command handlers so dispatch never runs real init/start/stop/etc.
+vi.mock('../../src/installer/index.js', () => ({
+  cmdInit: vi.fn(async () => 0),
+  cmdStart: vi.fn(() => 0),
+  cmdStop: vi.fn(() => 0),
+  cmdStatus: vi.fn(() => 0),
+  cmdUninstall: vi.fn(() => 0),
+}));
+
+const { dispatch } = await import('../../src/installer/bin.js');
 
 const thisDir = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(thisDir, '../..');
 
-/**
- * Helper: run the bin.ts entry point via tsx with the given args.
- * Returns { stdout, stderr, exitCode }.
- */
-function runBin(
-  args: string[],
-): { stdout: string; stderr: string; exitCode: number } {
-  const binPath = path.join(projectRoot, 'src', 'installer', 'bin.ts');
-  const cmd = `npx tsx ${binPath} ${args.join(' ')}`;
-
-  try {
-    const stdout = execSync(cmd, {
-      cwd: projectRoot,
-      encoding: 'utf8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-      timeout: 10_000,
-    });
-    return { stdout, stderr: '', exitCode: 0 };
-  } catch (err: unknown) {
-    const e = err as {
-      stdout?: string;
-      stderr?: string;
-      status?: number;
-    };
-    return {
-      stdout: e.stdout ?? '',
-      stderr: e.stderr ?? '',
-      exitCode: e.status ?? 1,
-    };
-  }
-}
-
 describe('installer argv parsing', () => {
-  it('--version prints version and sets exitCode 0', () => {
+  it('--version prints version and sets exitCode 0', async () => {
     /**
      * Validates: Requirements 1.6
      */
-    const { stdout, exitCode } = runBin(['--version']);
+    const result = await dispatch(['--version']);
 
-    expect(stdout).toContain('kiro-learn');
-    expect(stdout).toMatch(/\d+\.\d+\.\d+/);
-    expect(exitCode).toBe(0);
+    expect(result.stdout).toContain('kiro-learn');
+    expect(result.stdout).toMatch(/\d+\.\d+\.\d+/);
+    expect(result.exitCode).toBe(0);
   });
 
-  it('--help prints usage and sets exitCode 0', () => {
+  it('--help prints usage and sets exitCode 0', async () => {
     /**
      * Validates: Requirements 1.3
      */
-    const { stdout, exitCode } = runBin(['--help']);
+    const result = await dispatch(['--help']);
 
-    expect(stdout).toContain('Usage:');
-    expect(stdout).toContain('init');
-    expect(stdout).toContain('start');
-    expect(stdout).toContain('stop');
-    expect(stdout).toContain('status');
-    expect(stdout).toContain('uninstall');
-    expect(exitCode).toBe(0);
+    expect(result.stdout).toContain('Usage:');
+    expect(result.stdout).toContain('init');
+    expect(result.stdout).toContain('start');
+    expect(result.stdout).toContain('stop');
+    expect(result.stdout).toContain('status');
+    expect(result.stdout).toContain('uninstall');
+    expect(result.exitCode).toBe(0);
   });
 
-  it('no args prints usage and sets exitCode 0', () => {
+  it('no args prints usage and sets exitCode 0', async () => {
     /**
      * Validates: Requirements 1.3
      */
-    const { stdout, exitCode } = runBin([]);
+    const result = await dispatch([]);
 
-    expect(stdout).toContain('Usage:');
-    expect(exitCode).toBe(0);
+    expect(result.stdout).toContain('Usage:');
+    expect(result.exitCode).toBe(0);
   });
 
-  it('unrecognized command sets exitCode 1 with error listing valid commands', () => {
+  it('unrecognized command sets exitCode 1 with error listing valid commands', async () => {
     /**
      * Validates: Requirements 1.4
      */
-    const { stderr, exitCode } = runBin(['frobnicate']);
+    const result = await dispatch(['frobnicate']);
 
-    expect(stderr).toContain('[kiro-learn]');
-    expect(stderr).toContain('unknown command');
-    expect(stderr).toContain('frobnicate');
-    expect(stderr).toContain('Valid commands:');
-    expect(exitCode).toBe(1);
+    expect(result.stderr).toContain('[kiro-learn]');
+    expect(result.stderr).toContain('unknown command');
+    expect(result.stderr).toContain('frobnicate');
+    expect(result.stderr).toContain('Valid commands:');
+    expect(result.exitCode).toBe(1);
   });
 
   it('flags are correctly parsed — source verifies dispatch table', () => {

@@ -33,7 +33,26 @@ vi.mock('node:os', async (importOriginal) => {
   };
 });
 
-// Import after mock so vitest intercepts the module.
+// Mock `node:child_process` so `writeAgentConfigs` → `writeKiroLearnAgent`
+// → `runSeedCommand` does not spawn real `kiro-cli` during unit tests.
+// `execFileSync` throws with no `status` property, which forces the
+// `spawn-failed` branch and routes to the Fallback_Config writer.
+// This test only cares about the compressor agent prompt, not kiro-learn agent.
+vi.mock('node:child_process', () => ({
+  execFileSync: vi.fn(() => {
+    throw Object.assign(new Error('spawn kiro-cli ENOENT'), {
+      code: 'ENOENT',
+    });
+  }),
+  execSync: vi.fn(() => Buffer.from('')),
+  spawn: vi.fn(() => ({
+    pid: 99999,
+    unref: vi.fn(),
+    on: vi.fn(),
+  })),
+}));
+
+// Import after mocks so vitest intercepts the modules.
 const { writeAgentConfigs, INSTALL_DIR } = await import(
   '../../src/installer/index.js'
 );
@@ -53,6 +72,8 @@ describe('compressor agent XML prompt', () => {
   beforeEach(() => {
     mkdirSync(join(INSTALL_DIR, 'bin'), { recursive: true });
     mkdirSync(join(tmpHome, '.kiro', 'agents'), { recursive: true });
+    // Suppress the `[kiro-learn] warning:` line the fallback writer emits.
+    vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     writeAgentConfigs({
       global: true,
       projectRoot: undefined,

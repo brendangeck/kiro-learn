@@ -89,11 +89,12 @@ describe('migration 0003 — idempotent re-apply of the full MIGRATIONS list', (
     // three migrations. Without this, the "no-op on second invocation"
     // check below would hold vacuously on, say, a broken runner that
     // silently skipped migrations.
-    expect(migrationsAfterFirst.map((r) => r.version)).toEqual([1, 2, 3]);
+    expect(migrationsAfterFirst.map((r) => r.version)).toEqual([1, 2, 3, 4]);
     expect(migrationsAfterFirst.map((r) => r.name)).toEqual([
       '0001_init',
       '0002_xml_extraction_fields',
       '0003_project_path',
+      '0004_session_summary_type',
     ]);
 
     // Second invocation: must be a complete no-op. Not throwing is part
