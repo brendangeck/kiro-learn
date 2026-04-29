@@ -75,7 +75,7 @@ const SINGLE_RECORD_XML = `
 `.trim();
 
 /** Valid XML response with two memory records. */
-const _MULTI_RECORD_XML = `
+const MULTI_RECORD_XML = `
 <memory_record type="tool_use">
   <title>First Memory</title>
   <summary>First summary for the memory record</summary>
@@ -625,6 +625,59 @@ describe('ExtractionWorker', () => {
     const state = watcher._getState(projectId);
     expect(state).toBeDefined();
     expect(state!.consecutiveFailures).toBe(0);
+
+    watcher.close();
+  });
+
+  /**
+   * Test 9: Multi-record extraction stores all memory records.
+   *
+   * Validates: Requirements 10.4, 10.5
+   */
+  it('stores multiple memory records from a multi-record ACP response', async () => {
+    responseQueue.push(MULTI_RECORD_XML);
+
+    const { createExtractionWorker } = await import(
+      '../../src/collector/buffer/extraction.js'
+    );
+    const { createBufferStore } = await import(
+      '../../src/collector/buffer/store.js'
+    );
+    const { createBufferWatcher } = await import(
+      '../../src/collector/buffer/watcher.js'
+    );
+
+    const bufferStore = createBufferStore(tmpDir);
+    const watcher = createBufferWatcher({ idleMs: 999_999 });
+    const storage = createMockStorage();
+
+    const projectId = 'test-project-multi';
+    await bufferStore.append(projectId, makeBufferEntry({ event_id: '01JF8ZS4Y00000000000000001' }));
+
+    const worker = createExtractionWorker({
+      bufferStore,
+      watcher,
+      storage,
+      config: { concurrency: 2, timeoutMs: 30_000, maxRetries: 3 },
+    });
+
+    const result = await worker.extract(projectId);
+
+    expect(result.eventsProcessed).toBe(1);
+    expect(result.memoriesCreated).toBe(2);
+    expect(storage.putMemoryRecord).toHaveBeenCalledTimes(2);
+
+    const first = storage.putMemoryRecord.mock.calls[0]![0] as MemoryRecord;
+    const second = storage.putMemoryRecord.mock.calls[1]![0] as MemoryRecord;
+
+    expect(first.title).toBe('First Memory');
+    expect(first.observation_type).toBe('tool_use');
+    expect(second.title).toBe('Second Memory');
+    expect(second.observation_type).toBe('discovery');
+
+    // Both records should reference the same source event
+    expect(first.source_event_ids).toEqual(['01JF8ZS4Y00000000000000001']);
+    expect(second.source_event_ids).toEqual(['01JF8ZS4Y00000000000000001']);
 
     watcher.close();
   });

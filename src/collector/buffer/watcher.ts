@@ -63,6 +63,13 @@ export interface BufferWatcher {
   notifyAppend(projectId: string, appendedBytes: number): boolean;
 
   /**
+   * Check whether appending `bytes` to the project buffer would exceed
+   * the hard size ceiling. Read-only — does not mutate watcher state.
+   * Used by the pipeline to gate the write before committing bytes.
+   */
+  wouldExceedCeiling(projectId: string, bytes: number): boolean;
+
+  /**
    * Report the result of an extraction attempt. Used by ExtractionWorker
    * to drive the circuit breaker: consecutive failures increment the
    * counter; a success resets it to 0.
@@ -142,6 +149,24 @@ export function createBufferWatcher(
 
   return {
     /**
+     * Check whether appending `bytes` would exceed the hard size ceiling.
+     * Read-only — does not mutate watcher state.
+     *
+     * @see Requirements 9.1, 9.2
+     */
+    wouldExceedCeiling(projectId: string, bytes: number): boolean {
+      const state = getOrCreate(projectId);
+      const wouldExceed = state.currentBytes + bytes > resolved.bufferMaxBytes;
+      if (wouldExceed && !state.sizeCeilingWarningLogged) {
+        process.stderr.write(
+          `[kiro-learn] buffer size ceiling hit for project ${projectId} (${state.currentBytes + bytes} bytes) — skipping buffer append\n`,
+        );
+        state.sizeCeilingWarningLogged = true;
+      }
+      return wouldExceed;
+    },
+
+    /**
      * Notify the watcher of a pending buffer append.
      *
      * 1. Get or create project state
@@ -155,17 +180,6 @@ export function createBufferWatcher(
      */
     notifyAppend(projectId: string, appendedBytes: number): boolean {
       const state = getOrCreate(projectId);
-
-      // Hard size ceiling check: refuse append if ceiling would be exceeded.
-      if (state.currentBytes + appendedBytes > resolved.bufferMaxBytes) {
-        if (!state.sizeCeilingWarningLogged) {
-          process.stderr.write(
-            `[kiro-learn] buffer size ceiling hit for project ${projectId} (${state.currentBytes + appendedBytes} bytes) — skipping buffer append\n`,
-          );
-          state.sizeCeilingWarningLogged = true;
-        }
-        return false;
-      }
 
       // Accumulate bytes.
       state.currentBytes += appendedBytes;

@@ -86,9 +86,10 @@ function createMockBufferStore(): BufferStore {
 }
 
 /** Create a mock `BufferWatcher` with all methods stubbed. */
-function createMockBufferWatcher(notifyAppendReturn = true): BufferWatcher {
+function createMockBufferWatcher(ceilingHit = false): BufferWatcher {
   return {
-    notifyAppend: vi.fn(() => notifyAppendReturn),
+    notifyAppend: vi.fn(() => true),
+    wouldExceedCeiling: vi.fn(() => ceilingHit),
     notifyExtractionResult: vi.fn(),
     onExtraction: vi.fn(),
     close: vi.fn(),
@@ -278,8 +279,8 @@ describe('Pipeline buffer integration', () => {
      */
     const mockStorage = createMockStorage();
     const mockBufferStore = createMockBufferStore();
-    // notifyAppend returns false (size ceiling hit)
-    const mockBufferWatcher = createMockBufferWatcher(false);
+    // wouldExceedCeiling returns true (size ceiling hit)
+    const mockBufferWatcher = createMockBufferWatcher(true);
 
     const { createPipeline } = await import(
       '../../src/collector/pipeline/index.js'
@@ -300,8 +301,11 @@ describe('Pipeline buffer integration', () => {
     // Event should be stored in SQLite
     expect(mockStorage.putEvent).toHaveBeenCalledOnce();
 
-    // notifyAppend was called
-    expect(mockBufferWatcher.notifyAppend).toHaveBeenCalledOnce();
+    // wouldExceedCeiling was called
+    expect(mockBufferWatcher.wouldExceedCeiling).toHaveBeenCalledOnce();
+
+    // notifyAppend should NOT have been called (ceiling hit, write skipped)
+    expect(mockBufferWatcher.notifyAppend).not.toHaveBeenCalled();
 
     // Buffer append should NOT have been called (watcher said no)
     expect(mockBufferStore.append).not.toHaveBeenCalled();

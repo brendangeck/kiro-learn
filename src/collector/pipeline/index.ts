@@ -617,20 +617,24 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
         };
 
         if (useBuffer) {
-          // 2e-buffer. Append to project buffer (fire-and-forget from HTTP response perspective)
+          // 2e-buffer. Check ceiling, write durably, then advance watcher state.
+          // The ceiling check is read-only; byte accumulation happens only
+          // after the durable write succeeds, so a failed append never
+          // leaves stale byte counts in the watcher.
           try {
             const entry = toBufferEntry(scrubbedEvent);
             const projectId = extractProjectId(scrubbedEvent.namespace);
-            const estimatedBytes = Buffer.byteLength(
-              JSON.stringify(entry) + '\n',
-              'utf-8',
-            );
-            const shouldAppend = opts.bufferWatcher!.notifyAppend(
-              projectId,
-              estimatedBytes,
-            );
-            if (shouldAppend) {
+            const line = JSON.stringify(entry) + '\n';
+            const bytesWritten = Buffer.byteLength(line, 'utf-8');
+
+            // Pre-write ceiling check (read-only).
+            if (opts.bufferWatcher!.wouldExceedCeiling(projectId, bytesWritten)) {
+              // Ceiling hit — skip append. Event is already in SQLite.
+            } else {
+              // Durable write first.
               await opts.bufferStore!.append(projectId, entry);
+              // Write succeeded — now advance watcher state (accumulate bytes, reset timer).
+              opts.bufferWatcher!.notifyAppend(projectId, bytesWritten);
             }
           } catch (bufferError: unknown) {
             const message =

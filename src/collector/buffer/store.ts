@@ -95,8 +95,11 @@ export function createBufferStore(
       let content: string;
       try {
         content = fs.readFileSync(filePath, 'utf-8');
-      } catch {
-        return [];
+      } catch (err: unknown) {
+        if (err instanceof Error && 'code' in err && (err as NodeJS.ErrnoException).code === 'ENOENT') {
+          return [];
+        }
+        throw err;
       }
 
       const lines = content.split('\n');
@@ -139,10 +142,18 @@ export function createBufferStore(
      *
      * Path: `<bufferDir>/<projectId>/buffer.ndjson`
      *
+     * Validates that `projectId` is a safe filesystem token (no path
+     * separators, no traversal segments) to prevent directory traversal
+     * when `extractProjectId` falls back to the raw namespace string.
+     *
      * @see Requirement 1.1
      */
     bufferPath(projectId: string): string {
-      return path.join(bufferDir, projectId, BUFFER_FILENAME);
+      const safe = path.basename(projectId);
+      if (safe !== projectId || safe === '' || safe === '.' || safe === '..') {
+        throw new Error(`unsafe projectId for buffer path: ${projectId}`);
+      }
+      return path.join(bufferDir, safe, BUFFER_FILENAME);
     },
 
     /**
@@ -188,8 +199,11 @@ export function createBufferStore(
 
       try {
         fs.unlinkSync(filePath);
-      } catch {
-        // File may already be gone — that's fine.
+      } catch (err: unknown) {
+        if (err instanceof Error && 'code' in err && (err as NodeJS.ErrnoException).code === 'ENOENT') {
+          return; // File already gone — that's fine.
+        }
+        throw err;
       }
     },
   };

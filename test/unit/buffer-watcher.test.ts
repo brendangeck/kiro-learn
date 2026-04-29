@@ -127,8 +127,8 @@ describe('BufferWatcher', () => {
       watcher.notifyAppend(PROJECT_ID, 100);
 
       // First ceiling hit — should log a warning
-      const result1 = watcher.notifyAppend(PROJECT_ID, 1);
-      expect(result1).toBe(false);
+      const result1 = watcher.wouldExceedCeiling(PROJECT_ID, 1);
+      expect(result1).toBe(true);
       expect(stderrSpy).toHaveBeenCalledOnce();
       expect(stderrSpy).toHaveBeenCalledWith(
         expect.stringContaining('buffer size ceiling hit'),
@@ -138,12 +138,12 @@ describe('BufferWatcher', () => {
       );
 
       // Subsequent ceiling hits — should NOT log additional warnings
-      const result2 = watcher.notifyAppend(PROJECT_ID, 1);
-      expect(result2).toBe(false);
+      const result2 = watcher.wouldExceedCeiling(PROJECT_ID, 1);
+      expect(result2).toBe(true);
       expect(stderrSpy).toHaveBeenCalledOnce();
 
-      const result3 = watcher.notifyAppend(PROJECT_ID, 50);
-      expect(result3).toBe(false);
+      const result3 = watcher.wouldExceedCeiling(PROJECT_ID, 50);
+      expect(result3).toBe(true);
       expect(stderrSpy).toHaveBeenCalledOnce();
     });
   });

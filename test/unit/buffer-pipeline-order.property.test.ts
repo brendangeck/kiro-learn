@@ -84,6 +84,7 @@ describe('Pipeline stores before buffering (Property 9)', () => {
         // Mock BufferWatcher that allows appends
         const mockBufferWatcher: BufferWatcher = {
           notifyAppend: vi.fn(() => true),
+          wouldExceedCeiling: vi.fn(() => false),
           notifyExtractionResult: vi.fn(),
           onExtraction: vi.fn(),
           close: vi.fn(),

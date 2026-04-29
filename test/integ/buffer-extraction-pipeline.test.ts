@@ -266,9 +266,11 @@ describe.skipIf(!canRun)(
         rmSync(tmpDir, { recursive: true, force: true });
       }
 
-      // Restore the original compressor config.
+      // Restore the original compressor config, or remove if it didn't exist.
       if (originalCompressor !== null) {
         writeFileSync(compressorPath, originalCompressor);
+      } else if (existsSync(compressorPath)) {
+        rmSync(compressorPath);
       }
     });
 
