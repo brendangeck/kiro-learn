@@ -18,6 +18,9 @@ import type {
   StorageBackend,
   EventIngestResponse,
 } from '../../types/index.js';
+import { toBufferEntry, extractProjectId } from '../buffer/types.js';
+import type { BufferStore } from '../buffer/store.js';
+import type { BufferWatcher } from '../buffer/watcher.js';
 import { createAcpSession } from './acp-client.js';
 import type { AcpSession } from './acp-client.js';
 import { frameEvent } from './xml-framer.js';
@@ -83,6 +86,12 @@ export interface PipelineOptions {
   extractionTimeout: number;
   /** Maximum entries in the in-memory dedup set. Default `10_000`. */
   dedupMaxSize: number;
+  /** Buffer store for per-project NDJSON buffer files. Required when buffer mode is enabled. */
+  bufferStore?: BufferStore;
+  /** Buffer watcher for idle timer and size threshold triggers. Required when buffer mode is enabled. */
+  bufferWatcher?: BufferWatcher;
+  /** Whether buffer mode is enabled. When true, events are appended to project buffers instead of per-event extraction. */
+  bufferEnabled?: boolean;
 }
 
 // ── Extraction stage interface ──────────────────────────────────────────
@@ -564,6 +573,10 @@ export function createExtractionStage(
  */
 export function createPipeline(opts: PipelineOptions): Pipeline {
   const { storage } = opts;
+  const useBuffer =
+    opts.bufferEnabled === true &&
+    opts.bufferStore !== undefined &&
+    opts.bufferWatcher !== undefined;
 
   // 1. Create stages
   const dedupStage = createDedupStage({ maxSize: opts.dedupMaxSize });
@@ -603,8 +616,39 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
           stored: true,
         };
 
-        // 2e. Fire async extraction (don't await)
-        extractionStage.enqueue(scrubbedEvent);
+        if (useBuffer) {
+          // 2e-buffer. Check ceiling, write durably, then advance watcher state.
+          // The ceiling check is read-only; byte accumulation happens only
+          // after the durable write succeeds, so a failed append never
+          // leaves stale byte counts in the watcher.
+          try {
+            const entry = toBufferEntry(scrubbedEvent);
+            const projectId = extractProjectId(scrubbedEvent.namespace);
+            const line = JSON.stringify(entry) + '\n';
+            const bytesWritten = Buffer.byteLength(line, 'utf-8');
+
+            // Pre-write ceiling check (read-only).
+            if (opts.bufferWatcher!.wouldExceedCeiling(projectId, bytesWritten)) {
+              // Ceiling hit — skip append. Event is already in SQLite.
+            } else {
+              // Durable write first.
+              await opts.bufferStore!.append(projectId, entry);
+              // Write succeeded — now advance watcher state (accumulate bytes, reset timer).
+              opts.bufferWatcher!.notifyAppend(projectId, bytesWritten);
+            }
+          } catch (bufferError: unknown) {
+            const message =
+              bufferError instanceof Error
+                ? bufferError.message
+                : String(bufferError);
+            process.stderr.write(
+              `[kiro-learn] buffer append failed for event ${scrubbedEvent.event_id}: ${message}\n`,
+            );
+          }
+        } else {
+          // 2e-legacy. Fire async extraction (don't await)
+          extractionStage.enqueue(scrubbedEvent);
+        }
 
         // 2f. Return the response
         return response;

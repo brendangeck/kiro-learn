@@ -17,6 +17,7 @@ import fc from 'fast-check';
 import { OBSERVATION_TYPES } from '../../src/types/schemas.js';
 import type { KiroMemEvent, MemoryRecord } from '../../src/types/schemas.js';
 import type { StatsResult, ProjectInfo } from '../../src/types/index.js';
+import type { BufferEntry } from '../../src/collector/buffer/types.js';
 
 /** Crockford base32 alphabet used in ULIDs (no I, L, O, U). */
 const ULID_ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
@@ -1229,6 +1230,29 @@ export function arbitraryMalformedToolArgs(): fc.Arbitrary<Record<string, unknow
       extra_field: fc.constant(42),
     }) as fc.Arbitrary<Record<string, unknown>>,
   );
+}
+
+// ── BufferEntry generator (workspace-buffer-pipeline Task 12.1) ────────
+
+/**
+ * Arbitrary valid {@link BufferEntry} for buffer property tests.
+ *
+ * Composes existing generators (`ulidArb`, `namespaceArb`, `kindArb`,
+ * `eventBodyArb`, `isoDateArb`) with a `surface` drawn from the two
+ * allowed values (`kiro-cli`, `kiro-ide`).
+ *
+ * @see .kiro/specs/workspace-buffer-pipeline/design.md § Model 1: BufferEntry
+ * @see .kiro/specs/workspace-buffer-pipeline/requirements.md § Requirements 2.1, 2.2
+ */
+export function bufferEntryArb(): fc.Arbitrary<BufferEntry> {
+  return fc.record({
+    event_id: ulidArb(),
+    namespace: namespaceArb(),
+    kind: kindArb(),
+    body: eventBodyArb(),
+    timestamp: isoDateArb(),
+    surface: fc.constantFrom('kiro-cli', 'kiro-ide'),
+  });
 }
 
 /**

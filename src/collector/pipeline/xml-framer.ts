@@ -11,6 +11,7 @@
  * @see .kiro/specs/xml-extraction-pipeline/requirements.md § Requirements 2, 3
  */
 
+import type { BufferEntry } from '../buffer/types.js';
 import type { KiroMemEvent } from '../../types/index.js';
 
 /**
@@ -91,4 +92,37 @@ export function frameEvent(event: KiroMemEvent): string {
 
   lines.push('</tool_observation>');
   return lines.join('\n');
+}
+
+/**
+ * Frame a batch of {@link BufferEntry} objects as a concatenated XML string.
+ *
+ * Each entry is converted to a minimal {@link KiroMemEvent}-shaped object
+ * (just enough fields for {@link frameEvent} to work) and framed
+ * individually. The results are concatenated with newlines to form the
+ * batch prompt sent to the compressor agent.
+ *
+ * @see Requirements 10.2
+ */
+export function frameBatch(entries: BufferEntry[]): string {
+  return entries
+    .map((entry) => {
+      const syntheticEvent: KiroMemEvent = {
+        event_id: entry.event_id,
+        namespace: entry.namespace,
+        schema_version: 1 as const,
+        kind: entry.kind,
+        body: entry.body,
+        valid_time: entry.timestamp,
+        session_id: '',
+        actor_id: '',
+        source: {
+          surface: entry.surface as 'kiro-cli' | 'kiro-ide',
+          version: '',
+          client_id: '',
+        },
+      };
+      return frameEvent(syntheticEvent);
+    })
+    .join('\n');
 }
