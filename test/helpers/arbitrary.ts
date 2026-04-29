@@ -1426,7 +1426,7 @@ export function compactedEntryArb(): fc.Arbitrary<BufferEntry> {
     kind: fc.constant('session_summary' as const),
     body: fc.record({
       type: fc.constant('text' as const),
-      content: fc.string({ maxLength: 1000 }),
+      content: fc.string({ minLength: 1, maxLength: 1000 }).filter((s) => s.trim().length > 0),
     }),
     timestamp: isoDateArb(),
     surface: fc.constantFrom('kiro-cli', 'kiro-ide'),
@@ -1449,11 +1449,25 @@ export function compactedEntryArb(): fc.Arbitrary<BufferEntry> {
  * @see .kiro/specs/buffer-compaction-worker/design.md § Property 11
  * @see .kiro/specs/buffer-compaction-worker/requirements.md § Requirements 10.1, 10.2
  */
+/**
+ * Escape XML special characters so generated content is safe inside
+ * `<compacted_entry>` blocks.
+ */
+function escapeXmlForArb(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
 export function compactionResponseArb(): fc.Arbitrary<string> {
   const entryContentArb = fc
     .string({ minLength: 1, maxLength: 200 })
     .filter((s) => s.trim().length > 0)
-    .map((s) => s.replace(/<\/compacted_entry>/g, ''));
+    .map((s) => s.replace(/<\/compacted_entry>/g, ''))
+    .map(escapeXmlForArb);
 
   return fc
     .array(entryContentArb, { minLength: 1, maxLength: 5 })

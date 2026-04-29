@@ -47,6 +47,7 @@ function createFakeBufferStore(entries: BufferEntry[]): BufferStore {
   return {
     append: vi.fn().mockResolvedValue(0),
     snapshot: vi.fn().mockResolvedValue(entries),
+    snapshotWithSize: vi.fn().mockResolvedValue({ entries, sizeBytes }),
     size: vi.fn().mockResolvedValue(sizeBytes),
     bufferPath: vi.fn().mockReturnValue('/fake/buffer.ndjson'),
     listProjects: vi.fn().mockResolvedValue([]),

@@ -61,6 +61,7 @@ function createFakeBufferStore(entries: BufferEntry[]): BufferStore {
   return {
     append: vi.fn().mockResolvedValue(0),
     snapshot: vi.fn().mockResolvedValue(entries),
+    snapshotWithSize: vi.fn().mockResolvedValue({ entries, sizeBytes }),
     size: vi.fn().mockResolvedValue(sizeBytes),
     bufferPath: vi.fn().mockReturnValue('/fake/buffer.ndjson'),
     listProjects: vi.fn().mockResolvedValue([]),
@@ -131,11 +132,8 @@ describe('CompactionWorker', () => {
 
       const result = await worker.compact('test-project');
 
-      // Snapshot was read
-      expect(store.snapshot).toHaveBeenCalledWith('test-project');
-
-      // sizeSync was called to record S0
-      expect(store.sizeSync).toHaveBeenCalledWith('test-project');
+      // snapshotWithSize was called to read entries and record S0 atomically
+      expect(store.snapshotWithSize).toHaveBeenCalledWith('test-project');
 
       // replace was called with compacted entries and the byte offset
       expect(store.replace).toHaveBeenCalledTimes(1);

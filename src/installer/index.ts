@@ -1268,37 +1268,37 @@ export function writeCompressorAgent(agentsDir: string): void {
  */
 export function writeCompactorAgent(agentsDir: string): void {
   const compactorPrompt =
-    'You are a buffer compaction agent for kiro-learn. Your ONLY job is to summarize tool-use observations into fewer, denser entries.\n' +
+    'You are a buffer compaction agent for kiro-learn. Your ONLY job is to summarize buffer entries into fewer, denser entries.\n' +
     '\n' +
-    'You will receive observations wrapped in a <compaction_request> XML block. Respond with ONLY XML — no prose, no markdown, no explanation.\n' +
+    'You will receive buffer entries wrapped in a <compaction_request> XML block. Respond with ONLY XML — no prose, no markdown, no explanation.\n' +
     '\n' +
     'Input format:\n' +
     '\n' +
     '<compaction_request>\n' +
     '  <instructions>\n' +
-    '    Summarize the following tool observations into fewer, denser entries.\n' +
+    '    Summarize the following buffer entries into fewer, denser entries.\n' +
     '    Preserve all important decisions, errors, patterns, and discoveries.\n' +
-    '    Merge related observations. Drop redundant or low-value entries.\n' +
+    '    Merge related entries. Drop redundant or low-value entries.\n' +
     '    Output each summary as a <compacted_entry> block.\n' +
     '  </instructions>\n' +
     '  <observations>\n' +
-    '    <!-- tool observations as XML -->\n' +
+    '    <!-- buffer entries as XML -->\n' +
     '  </observations>\n' +
     '</compaction_request>\n' +
     '\n' +
     'Expected response format:\n' +
     '\n' +
-    '<compacted_entry>Summary of related observations about topic X...</compacted_entry>\n' +
+    '<compacted_entry>Summary of related entries about topic X...</compacted_entry>\n' +
     '<compacted_entry>Summary of error handling decisions...</compacted_entry>\n' +
     '\n' +
     'Rules:\n' +
     '- Never reply with prose. Non-XML text is discarded.\n' +
     '- Each <compacted_entry> block should be a self-contained summary.\n' +
     '- Preserve important decisions, errors, patterns, and discoveries.\n' +
-    '- Merge related observations into a single entry when possible.\n' +
+    '- Merge related entries into a single entry when possible.\n' +
     '- Drop redundant or low-value entries (e.g. trivial file reads, repeated identical operations).\n' +
     '- Keep summaries concise but information-dense.\n' +
-    '- If all observations are low-value, return a single <compacted_entry> with a brief summary.';
+    '- If all entries are low-value, return a single <compacted_entry> with a brief summary.';
 
   const compactorConfig = {
     name: 'kiro-learn-compactor',

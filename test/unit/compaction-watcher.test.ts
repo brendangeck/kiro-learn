@@ -389,12 +389,19 @@ describe('BufferWatcher compaction extensions', () => {
 
       watcher.close();
 
-      // Append after close — compaction should not fire because
-      // close clears state, but notifyAppend still creates new state.
-      // The key behavior is that close() clears in-flight and failure counters.
-      // The watcher itself doesn't prevent new appends after close.
-      // This test verifies close() clears the compaction-related state.
-      expect(watcher._getState(PROJECT_ID)?.compactionInFlight).toBeUndefined();
+      // Append after close — compaction should not fire because close()
+      // cleared compactionInFlight for all existing projects. New state
+      // created by notifyAppend starts fresh with compactionInFlight=false,
+      // but the key behavior is that close() clears existing state.
+      watcher.notifyAppend(PROJECT_ID, 501);
+
+      // The watcher creates fresh state for the new project, so compaction
+      // may fire for the new state. The important thing close() guarantees
+      // is that previously in-flight compactions are cleared.
+      // Verify the state is fresh (not carried over from before close).
+      const state = watcher._getState(PROJECT_ID);
+      expect(state).toBeDefined();
+      expect(state!.compactionModelFailures).toBe(0);
     });
   });
 });

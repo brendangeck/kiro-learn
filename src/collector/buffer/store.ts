@@ -55,6 +55,13 @@ export interface BufferStore {
   /** Read all valid entries from the buffer as a snapshot. Skips corrupt lines. */
   snapshot(projectId: string): Promise<BufferEntry[]>;
 
+  /**
+   * Read all valid entries and the current byte size atomically.
+   * Used by CompactionWorker to capture both snapshot and S0 in one call
+   * so no appends can slip between the two reads.
+   */
+  snapshotWithSize(projectId: string): Promise<{ entries: BufferEntry[]; sizeBytes: number }>;
+
   /** Current byte size of the buffer file. Returns 0 if file does not exist. */
   size(projectId: string): Promise<number>;
 
@@ -124,6 +131,48 @@ export function createBufferStore(
       fs.appendFileSync(filePath, line, 'utf-8');
 
       return bytes;
+    },
+
+    /**
+     * Read all valid entries and the current byte size atomically.
+     *
+     * Reads the file content once and derives both the parsed entries and
+     * the byte size from the same read, so no appends can slip between
+     * the two values.
+     *
+     * @see Requirements 1.5, 7.1
+     */
+    async snapshotWithSize(projectId: string): Promise<{ entries: BufferEntry[]; sizeBytes: number }> {
+      const filePath = this.bufferPath(projectId);
+
+      let content: string;
+      try {
+        content = fs.readFileSync(filePath, 'utf-8');
+      } catch (err: unknown) {
+        if (err instanceof Error && 'code' in err && (err as NodeJS.ErrnoException).code === 'ENOENT') {
+          return { entries: [], sizeBytes: 0 };
+        }
+        throw err;
+      }
+
+      const sizeBytes = Buffer.byteLength(content, 'utf-8');
+      const lines = content.split('\n');
+      const entries: BufferEntry[] = [];
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (trimmed.length === 0) continue;
+
+        try {
+          entries.push(JSON.parse(trimmed) as BufferEntry);
+        } catch {
+          process.stderr.write(
+            `[kiro-learn] skipping corrupt buffer line in ${filePath}: ${trimmed.slice(0, 80)}\n`,
+          );
+        }
+      }
+
+      return { entries, sizeBytes };
     },
 
     /**

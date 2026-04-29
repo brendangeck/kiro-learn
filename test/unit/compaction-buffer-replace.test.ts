@@ -54,6 +54,9 @@ function createTestBufferStore(bufferDir: string): BufferStore {
     async snapshot(projectId: string): Promise<BufferEntry[]> {
       return real.snapshot(projectId);
     },
+    async snapshotWithSize(projectId: string): Promise<{ entries: BufferEntry[]; sizeBytes: number }> {
+      return real.snapshotWithSize(projectId);
+    },
     async size(projectId: string): Promise<number> {
       return real.size(projectId);
     },

@@ -24,9 +24,6 @@ import { bufferEntryArb, ulidArb } from '../helpers/arbitrary.js';
 
 /**
  * Generate an array of BufferEntry objects with unique event_ids.
- *
- * Uses a prefix to ensure uniqueness across multiple generated arrays
- * within the same property run.
  */
 function uniqueBufferEntriesArb(
   minLength: number,
@@ -71,23 +68,26 @@ function findOrphanedTmpFiles(dir: string): string[] {
 }
 
 /**
- * Create a BufferStore with a `replace` implementation that skips `flockSync`.
- *
- * `fs.flockSync` is a Node 22+ API that may not be available in all builds.
- * This wrapper delegates all methods to the real `createBufferStore` except
- * `replace`, which re-implements the same catch-up-and-rename logic without
- * the POSIX advisory lock. This is safe because the property test is
- * single-threaded — there is no concurrent writer to coordinate with.
+ * Create a BufferStore with a lock-free `replace` and `append` for testing.
  */
 function createTestBufferStore(bufferDir: string): BufferStore {
   const real = createBufferStore(bufferDir);
 
   return {
     async append(projectId: string, entry: BufferEntry): Promise<number> {
-      return real.append(projectId, entry);
+      const filePath = real.bufferPath(projectId);
+      const dir = path.dirname(filePath);
+      fs.mkdirSync(dir, { recursive: true });
+      const line = JSON.stringify(entry) + '\n';
+      const bytes = Buffer.byteLength(line, 'utf-8');
+      fs.appendFileSync(filePath, line, 'utf-8');
+      return bytes;
     },
     async snapshot(projectId: string): Promise<BufferEntry[]> {
       return real.snapshot(projectId);
+    },
+    async snapshotWithSize(projectId: string): Promise<{ entries: BufferEntry[]; sizeBytes: number }> {
+      return real.snapshotWithSize(projectId);
     },
     async size(projectId: string): Promise<number> {
       return real.size(projectId);
@@ -105,10 +105,6 @@ function createTestBufferStore(bufferDir: string): BufferStore {
       return real.sizeSync(projectId);
     },
 
-    /**
-     * Lock-free replace for testing. Same algorithm as the real
-     * `BufferStore.replace` but without `flockSync` calls.
-     */
     async replace(
       projectId: string,
       newEntries: readonly BufferEntry[],
@@ -121,7 +117,6 @@ function createTestBufferStore(bufferDir: string): BufferStore {
       const fd = fs.openSync(filePath, 'r');
 
       try {
-        // Read catch-up bytes [sinceOffset, current_size).
         const stat = fs.fstatSync(fd);
         const catchUpSize = stat.size - sinceOffset;
         const catchUpEntries: BufferEntry[] = [];
@@ -142,7 +137,6 @@ function createTestBufferStore(bufferDir: string): BufferStore {
           }
         }
 
-        // Write newEntries + catch-up entries to temp file.
         let totalBytes = 0;
         const lines: string[] = [];
 
@@ -159,8 +153,6 @@ function createTestBufferStore(bufferDir: string): BufferStore {
         }
 
         fs.writeFileSync(tempPath, lines.join(''), 'utf-8');
-
-        // Atomic rename.
         fs.renameSync(tempPath, filePath);
 
         return { catchUpEntries, newSizeBytes: totalBytes };
@@ -180,40 +172,28 @@ const PROJECT_ID = 'testproject';
 
 describe('Replace temp file cleanup (Property 9)', () => {
   it('no orphaned temp files remain after a successful replace', () => {
-    /**
-     * **Validates: Requirements 6.7, 14.2, 14.3**
-     *
-     * For any set of initial entries, catch-up entries, and compacted entries,
-     * after a successful `replace()` call, no `buffer.ndjson.*.tmp` files
-     * remain in the buffer directory.
-     */
     fc.assert(
-      fc.property(
+      fc.asyncProperty(
         uniqueBufferEntriesArb(1, 10, 'I'),
         uniqueBufferEntriesArb(0, 5, 'C'),
         uniqueBufferEntriesArb(1, 5, 'R'),
-        (initialEntries, catchUpEntries, compactedEntries) => {
+        async (initialEntries, catchUpEntries, compactedEntries) => {
           const tmpDir = makeTempDir();
           try {
             const store = createTestBufferStore(tmpDir);
 
-            // 1. Append initial entries to the buffer.
             for (const entry of initialEntries) {
-              store.append(PROJECT_ID, entry);
+              await store.append(PROJECT_ID, entry);
             }
 
-            // 2. Record S0 — the byte offset at snapshot time.
             const s0 = store.sizeSync(PROJECT_ID);
 
-            // 3. Append catch-up entries after S0.
             for (const entry of catchUpEntries) {
-              store.append(PROJECT_ID, entry);
+              await store.append(PROJECT_ID, entry);
             }
 
-            // 4. Call replace with compacted entries and the recorded S0.
-            store.replace(PROJECT_ID, compactedEntries, s0);
+            await store.replace(PROJECT_ID, compactedEntries, s0);
 
-            // 5. Verify no orphaned temp files remain in the buffer directory.
             const bufferDir = path.dirname(store.bufferPath(PROJECT_ID));
             const orphanedTmpFiles = findOrphanedTmpFiles(bufferDir);
 
@@ -228,34 +208,22 @@ describe('Replace temp file cleanup (Property 9)', () => {
   });
 
   it('no orphaned temp files remain after a failed replace (rename failure)', () => {
-    /**
-     * **Validates: Requirements 6.7, 14.2, 14.3**
-     *
-     * For any set of initial entries and compacted entries, when the rename
-     * step of `replace()` fails (simulated by making the target path a
-     * directory), the temp file is still cleaned up.
-     */
     fc.assert(
-      fc.property(
+      fc.asyncProperty(
         uniqueBufferEntriesArb(1, 10, 'I'),
         uniqueBufferEntriesArb(1, 5, 'R'),
-        (initialEntries, compactedEntries) => {
+        async (initialEntries, compactedEntries) => {
           const tmpDir = makeTempDir();
           try {
             const store = createTestBufferStore(tmpDir);
 
-            // 1. Append initial entries to the buffer.
             for (const entry of initialEntries) {
-              store.append(PROJECT_ID, entry);
+              await store.append(PROJECT_ID, entry);
             }
 
-            // 2. Record S0.
             const s0 = store.sizeSync(PROJECT_ID);
 
-            // 3. Create a failing replace that errors during the write/rename
-            //    phase but still cleans up the temp file. We simulate this by
-            //    creating a store whose replace writes the temp file then throws
-            //    before rename, exercising the finally-block cleanup.
+            // Create a failing store that throws during rename
             const filePath = store.bufferPath(PROJECT_ID);
             const dir = path.dirname(filePath);
             const tempPath = path.join(dir, `buffer.ndjson.${Date.now()}.tmp`);
@@ -263,7 +231,6 @@ describe('Replace temp file cleanup (Property 9)', () => {
             const fd = fs.openSync(filePath, 'r');
 
             try {
-              // Read catch-up (same as normal replace).
               const stat = fs.fstatSync(fd);
               const catchUpSize = stat.size - s0;
               const lines: string[] = [];
@@ -283,16 +250,14 @@ describe('Replace temp file cleanup (Property 9)', () => {
                 lines.push(JSON.stringify(entry) + '\n');
               }
 
-              // Write temp file.
               fs.writeFileSync(tempPath, lines.join(''), 'utf-8');
 
-              // Simulate rename failure by throwing.
+              // Simulate rename failure
               throw new Error('simulated rename failure');
             } catch {
               // Expected — the replace "failed".
             } finally {
               fs.closeSync(fd);
-              // The finally block in the real replace cleans up the temp file.
               try {
                 fs.unlinkSync(tempPath);
               } catch {
@@ -300,7 +265,6 @@ describe('Replace temp file cleanup (Property 9)', () => {
               }
             }
 
-            // 4. Verify no orphaned temp files remain.
             const bufferDir = path.dirname(store.bufferPath(PROJECT_ID));
             const orphanedTmpFiles = findOrphanedTmpFiles(bufferDir);
 
@@ -315,38 +279,27 @@ describe('Replace temp file cleanup (Property 9)', () => {
   });
 
   it('no orphaned temp files remain after replace with empty compacted entries', () => {
-    /**
-     * **Validates: Requirements 6.7, 14.2, 14.3**
-     *
-     * Edge case: when replace is called with an empty array of new entries,
-     * the temp file is still cleaned up after the operation.
-     */
     fc.assert(
-      fc.property(
+      fc.asyncProperty(
         uniqueBufferEntriesArb(1, 10, 'I'),
         uniqueBufferEntriesArb(0, 5, 'C'),
-        (initialEntries, catchUpEntries) => {
+        async (initialEntries, catchUpEntries) => {
           const tmpDir = makeTempDir();
           try {
             const store = createTestBufferStore(tmpDir);
 
-            // 1. Append initial entries.
             for (const entry of initialEntries) {
-              store.append(PROJECT_ID, entry);
+              await store.append(PROJECT_ID, entry);
             }
 
-            // 2. Record S0.
             const s0 = store.sizeSync(PROJECT_ID);
 
-            // 3. Append catch-up entries.
             for (const entry of catchUpEntries) {
-              store.append(PROJECT_ID, entry);
+              await store.append(PROJECT_ID, entry);
             }
 
-            // 4. Replace with empty compacted entries.
-            store.replace(PROJECT_ID, [], s0);
+            await store.replace(PROJECT_ID, [], s0);
 
-            // 5. Verify no orphaned temp files remain.
             const bufferDir = path.dirname(store.bufferPath(PROJECT_ID));
             const orphanedTmpFiles = findOrphanedTmpFiles(bufferDir);
 

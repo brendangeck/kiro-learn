@@ -198,9 +198,9 @@ function buildCompactionPrompt(xmlPayload: string): string {
   return [
     '<compaction_request>',
     '  <instructions>',
-    '    Summarize the following tool observations into fewer, denser entries.',
+    '    Summarize the following buffer entries into fewer, denser entries.',
     '    Preserve all important decisions, errors, patterns, and discoveries.',
-    '    Merge related observations. Drop redundant or low-value entries.',
+    '    Merge related entries. Drop redundant or low-value entries.',
     '    Output each summary as a <compacted_entry> block.',
     '  </instructions>',
     '  <observations>',
@@ -303,12 +303,12 @@ export function createCompactionWorker(deps: CompactionWorkerDeps): CompactionWo
    * @see Requirements 1.1–1.5, 2.1–2.2, 4.1, 5.1–5.3, 13.1–13.3
    */
   async function doCompact(projectId: string): Promise<CompactionResult> {
-    // 1. Read snapshot and record byte offset S0
-    const entries = await bufferStore.snapshot(projectId);
-    const s0 = bufferStore.sizeSync(projectId);
+    // 1. Read snapshot and record byte offset S0 atomically
+    const { entries, sizeBytes: s0 } = await bufferStore.snapshotWithSize(projectId);
 
     if (entries.length === 0) {
-      watcher.notifyCompactionResult(projectId, true, 0);
+      // Report the actual on-disk size to avoid watcher state drift
+      watcher.notifyCompactionResult(projectId, true, s0);
       return {
         projectId,
         entriesBefore: 0,
@@ -390,6 +390,8 @@ export function createCompactionWorker(deps: CompactionWorkerDeps): CompactionWo
     compact(projectId: string): Promise<CompactionResult> {
       // Reentrance guard: reject if any compaction is already in-flight
       if (inFlight) {
+        // Notify watcher so its compactionInFlight flag is cleared for this project
+        watcher.notifyCompactionResult(projectId, false);
         return Promise.reject(
           new Error(`compaction already in-flight for project ${currentProjectId ?? 'unknown'}`),
         );

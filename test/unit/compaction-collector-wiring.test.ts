@@ -165,6 +165,7 @@ vi.mock('../../src/collector/buffer/store.js', () => ({
   createBufferStore: vi.fn(() => ({
     append: vi.fn(async () => 0),
     snapshot: vi.fn(async () => []),
+    snapshotWithSize: vi.fn(async () => ({ entries: [], sizeBytes: 0 })),
     size: mockBufferStoreSize,
     bufferPath: vi.fn((projectId: string) => `/mock/buffers/${projectId}/buffer.ndjson`),
     listProjects: mockBufferStoreListProjects,
