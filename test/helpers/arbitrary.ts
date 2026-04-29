@@ -1401,3 +1401,65 @@ export function arbitraryOverLimitObservationArgs(): fc.Arbitrary<{
 
   return fc.oneof(overTitle, overSummary, overConcepts, overFiles, overFacts);
 }
+
+// ── Compaction generators (buffer-compaction-worker Task 12.1) ─────────
+
+/**
+ * Arbitrary valid {@link BufferEntry} representing a compacted entry.
+ *
+ * Compacted entries are produced by the CompactionWorker after model-based
+ * summarization. They reuse the `BufferEntry` interface with:
+ * - `event_id`: `compact_` prefix + ULID (for traceability)
+ * - `kind`: always `'session_summary'`
+ * - `body`: always `{ type: 'text', content: <string> }`
+ * - `namespace`: arbitrary valid namespace
+ * - `timestamp`: arbitrary ISO 8601 timestamp
+ * - `surface`: `'kiro-cli'` or `'kiro-ide'`
+ *
+ * @see .kiro/specs/buffer-compaction-worker/design.md § Model 1: CompactedBufferEntry
+ * @see .kiro/specs/buffer-compaction-worker/requirements.md § Requirements 18.1–18.6
+ */
+export function compactedEntryArb(): fc.Arbitrary<BufferEntry> {
+  return fc.record({
+    event_id: ulidArb().map((ulid) => `compact_${ulid}`),
+    namespace: namespaceArb(),
+    kind: fc.constant('session_summary' as const),
+    body: fc.record({
+      type: fc.constant('text' as const),
+      content: fc.string({ maxLength: 1000 }),
+    }),
+    timestamp: isoDateArb(),
+    surface: fc.constantFrom('kiro-cli', 'kiro-ide'),
+  });
+}
+
+/**
+ * Arbitrary XML string containing 1–5 `<compacted_entry>` blocks.
+ *
+ * Each block wraps a non-empty content string. The content is guaranteed
+ * to not contain `</compacted_entry>` so the parser can extract it
+ * unambiguously.
+ *
+ * Example output:
+ * ```xml
+ * <compacted_entry>Summary text 1</compacted_entry>
+ * <compacted_entry>Summary text 2</compacted_entry>
+ * ```
+ *
+ * @see .kiro/specs/buffer-compaction-worker/design.md § Property 11
+ * @see .kiro/specs/buffer-compaction-worker/requirements.md § Requirements 10.1, 10.2
+ */
+export function compactionResponseArb(): fc.Arbitrary<string> {
+  const entryContentArb = fc
+    .string({ minLength: 1, maxLength: 200 })
+    .filter((s) => s.trim().length > 0)
+    .map((s) => s.replace(/<\/compacted_entry>/g, ''));
+
+  return fc
+    .array(entryContentArb, { minLength: 1, maxLength: 5 })
+    .map((entries) =>
+      entries
+        .map((content) => `<compacted_entry>${content}</compacted_entry>`)
+        .join('\n'),
+    );
+}

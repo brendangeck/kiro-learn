@@ -25,6 +25,13 @@ export type {
   ExtractionWorkerDeps,
 } from './extraction.js';
 
+export type {
+  CompactionWorker,
+  CompactionResult,
+  CompactionWorkerConfig,
+  CompactionWorkerDeps,
+} from './compaction.js';
+
 // ── Values (factory functions + utilities) ──────────────────────────────
 
 export { toBufferEntry, extractProjectId } from './types.js';
@@ -34,3 +41,9 @@ export { createBufferStore } from './store.js';
 export { createBufferWatcher } from './watcher.js';
 
 export { createExtractionWorker } from './extraction.js';
+
+export {
+  createCompactionWorker,
+  parseCompactionResponse,
+  deterministicEviction,
+} from './compaction.js';

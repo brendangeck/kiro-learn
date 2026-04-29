@@ -1169,6 +1169,9 @@ export function writeAgentConfigs(scope: InstallScope): void {
 
   // ── Agent 2: kiro-learn-compressor.json (extraction agent) ──
   writeCompressorAgent(globalAgentsDir);
+
+  // ── Agent 3: kiro-learn-compactor.json (buffer compaction agent) ──
+  writeCompactorAgent(globalAgentsDir);
 }
 
 /**
@@ -1243,6 +1246,72 @@ export function writeCompressorAgent(agentsDir: string): void {
   writeFileSync(
     path.join(agentsDir, 'kiro-learn-compressor.json'),
     JSON.stringify(compressorConfig, null, 2) + '\n',
+  );
+}
+
+/**
+ * Write the kiro-learn-compactor agent config (the buffer compaction
+ * agent) into the given agents directory.
+ *
+ * The compactor is hand-authored — like the compressor, it is out of
+ * scope for the seed-then-merge flow because it ships with zero tools
+ * and a fixed summarization prompt. Writing it through a dedicated
+ * helper (instead of inlining in {@link writeAgentConfigs}) lets tests
+ * refresh the on-disk config to the current source before running.
+ *
+ * Global scope only — no project-scoped compactor is ever written.
+ *
+ * @param agentsDir The absolute path of the `.kiro/agents/` directory
+ *                  to write into. The directory must already exist.
+ *
+ * @see Requirement 3.1 — buffer-compaction-worker spec
+ */
+export function writeCompactorAgent(agentsDir: string): void {
+  const compactorPrompt =
+    'You are a buffer compaction agent for kiro-learn. Your ONLY job is to summarize tool-use observations into fewer, denser entries.\n' +
+    '\n' +
+    'You will receive observations wrapped in a <compaction_request> XML block. Respond with ONLY XML — no prose, no markdown, no explanation.\n' +
+    '\n' +
+    'Input format:\n' +
+    '\n' +
+    '<compaction_request>\n' +
+    '  <instructions>\n' +
+    '    Summarize the following tool observations into fewer, denser entries.\n' +
+    '    Preserve all important decisions, errors, patterns, and discoveries.\n' +
+    '    Merge related observations. Drop redundant or low-value entries.\n' +
+    '    Output each summary as a <compacted_entry> block.\n' +
+    '  </instructions>\n' +
+    '  <observations>\n' +
+    '    <!-- tool observations as XML -->\n' +
+    '  </observations>\n' +
+    '</compaction_request>\n' +
+    '\n' +
+    'Expected response format:\n' +
+    '\n' +
+    '<compacted_entry>Summary of related observations about topic X...</compacted_entry>\n' +
+    '<compacted_entry>Summary of error handling decisions...</compacted_entry>\n' +
+    '\n' +
+    'Rules:\n' +
+    '- Never reply with prose. Non-XML text is discarded.\n' +
+    '- Each <compacted_entry> block should be a self-contained summary.\n' +
+    '- Preserve important decisions, errors, patterns, and discoveries.\n' +
+    '- Merge related observations into a single entry when possible.\n' +
+    '- Drop redundant or low-value entries (e.g. trivial file reads, repeated identical operations).\n' +
+    '- Keep summaries concise but information-dense.\n' +
+    '- If all observations are low-value, return a single <compacted_entry> with a brief summary.';
+
+  const compactorConfig = {
+    name: 'kiro-learn-compactor',
+    description:
+      'Buffer compaction agent for kiro-learn. Summarizes buffer entries into fewer, denser entries.',
+    prompt: compactorPrompt,
+    tools: [] as string[],
+    allowedTools: [] as string[],
+  };
+
+  writeFileSync(
+    path.join(agentsDir, 'kiro-learn-compactor.json'),
+    JSON.stringify(compactorConfig, null, 2) + '\n',
   );
 }
 
@@ -1722,7 +1791,7 @@ export function cmdUninstall(opts: UninstallOptions): number {
 
     // Remove global agent configs
     const globalAgentsDir = path.join(homedir(), '.kiro', 'agents');
-    for (const name of ['kiro-learn.json', 'kiro-learn-compressor.json']) {
+    for (const name of ['kiro-learn.json', 'kiro-learn-compressor.json', 'kiro-learn-compactor.json']) {
       const agentPath = path.join(globalAgentsDir, name);
       if (existsSync(agentPath)) {
         unlinkSync(agentPath);

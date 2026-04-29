@@ -23,6 +23,8 @@ export interface BufferWatcherConfig {
   bufferMaxBytes: number;
   /** Consecutive extraction failures before circuit breaker trips. Default 3. */
   maxConsecutiveFailures: number;
+  /** Buffer byte-size threshold for compaction trigger. Default 1_048_576 (1 MiB). */
+  compactionSizeThreshold: number;
 }
 
 /**
@@ -46,6 +48,10 @@ export interface ProjectBufferState {
   extractionDisabled: boolean;
   /** When true, the hard size ceiling has been hit and a warning was already logged. */
   sizeCeilingWarningLogged: boolean;
+  /** Whether compaction is currently in-flight for this project. */
+  compactionInFlight: boolean;
+  /** Consecutive compaction model failures. Reset on success. */
+  compactionModelFailures: number;
 }
 
 /**
@@ -81,6 +87,16 @@ export interface BufferWatcher {
   /** Register a listener for extraction triggers. */
   onExtraction(handler: (projectId: string) => void): void;
 
+  /** Register a listener for compaction triggers. */
+  onCompaction(handler: (projectId: string) => void): void;
+
+  /**
+   * Report the result of a compaction attempt.
+   * On success: updates byte counter to reflect compacted size.
+   * On failure: marks compaction as no longer in-flight.
+   */
+  notifyCompactionResult(projectId: string, success: boolean, newSizeBytes?: number): void;
+
   /** Shut down all timers and pending triggers. */
   close(): void;
 
@@ -96,6 +112,7 @@ const DEFAULT_CONFIG: BufferWatcherConfig = {
   extractionSizeThreshold: 262_144,
   bufferMaxBytes: 4_194_304,
   maxConsecutiveFailures: 3,
+  compactionSizeThreshold: 1_048_576,
 };
 
 /**
@@ -111,6 +128,7 @@ export function createBufferWatcher(
   const resolved: BufferWatcherConfig = { ...DEFAULT_CONFIG, ...config };
   const projects = new Map<string, ProjectBufferState>();
   let extractionHandler: ((projectId: string) => void) | null = null;
+  let compactionHandler: ((projectId: string) => void) | null = null;
 
   /**
    * Get or create the per-project state entry.
@@ -127,6 +145,8 @@ export function createBufferWatcher(
         consecutiveFailures: 0,
         extractionDisabled: false,
         sizeCeilingWarningLogged: false,
+        compactionInFlight: false,
+        compactionModelFailures: 0,
       };
       projects.set(projectId, state);
     }
@@ -146,6 +166,22 @@ export function createBufferWatcher(
 
     if (extractionHandler !== null) {
       extractionHandler(projectId);
+    }
+  }
+
+  /**
+   * Internal helper: fire compaction trigger for a project.
+   * Skips if compaction is already in-flight.
+   */
+  function fireCompaction(projectId: string): void {
+    const state = projects.get(projectId);
+    if (state === undefined) return;
+    if (state.compactionInFlight) return;
+
+    state.compactionInFlight = true;
+
+    if (compactionHandler !== null) {
+      compactionHandler(projectId);
     }
   }
 
@@ -202,6 +238,11 @@ export function createBufferWatcher(
         fireExtraction(projectId);
       }
 
+      // Check compaction threshold — fire compaction if crossed (independent of extraction).
+      if (state.currentBytes > resolved.compactionSizeThreshold) {
+        fireCompaction(projectId);
+      }
+
       return true;
     },
 
@@ -248,9 +289,40 @@ export function createBufferWatcher(
     },
 
     /**
+     * Register a listener for compaction triggers.
+     *
+     * @see Requirements 8.1, 8.2
+     */
+    onCompaction(handler: (projectId: string) => void): void {
+      compactionHandler = handler;
+    },
+
+    /**
+     * Report the result of a compaction attempt.
+     *
+     * On success: update `currentBytes` to `newSizeBytes`, mark compaction
+     * as no longer in-flight.
+     *
+     * On failure: mark compaction as no longer in-flight.
+     *
+     * @see Requirements 9.1, 9.2, 9.3
+     */
+    notifyCompactionResult(projectId: string, success: boolean, newSizeBytes?: number): void {
+      const state = getOrCreate(projectId);
+
+      state.compactionInFlight = false;
+
+      if (success) {
+        if (newSizeBytes !== undefined) {
+          state.currentBytes = newSizeBytes;
+        }
+      }
+    },
+
+    /**
      * Shut down all timers and pending triggers.
      *
-     * @see Requirement 13.4
+     * @see Requirement 13.4, 12.3
      */
     close(): void {
       for (const state of projects.values()) {
@@ -258,6 +330,8 @@ export function createBufferWatcher(
           clearTimeout(state.idleTimer);
           state.idleTimer = null;
         }
+        state.compactionInFlight = false;
+        state.compactionModelFailures = 0;
       }
     },
 
