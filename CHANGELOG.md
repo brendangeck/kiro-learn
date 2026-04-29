@@ -1,3 +1,9 @@
+## [0.15.0](https://github.com/brendangeck/kiro-learn/compare/v0.14.0...v0.15.0) (2026-04-29)
+
+### Features
+
+* buffer compaction worker ([#24](https://github.com/brendangeck/kiro-learn/issues/24)) ([4e3e1b3](https://github.com/brendangeck/kiro-learn/commit/4e3e1b3bcb80efcf78bdece8754e538dcc9714f3))
+
 ## [0.14.0](https://github.com/brendangeck/kiro-learn/compare/v0.13.0...v0.14.0) (2026-04-29)
 
 ### Features
