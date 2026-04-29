@@ -50,8 +50,7 @@ describe('Project ID extraction determinism (Property 5)', () => {
         const result = extractProjectId(namespace);
         const match = NAMESPACE_RE.exec(namespace);
         expect(match).not.toBeNull();
-        // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-        expect(result).toBe(match![2]);
+        expect(result).toBe(match?.[2]);
       }),
       { numRuns: 200 },
     );

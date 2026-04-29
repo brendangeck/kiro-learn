@@ -75,7 +75,7 @@ const SINGLE_RECORD_XML = `
 `.trim();
 
 /** Valid XML response with two memory records. */
-const MULTI_RECORD_XML = `
+const _MULTI_RECORD_XML = `
 <memory_record type="tool_use">
   <title>First Memory</title>
   <summary>First summary for the memory record</summary>
