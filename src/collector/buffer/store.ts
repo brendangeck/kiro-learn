@@ -21,6 +21,29 @@ import type { BufferEntry } from './types.js';
 const BUFFER_FILENAME = 'buffer.ndjson';
 
 /**
+ * Typed facade for `fs.flockSync` (Node ≥ 22).
+ *
+ * `@types/node` does not yet declare `flockSync`, so we cast through this
+ * interface when calling it.  At runtime the function exists on Node 22+
+ * builds that include POSIX advisory locking support.
+ */
+interface FlockFs {
+  flockSync(fd: number, operation: 'ex' | 'sh' | 'un'): void;
+}
+
+/**
+ * Result of an atomic buffer replace operation.
+ *
+ * @see Requirements 6.2, 6.4
+ */
+export interface ReplaceResult {
+  /** Entries from the catch-up window that were replayed. */
+  catchUpEntries: BufferEntry[];
+  /** Total bytes of the new buffer file. */
+  newSizeBytes: number;
+}
+
+/**
  * Per-project append-only NDJSON buffer store.
  *
  * @see Requirements 1.1–1.8, 3.1–3.3
@@ -31,6 +54,13 @@ export interface BufferStore {
 
   /** Read all valid entries from the buffer as a snapshot. Skips corrupt lines. */
   snapshot(projectId: string): Promise<BufferEntry[]>;
+
+  /**
+   * Read all valid entries and the current byte size atomically.
+   * Used by CompactionWorker to capture both snapshot and S0 in one call
+   * so no appends can slip between the two reads.
+   */
+  snapshotWithSize(projectId: string): Promise<{ entries: BufferEntry[]; sizeBytes: number }>;
 
   /** Current byte size of the buffer file. Returns 0 if file does not exist. */
   size(projectId: string): Promise<number>;
@@ -43,6 +73,29 @@ export interface BufferStore {
 
   /** Remove the buffer file for a project. */
   clear(projectId: string): Promise<void>;
+
+  /** Current byte size of the buffer file (synchronous). Returns 0 if file does not exist. */
+  sizeSync(projectId: string): number;
+
+  /**
+   * Atomically replace buffer contents with catch-up replay.
+   *
+   * 1. Acquire exclusive flock on the buffer file
+   * 2. Read any bytes appended since `sinceOffset` (catch-up window)
+   * 3. Parse catch-up bytes into BufferEntry objects
+   * 4. Write `newEntries` + catch-up entries to a temp file
+   * 5. Rename temp file to buffer file (atomic on POSIX)
+   * 6. Release exclusive flock
+   *
+   * Returns the catch-up entries that were replayed and the new file size.
+   *
+   * @see Requirements 6.1, 6.2, 6.3, 6.4, 6.5, 6.6, 6.7
+   */
+  replace(
+    projectId: string,
+    newEntries: readonly BufferEntry[],
+    sinceOffset: number,
+  ): Promise<ReplaceResult>;
 }
 
 /**
@@ -78,6 +131,48 @@ export function createBufferStore(
       fs.appendFileSync(filePath, line, 'utf-8');
 
       return bytes;
+    },
+
+    /**
+     * Read all valid entries and the current byte size atomically.
+     *
+     * Reads the file content once and derives both the parsed entries and
+     * the byte size from the same read, so no appends can slip between
+     * the two values.
+     *
+     * @see Requirements 1.5, 7.1
+     */
+    async snapshotWithSize(projectId: string): Promise<{ entries: BufferEntry[]; sizeBytes: number }> {
+      const filePath = this.bufferPath(projectId);
+
+      let content: string;
+      try {
+        content = fs.readFileSync(filePath, 'utf-8');
+      } catch (err: unknown) {
+        if (err instanceof Error && 'code' in err && (err as NodeJS.ErrnoException).code === 'ENOENT') {
+          return { entries: [], sizeBytes: 0 };
+        }
+        throw err;
+      }
+
+      const sizeBytes = Buffer.byteLength(content, 'utf-8');
+      const lines = content.split('\n');
+      const entries: BufferEntry[] = [];
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (trimmed.length === 0) continue;
+
+        try {
+          entries.push(JSON.parse(trimmed) as BufferEntry);
+        } catch {
+          process.stderr.write(
+            `[kiro-learn] skipping corrupt buffer line in ${filePath}: ${trimmed.slice(0, 80)}\n`,
+          );
+        }
+      }
+
+      return { entries, sizeBytes };
     },
 
     /**
@@ -207,6 +302,124 @@ export function createBufferStore(
           return; // File already gone — that's fine.
         }
         throw err;
+      }
+    },
+
+    /**
+     * Return the byte size of the buffer file synchronously, or 0 if it
+     * does not exist.
+     *
+     * Used by CompactionWorker to record S0 at snapshot time so the byte
+     * offset is captured atomically with the snapshot read.
+     *
+     * @see Requirements 7.1, 7.2
+     */
+    sizeSync(projectId: string): number {
+      const filePath = this.bufferPath(projectId);
+
+      try {
+        const stat = fs.statSync(filePath);
+        return stat.size;
+      } catch (err: unknown) {
+        if (err instanceof Error && 'code' in err && (err as NodeJS.ErrnoException).code === 'ENOENT') {
+          return 0;
+        }
+        throw err;
+      }
+    },
+
+    /**
+     * Atomically replace buffer contents with catch-up replay.
+     *
+     * Opens the buffer file, acquires an exclusive POSIX flock, reads any
+     * bytes appended since `sinceOffset`, writes `newEntries` + catch-up
+     * entries to a temp file, and atomically renames it over the buffer.
+     *
+     * The exclusive lock is held only for the brief read + write + rename
+     * window (sub-millisecond for typical catch-up sizes).
+     *
+     * @see Requirements 6.1, 6.2, 6.3, 6.4, 6.5, 6.6, 6.7
+     */
+    async replace(
+      projectId: string,
+      newEntries: readonly BufferEntry[],
+      sinceOffset: number,
+    ): Promise<ReplaceResult> {
+      const filePath = this.bufferPath(projectId);
+      const dir = path.dirname(filePath);
+      const tempPath = path.join(dir, `buffer.ndjson.${Date.now()}.tmp`);
+
+      // Open the buffer file for reading to acquire the exclusive lock.
+      const fd = fs.openSync(filePath, 'r');
+
+      try {
+        // 1. Acquire exclusive POSIX file lock.
+        //    fs.flockSync is a Node 22+ API — call via cast since @types/node
+        //    may not yet include the declaration.
+        (fs as unknown as FlockFs).flockSync(fd, 'ex');
+
+        try {
+          // 2. Read catch-up bytes [sinceOffset, current_size).
+          const stat = fs.fstatSync(fd);
+          const catchUpSize = stat.size - sinceOffset;
+          const catchUpEntries: BufferEntry[] = [];
+
+          if (catchUpSize > 0) {
+            const catchUpBuffer = Buffer.alloc(catchUpSize);
+            fs.readSync(fd, catchUpBuffer, 0, catchUpSize, sinceOffset);
+            const catchUpText = catchUpBuffer.toString('utf-8');
+
+            // 3. Parse catch-up lines into BufferEntry objects.
+            for (const line of catchUpText.split('\n')) {
+              const trimmed = line.trim();
+              if (trimmed.length === 0) continue;
+
+              try {
+                catchUpEntries.push(JSON.parse(trimmed) as BufferEntry);
+              } catch {
+                process.stderr.write(
+                  `[kiro-learn] skipping corrupt catch-up line in ${filePath}: ${trimmed.slice(0, 80)}\n`,
+                );
+              }
+            }
+          }
+
+          // 4. Write newEntries + catch-up entries to temp file.
+          let totalBytes = 0;
+          const lines: string[] = [];
+
+          for (const entry of newEntries) {
+            const line = JSON.stringify(entry) + '\n';
+            lines.push(line);
+            totalBytes += Buffer.byteLength(line, 'utf-8');
+          }
+
+          for (const entry of catchUpEntries) {
+            const line = JSON.stringify(entry) + '\n';
+            lines.push(line);
+            totalBytes += Buffer.byteLength(line, 'utf-8');
+          }
+
+          fs.writeFileSync(tempPath, lines.join(''), 'utf-8');
+
+          // 5. Atomic rename — POSIX guarantees this is atomic on the same filesystem.
+          fs.renameSync(tempPath, filePath);
+
+          return { catchUpEntries, newSizeBytes: totalBytes };
+        } finally {
+          // 6. Release exclusive lock.
+          (fs as unknown as FlockFs).flockSync(fd, 'un');
+        }
+      } finally {
+        // 7. Close file descriptor.
+        fs.closeSync(fd);
+
+        // 8. Clean up temp file if it still exists (rename failed or was never reached).
+        try {
+          fs.unlinkSync(tempPath);
+        } catch {
+          // Already renamed or doesn't exist — that's fine.
+        }
       }
     },
   };

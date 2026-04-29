@@ -14,8 +14,10 @@
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
-import { createBufferStore, createBufferWatcher, createExtractionWorker } from './buffer/index.js';
-import type { BufferStore, BufferWatcher, ExtractionWorker } from './buffer/index.js';
+import * as fs from 'node:fs';
+
+import { createBufferStore, createBufferWatcher, createExtractionWorker, createCompactionWorker } from './buffer/index.js';
+import type { BufferStore, BufferWatcher, ExtractionWorker, CompactionWorker } from './buffer/index.js';
 import { openSqliteStorage } from './storage/sqlite/index.js';
 import { createPipeline } from './pipeline/index.js';
 import { createQueryLayer } from './query/index.js';
@@ -81,6 +83,19 @@ export interface CollectorConfig {
   bufferExtractionTimeoutMs?: number;
   /** Directory for per-project buffer files. Default `~/.kiro-learn/buffers/`. @see Requirements 18.2 */
   bufferDir?: string;
+
+  // ── Compaction configuration ──────────────────────────────────────────
+
+  /** Whether buffer compaction is enabled. Default `false`. @see Requirements 11.1 */
+  compactionEnabled?: boolean;
+  /** Buffer byte-size threshold for compaction trigger. Default `1_048_576` (1 MiB). @see Requirements 11.2 */
+  compactionSizeThreshold?: number;
+  /** Per-compaction model call timeout (ms). Default `120_000`. @see Requirements 11.2 */
+  compactionModelTimeoutMs?: number;
+  /** Max model retries per compaction attempt. Default `2`. @see Requirements 11.2 */
+  compactionMaxModelRetries?: number;
+  /** Consecutive model failures before deterministic eviction fallback. Default `3`. @see Requirements 11.2 */
+  compactionMaxConsecutiveModelFailures?: number;
 }
 
 /**
@@ -109,6 +124,13 @@ export const DEFAULT_COLLECTOR_CONFIG: CollectorConfig = {
   bufferExtractionConcurrency: 2,
   bufferExtractionTimeoutMs: 60_000,
   bufferDir: join(homedir(), '.kiro-learn', 'buffers'),
+
+  // Compaction defaults
+  compactionEnabled: false,
+  compactionSizeThreshold: 1_048_576,
+  compactionModelTimeoutMs: 120_000,
+  compactionMaxModelRetries: 2,
+  compactionMaxConsecutiveModelFailures: 3,
 };
 
 // ── Handle ──────────────────────────────────────────────────────────────
@@ -168,6 +190,7 @@ export async function startCollector(
     let bufferStore: BufferStore | undefined;
     let bufferWatcher: BufferWatcher | undefined;
     let extractionWorker: ExtractionWorker | undefined;
+    let compactionWorker: CompactionWorker | undefined;
 
     // 3. If buffer mode is enabled, instantiate buffer components
     if (bufferEnabled) {
@@ -180,6 +203,7 @@ export async function startCollector(
         extractionSizeThreshold: cfg.bufferExtractionThreshold ?? 262_144,
         bufferMaxBytes: cfg.bufferMaxBytes ?? 4_194_304,
         maxConsecutiveFailures: cfg.bufferMaxConsecutiveFailures ?? 3,
+        compactionSizeThreshold: cfg.compactionSizeThreshold ?? 1_048_576,
       });
 
       extractionWorker = createExtractionWorker({
@@ -202,6 +226,30 @@ export async function startCollector(
           );
         });
       });
+
+      // 3b. If compaction is enabled, instantiate CompactionWorker and wire triggers
+      if (cfg.compactionEnabled === true) {
+        compactionWorker = createCompactionWorker({
+          bufferStore,
+          watcher: bufferWatcher,
+          config: {
+            modelTimeoutMs: cfg.compactionModelTimeoutMs ?? 120_000,
+            maxModelRetries: cfg.compactionMaxModelRetries ?? 2,
+            maxConsecutiveModelFailures: cfg.compactionMaxConsecutiveModelFailures ?? 3,
+            enabled: true,
+          },
+        });
+
+        // Wire: watcher compaction trigger → compaction worker
+        bufferWatcher.onCompaction((projectId) => {
+          compactionWorker!.compact(projectId).catch((err: unknown) => {
+            const message = err instanceof Error ? err.message : String(err);
+            process.stderr.write(
+              `[kiro-learn] compaction error for project ${projectId}: ${message}\n`,
+            );
+          });
+        });
+      }
     }
 
     // 4. Create pipeline with all stages, injecting StorageBackend + buffer deps
@@ -218,14 +266,56 @@ export async function startCollector(
 
     // 5. If buffer mode is enabled, scan existing buffers and re-arm triggers
     //    for non-empty projects (daemon restart recovery).
+    //    Also clean up orphaned temp files from interrupted compactions.
     if (bufferEnabled && bufferStore !== undefined && bufferWatcher !== undefined) {
+      const bufferDir = expandTilde(cfg.bufferDir ?? join(homedir(), '.kiro-learn', 'buffers'));
+
+      // 5a. Clean up orphaned temp files (buffer.ndjson.*.tmp) in buffer directories.
+      //     These can be left behind if the daemon dies during a compaction replace.
+      //     @see Requirement 16.3
+      try {
+        let dirEntries: fs.Dirent[];
+        try {
+          dirEntries = fs.readdirSync(bufferDir, { withFileTypes: true });
+        } catch {
+          dirEntries = [];
+        }
+        for (const entry of dirEntries) {
+          if (!entry.isDirectory()) continue;
+          const projectDir = join(bufferDir, entry.name);
+          let files: string[];
+          try {
+            files = fs.readdirSync(projectDir);
+          } catch {
+            continue;
+          }
+          for (const file of files) {
+            if (/^buffer\.ndjson\.\d+\.tmp$/.test(file)) {
+              try {
+                fs.unlinkSync(join(projectDir, file));
+              } catch {
+                // Best-effort cleanup — ignore errors.
+              }
+            }
+          }
+        }
+      } catch (cleanupErr: unknown) {
+        const message = cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr);
+        process.stderr.write(
+          `[kiro-learn] failed to clean up orphaned temp files on startup: ${message}\n`,
+        );
+      }
+
+      // 5b. Re-arm triggers for existing buffers.
       try {
         const existingProjects = await bufferStore.listProjects();
         for (const projectId of existingProjects) {
           const size = await bufferStore.size(projectId);
           if (size > 0) {
             // Re-arm the watcher by notifying it of the existing buffer size.
-            // This starts the idle timer and checks the size threshold.
+            // This starts the idle timer and checks the size threshold,
+            // including the compaction threshold for oversized buffers.
+            // @see Requirement 16.2
             bufferWatcher.notifyAppend(projectId, size);
           }
         }
@@ -263,8 +353,16 @@ export async function startCollector(
         await receiver.close();
 
         if (bufferEnabled && extractionWorker !== undefined && bufferWatcher !== undefined) {
-          // Buffer mode shutdown: drain extraction worker, close watcher, then close storage
+          // Buffer mode shutdown: drain extraction worker, drain compaction worker,
+          // close watcher, then close storage.
           await extractionWorker.drain(DRAIN_TIMEOUT_MS);
+
+          // Drain compaction worker if it was instantiated.
+          // @see Requirement 12.2
+          if (compactionWorker !== undefined) {
+            await compactionWorker.drain(DRAIN_TIMEOUT_MS);
+          }
+
           bufferWatcher.close();
         } else {
           // Legacy mode shutdown: drain per-event extraction stage

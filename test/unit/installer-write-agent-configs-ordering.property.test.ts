@@ -111,9 +111,10 @@ interface TraceEntry {
    * `<tmpHome>/.kiro/agents/kiro-learn.json`, `'project'` for ops
    * touching `<projectDir>/.kiro/agents/kiro-learn.json`,
    * `'compressor'` for the final `<tmpHome>/.kiro/agents/kiro-learn-compressor.json`
+   * write, `'compactor'` for the `<tmpHome>/.kiro/agents/kiro-learn-compactor.json`
    * write, `undefined` for anything else (should not happen in this test).
    */
-  scope?: 'global' | 'project' | 'compressor';
+  scope?: 'global' | 'project' | 'compressor' | 'compactor';
 }
 
 // ── tmpHome setup (before mocks so paths are available to taggers) ─────
@@ -128,6 +129,10 @@ const globalKiroLearnPath: string = join(globalAgentsDir, 'kiro-learn.json');
 const globalCompressorPath: string = join(
   globalAgentsDir,
   'kiro-learn-compressor.json',
+);
+const globalCompactorPath: string = join(
+  globalAgentsDir,
+  'kiro-learn-compactor.json',
 );
 
 // Parent dir for per-test project directories.
@@ -144,6 +149,7 @@ function tagFor(
   if (projectKiroLearnPath !== null && p === projectKiroLearnPath)
     return 'project';
   if (p === globalCompressorPath) return 'compressor';
+  if (p === globalCompactorPath) return 'compactor';
   return undefined;
 }
 
@@ -476,6 +482,15 @@ const compressorTrace: readonly TraceEntry[] = [
   },
 ];
 
+/** The compactor trace — a single `writeFileSync` entry, always present. */
+const compactorTrace: readonly TraceEntry[] = [
+  {
+    op: 'writeFileSync',
+    path: globalCompactorPath,
+    scope: 'compactor',
+  },
+];
+
 // ── Property 6 ────────────────────────────────────────────────────────
 
 /**
@@ -538,6 +553,7 @@ describe('Installer — property: per-scope ordering holds and scopes do not int
             )
           : []),
         ...compressorTrace,
+        ...compactorTrace,
       ];
 
       // (a) Exact trace match — ordering AND per-entry shape.
