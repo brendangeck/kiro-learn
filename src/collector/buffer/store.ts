@@ -132,8 +132,11 @@ export function createBufferStore(
       try {
         const stat = fs.statSync(filePath);
         return stat.size;
-      } catch {
-        return 0;
+      } catch (err: unknown) {
+        if (err instanceof Error && 'code' in err && (err as NodeJS.ErrnoException).code === 'ENOENT') {
+          return 0;
+        }
+        throw err;
       }
     },
 

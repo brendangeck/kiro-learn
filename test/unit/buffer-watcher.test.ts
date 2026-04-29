@@ -121,30 +121,34 @@ describe('BufferWatcher', () => {
       /** Validates: Requirements 9.2, 9.3 */
       const stderrSpy = vi.spyOn(process.stderr, 'write').mockReturnValue(true);
 
-      watcher = createBufferWatcher({ bufferMaxBytes: 100 });
+      try {
+        watcher = createBufferWatcher({ bufferMaxBytes: 100 });
 
-      // Fill the buffer to capacity
-      watcher.notifyAppend(PROJECT_ID, 100);
+        // Fill the buffer to capacity
+        watcher.notifyAppend(PROJECT_ID, 100);
 
-      // First ceiling hit — should log a warning
-      const result1 = watcher.wouldExceedCeiling(PROJECT_ID, 1);
-      expect(result1).toBe(true);
-      expect(stderrSpy).toHaveBeenCalledOnce();
-      expect(stderrSpy).toHaveBeenCalledWith(
-        expect.stringContaining('buffer size ceiling hit'),
-      );
-      expect(stderrSpy).toHaveBeenCalledWith(
-        expect.stringContaining(PROJECT_ID),
-      );
+        // First ceiling hit — should log a warning
+        const result1 = watcher.wouldExceedCeiling(PROJECT_ID, 1);
+        expect(result1).toBe(true);
+        expect(stderrSpy).toHaveBeenCalledOnce();
+        expect(stderrSpy).toHaveBeenCalledWith(
+          expect.stringContaining('buffer size ceiling hit'),
+        );
+        expect(stderrSpy).toHaveBeenCalledWith(
+          expect.stringContaining(PROJECT_ID),
+        );
 
-      // Subsequent ceiling hits — should NOT log additional warnings
-      const result2 = watcher.wouldExceedCeiling(PROJECT_ID, 1);
-      expect(result2).toBe(true);
-      expect(stderrSpy).toHaveBeenCalledOnce();
+        // Subsequent ceiling hits — should NOT log additional warnings
+        const result2 = watcher.wouldExceedCeiling(PROJECT_ID, 1);
+        expect(result2).toBe(true);
+        expect(stderrSpy).toHaveBeenCalledOnce();
 
-      const result3 = watcher.wouldExceedCeiling(PROJECT_ID, 50);
-      expect(result3).toBe(true);
-      expect(stderrSpy).toHaveBeenCalledOnce();
+        const result3 = watcher.wouldExceedCeiling(PROJECT_ID, 50);
+        expect(result3).toBe(true);
+        expect(stderrSpy).toHaveBeenCalledOnce();
+      } finally {
+        stderrSpy.mockRestore();
+      }
     });
   });
 });

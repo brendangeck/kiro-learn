@@ -55,16 +55,18 @@ export interface ProjectBufferState {
  */
 export interface BufferWatcher {
   /**
-   * Notify the watcher that the pipeline wants to append to a project buffer.
-   * Resets idle timer, checks size thresholds.
-   * Returns `true` if the append should proceed, `false` if the buffer has
-   * hit the hard size ceiling and the append should be skipped.
+   * Notify the watcher that bytes have been durably appended to a project
+   * buffer. Accumulates bytes, resets the idle timer, and checks the size
+   * threshold. Always returns `true` — callers should call
+   * {@link wouldExceedCeiling} before the write to decide whether to skip.
    */
   notifyAppend(projectId: string, appendedBytes: number): boolean;
 
   /**
    * Check whether appending `bytes` to the project buffer would exceed
-   * the hard size ceiling. Read-only — does not mutate watcher state.
+   * the hard size ceiling. Does not accumulate bytes or reset timers.
+   * Logs a warning to stderr on the first ceiling hit per project
+   * (sets `sizeCeilingWarningLogged`).
    * Used by the pipeline to gate the write before committing bytes.
    */
   wouldExceedCeiling(projectId: string, bytes: number): boolean;
@@ -150,7 +152,8 @@ export function createBufferWatcher(
   return {
     /**
      * Check whether appending `bytes` would exceed the hard size ceiling.
-     * Read-only — does not mutate watcher state.
+     * Does not accumulate bytes or reset timers. Logs a warning to stderr
+     * on the first ceiling hit per project (sets `sizeCeilingWarningLogged`).
      *
      * @see Requirements 9.1, 9.2
      */
