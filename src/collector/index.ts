@@ -12,7 +12,10 @@
  */
 
 import { homedir } from 'node:os';
+import { join } from 'node:path';
 
+import { createBufferStore, createBufferWatcher, createExtractionWorker } from './buffer/index.js';
+import type { BufferStore, BufferWatcher, ExtractionWorker } from './buffer/index.js';
 import { openSqliteStorage } from './storage/sqlite/index.js';
 import { createPipeline } from './pipeline/index.js';
 import { createQueryLayer } from './query/index.js';
@@ -59,6 +62,25 @@ export interface CollectorConfig {
   resultLimit: number;
   /** Maximum request body size in bytes. Default `2 * 1024 * 1024` (2 MiB). */
   maxBodyBytes: number;
+
+  // ── Buffer configuration ────────────────────────────────────────────
+
+  /** Whether buffer mode is enabled. When `true`, events are appended to project buffers for batch extraction instead of per-event extraction. Default `true`. @see Requirements 18.1 */
+  bufferEnabled?: boolean;
+  /** Idle period (ms) before extraction fires for a project buffer. Default `5_000`. @see Requirements 18.2 */
+  bufferIdleMs?: number;
+  /** Buffer byte-size threshold that triggers extraction. Default `262_144` (256 KiB). @see Requirements 18.2 */
+  bufferExtractionThreshold?: number;
+  /** Hard ceiling on buffer size (bytes). Appends are refused above this. Default `4_194_304` (4 MiB). @see Requirements 18.2 */
+  bufferMaxBytes?: number;
+  /** Consecutive extraction failures before the circuit breaker trips. Default `3`. @see Requirements 18.2 */
+  bufferMaxConsecutiveFailures?: number;
+  /** Maximum concurrent buffer extractions across all projects. Default `2`. @see Requirements 18.2 */
+  bufferExtractionConcurrency?: number;
+  /** Per-extraction timeout (ms) for buffer batch extraction. Default `60_000`. @see Requirements 18.2 */
+  bufferExtractionTimeoutMs?: number;
+  /** Directory for per-project buffer files. Default `~/.kiro-learn/buffers/`. @see Requirements 18.2 */
+  bufferDir?: string;
 }
 
 /**
@@ -77,6 +99,16 @@ export const DEFAULT_COLLECTOR_CONFIG: CollectorConfig = {
   dedupMaxSize: 10_000,
   resultLimit: 10,
   maxBodyBytes: 2 * 1024 * 1024,
+
+  // Buffer defaults
+  bufferEnabled: true,
+  bufferIdleMs: 5_000,
+  bufferExtractionThreshold: 262_144,
+  bufferMaxBytes: 4_194_304,
+  bufferMaxConsecutiveFailures: 3,
+  bufferExtractionConcurrency: 2,
+  bufferExtractionTimeoutMs: 60_000,
+  bufferDir: join(homedir(), '.kiro-learn', 'buffers'),
 };
 
 // ── Handle ──────────────────────────────────────────────────────────────
@@ -104,14 +136,20 @@ const DRAIN_TIMEOUT_MS = 5_000;
  * 1. Merge provided config with defaults.
  * 2. Open storage via `openSqliteStorage` (the ONLY place that knows the
  *    concrete backend).
- * 3. Create pipeline with all stages, injecting `StorageBackend`.
- * 4. Create query layer, injecting `StorageBackend`.
- * 5. Create retrieval assembler, injecting query layer.
- * 6. Start HTTP receiver, injecting pipeline and retrieval.
- * 7. Return handle with `close()` that: stops receiver, drains extraction
- *    (5 s timeout), closes storage.
+ * 3. If buffer mode is enabled, instantiate BufferStore, BufferWatcher,
+ *    and ExtractionWorker. Wire the watcher's extraction trigger to the
+ *    worker.
+ * 4. Create pipeline with all stages, injecting `StorageBackend` and
+ *    optional buffer dependencies.
+ * 5. If buffer mode is enabled, scan existing buffers and re-arm triggers
+ *    for non-empty projects (daemon restart recovery).
+ * 6. Create query layer, injecting `StorageBackend`.
+ * 7. Create retrieval assembler, injecting query layer.
+ * 8. Start HTTP receiver, injecting pipeline and retrieval.
+ * 9. Return handle with `close()` that: stops receiver, drains extraction
+ *    (5 s timeout), closes watcher (if buffer mode), closes storage.
  *
- * @see Requirements 14.1, 14.2, 14.3, 14.4, 14.5, 15.1
+ * @see Requirements 13.1, 13.2, 13.3, 13.4, 14.1, 14.2, 14.3, 14.4, 14.5, 15.1, 15.2, 15.3
  */
 export async function startCollector(
   config?: Partial<CollectorConfig>,
@@ -124,25 +162,91 @@ export async function startCollector(
 
   // Wrap subsequent wiring so storage is closed if anything throws.
   try {
-    // 2. Create pipeline with all stages, injecting StorageBackend
+    // 2. Resolve buffer mode
+    const bufferEnabled = cfg.bufferEnabled === true;
+
+    let bufferStore: BufferStore | undefined;
+    let bufferWatcher: BufferWatcher | undefined;
+    let extractionWorker: ExtractionWorker | undefined;
+
+    // 3. If buffer mode is enabled, instantiate buffer components
+    if (bufferEnabled) {
+      const bufferDir = expandTilde(cfg.bufferDir ?? join(homedir(), '.kiro-learn', 'buffers'));
+
+      bufferStore = createBufferStore(bufferDir);
+
+      bufferWatcher = createBufferWatcher({
+        idleMs: cfg.bufferIdleMs ?? 5_000,
+        extractionSizeThreshold: cfg.bufferExtractionThreshold ?? 262_144,
+        bufferMaxBytes: cfg.bufferMaxBytes ?? 4_194_304,
+        maxConsecutiveFailures: cfg.bufferMaxConsecutiveFailures ?? 3,
+      });
+
+      extractionWorker = createExtractionWorker({
+        bufferStore,
+        watcher: bufferWatcher,
+        storage,
+        config: {
+          concurrency: cfg.bufferExtractionConcurrency ?? 2,
+          timeoutMs: cfg.bufferExtractionTimeoutMs ?? 60_000,
+          maxRetries: 3,
+        },
+      });
+
+      // Wire: watcher extraction trigger → extraction worker
+      bufferWatcher.onExtraction((projectId) => {
+        extractionWorker!.extract(projectId).catch((err: unknown) => {
+          const message = err instanceof Error ? err.message : String(err);
+          process.stderr.write(
+            `[kiro-learn] extraction error for project ${projectId}: ${message}\n`,
+          );
+        });
+      });
+    }
+
+    // 4. Create pipeline with all stages, injecting StorageBackend + buffer deps
     const pipeline = createPipeline({
       storage,
       extractionConcurrency: cfg.extractionConcurrency,
       extractionQueueDepth: cfg.extractionQueueDepth,
       extractionTimeout: cfg.extractionTimeoutMs,
       dedupMaxSize: cfg.dedupMaxSize,
+      ...(bufferEnabled && bufferStore !== undefined && bufferWatcher !== undefined
+        ? { bufferStore, bufferWatcher, bufferEnabled: true }
+        : {}),
     });
 
-    // 3. Create query layer, injecting StorageBackend
+    // 5. If buffer mode is enabled, scan existing buffers and re-arm triggers
+    //    for non-empty projects (daemon restart recovery).
+    if (bufferEnabled && bufferStore !== undefined && bufferWatcher !== undefined) {
+      try {
+        const existingProjects = await bufferStore.listProjects();
+        for (const projectId of existingProjects) {
+          const size = await bufferStore.size(projectId);
+          if (size > 0) {
+            // Re-arm the watcher by notifying it of the existing buffer size.
+            // This starts the idle timer and checks the size threshold.
+            bufferWatcher.notifyAppend(projectId, size);
+          }
+        }
+      } catch (scanErr: unknown) {
+        const message = scanErr instanceof Error ? scanErr.message : String(scanErr);
+        process.stderr.write(
+          `[kiro-learn] failed to scan existing buffers on startup: ${message}\n`,
+        );
+      }
+    }
+
+    // 6. Create query layer, injecting StorageBackend
     const queryLayer = createQueryLayer(storage);
 
-    // 4. Create retrieval assembler, injecting query layer
+    // 7. Create retrieval assembler, injecting query layer
     const retrieval = createRetrievalAssembler({
       query: queryLayer,
       resultLimit: cfg.resultLimit,
     });
 
-    // 5. Start HTTP receiver, injecting pipeline and retrieval
+    // 8. Start HTTP receiver, injecting pipeline and retrieval
     const receiver = await startReceiver(
       { pipeline, retrieval, storage },
       {
@@ -153,11 +257,20 @@ export async function startCollector(
       },
     );
 
-    // 6. Return handle with close method
+    // 9. Return handle with close method
     return {
       async close(): Promise<void> {
         await receiver.close();
-        await pipeline.extraction.drain(DRAIN_TIMEOUT_MS);
+
+        if (bufferEnabled && extractionWorker !== undefined && bufferWatcher !== undefined) {
+          // Buffer mode shutdown: drain extraction worker, close watcher, then close storage
+          await extractionWorker.drain(DRAIN_TIMEOUT_MS);
+          bufferWatcher.close();
+        } else {
+          // Legacy mode shutdown: drain per-event extraction stage
+          await pipeline.extraction.drain(DRAIN_TIMEOUT_MS);
+        }
+
         await storage.close();
       },
     };
