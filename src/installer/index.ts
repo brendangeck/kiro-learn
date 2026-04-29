@@ -442,6 +442,13 @@ export function installDeps(): void {
     rmSync(nodeModulesDir, { recursive: true, force: true });
   }
 
+  // Write a local .npmrc so npm uses the public registry without auth.
+  // This prevents inheriting project- or user-level .npmrc files that may
+  // contain auth tokens (e.g. ${NPM_TOKEN}) which cause E401 errors when
+  // the variable is unset. All runtime dependencies are public packages.
+  const npmrcPath = path.join(INSTALL_DIR, '.npmrc');
+  writeFileSync(npmrcPath, 'registry=https://registry.npmjs.org/\n');
+
   try {
     execSync('npm install --production', {
       cwd: INSTALL_DIR,
