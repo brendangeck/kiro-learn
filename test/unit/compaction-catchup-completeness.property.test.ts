@@ -228,18 +228,13 @@ describe('Catch-up completeness (Property 1)', () => {
             const filePath = store.bufferPath(PROJECT_ID);
             const dir = path.dirname(filePath);
             const tempPath = path.join(dir, `buffer.ndjson.${Date.now()}.tmp`);
-            let totalBytes = 0;
             const lines: string[] = [];
 
             for (const entry of compactedEntries) {
-              const line = JSON.stringify(entry) + '\n';
-              lines.push(line);
-              totalBytes += Buffer.byteLength(line, 'utf-8');
+              lines.push(JSON.stringify(entry) + '\n');
             }
             for (const entry of parsedCatchUp) {
-              const line = JSON.stringify(entry) + '\n';
-              lines.push(line);
-              totalBytes += Buffer.byteLength(line, 'utf-8');
+              lines.push(JSON.stringify(entry) + '\n');
             }
 
             fs.writeFileSync(tempPath, lines.join(''), 'utf-8');

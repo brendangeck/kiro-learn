@@ -351,17 +351,12 @@ describe('BufferStore.replace', () => {
           }
 
           // Write temp file
-          let totalBytes = 0;
           const lines: string[] = [];
           for (const entry of newEntries) {
-            const line = JSON.stringify(entry) + '\n';
-            lines.push(line);
-            totalBytes += Buffer.byteLength(line, 'utf-8');
+            lines.push(JSON.stringify(entry) + '\n');
           }
           for (const entry of catchUpEntries) {
-            const line = JSON.stringify(entry) + '\n';
-            lines.push(line);
-            totalBytes += Buffer.byteLength(line, 'utf-8');
+            lines.push(JSON.stringify(entry) + '\n');
           }
           fs.writeFileSync(tempPath, lines.join(''), 'utf-8');
 
@@ -415,8 +410,8 @@ describe('BufferStore.replace', () => {
       ...store,
       async replace(
         projectId: string,
-        newEntries: readonly BufferEntry[],
-        sinceOffset: number,
+        _newEntries: readonly BufferEntry[],
+        _sinceOffset: number,
       ): Promise<ReplaceResult> {
         const filePath = store.bufferPath(projectId);
         const fd = fs.openSync(filePath, 'r');

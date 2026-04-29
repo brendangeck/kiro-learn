@@ -18,7 +18,7 @@ import fc from 'fast-check';
 import type { BufferStore, ReplaceResult } from '../../src/collector/buffer/store.js';
 import type { BufferWatcher } from '../../src/collector/buffer/watcher.js';
 import type { BufferEntry } from '../../src/collector/buffer/types.js';
-import { bufferEntryArb, namespaceArb, isoDateArb } from '../helpers/arbitrary.js';
+import { namespaceArb, isoDateArb } from '../helpers/arbitrary.js';
 
 // ── Mock ACP client ─────────────────────────────────────────────────────
 

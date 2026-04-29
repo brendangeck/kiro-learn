@@ -99,7 +99,7 @@ const mockCompactionCompact = vi.fn(async () => ({
 let capturedCompactionWorker: CompactionWorker;
 
 vi.mock('../../src/collector/buffer/compaction.js', async (importOriginal) => {
-  const original = await importOriginal<typeof import('../../src/collector/buffer/compaction.js')>();
+  const original = (await importOriginal()) as Record<string, unknown>;
   return {
     ...original,
     createCompactionWorker: vi.fn(() => {
@@ -132,7 +132,7 @@ vi.mock('../../src/collector/buffer/extraction.js', () => ({
 
 // ── Mock BufferWatcher ──────────────────────────────────────────────────
 
-let capturedExtractionHandler: ((projectId: string) => void) | null = null;
+let _capturedExtractionHandler: ((projectId: string) => void) | null = null;
 let capturedCompactionHandler: ((projectId: string) => void) | null = null;
 const mockWatcherClose = vi.fn();
 const mockNotifyAppend = vi.fn(() => true);
@@ -146,7 +146,7 @@ vi.mock('../../src/collector/buffer/watcher.js', () => ({
     notifyExtractionResult: mockNotifyExtractionResult,
     notifyCompactionResult: mockNotifyCompactionResult,
     onExtraction: vi.fn((handler: (projectId: string) => void) => {
-      capturedExtractionHandler = handler;
+      _capturedExtractionHandler = handler;
     }),
     onCompaction: vi.fn((handler: (projectId: string) => void) => {
       capturedCompactionHandler = handler;
@@ -194,7 +194,7 @@ let tmpDir: string;
 beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kiro-compaction-wiring-'));
   vi.clearAllMocks();
-  capturedExtractionHandler = null;
+  _capturedExtractionHandler = null;
   capturedCompactionHandler = null;
 });
 
