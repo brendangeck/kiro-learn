@@ -1,3 +1,14 @@
+## [0.14.0](https://github.com/brendangeck/kiro-learn/compare/v0.13.0...v0.14.0) (2026-04-29)
+
+### Features
+
+* add MCP memory server with search, observation, and session summary tools ([#21](https://github.com/brendangeck/kiro-learn/issues/21)) ([8ecbc62](https://github.com/brendangeck/kiro-learn/commit/8ecbc62575f4facf8e8ca2b1117745d73777ec1d))
+* workspace buffer pipeline for batch extraction ([#22](https://github.com/brendangeck/kiro-learn/issues/22)) ([7674697](https://github.com/brendangeck/kiro-learn/commit/7674697f2cdad8479b05ec5942bd22147b4fe94f))
+
+### Bug Fixes
+
+* write local .npmrc in install dir to prevent auth token inheritance ([#23](https://github.com/brendangeck/kiro-learn/issues/23)) ([758828d](https://github.com/brendangeck/kiro-learn/commit/758828d9ce28e57e81052bd188f1000bff3a46ae))
+
 ## [0.13.0](https://github.com/brendangeck/kiro-learn/compare/v0.12.1...v0.13.0) (2026-04-28)
 
 ### Features
