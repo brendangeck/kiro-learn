@@ -1013,10 +1013,9 @@ export interface KiroHookFile {
     type: string;
     toolTypes?: string[];
   };
-  then: {
-    type: string;
-    command: string;
-  };
+  then:
+    | { type: 'runCommand'; command: string }
+    | { type: 'askAgent'; prompt: string };
 }
 
 /**
@@ -1032,22 +1031,34 @@ export function ideHookFileArb(): fc.Arbitrary<KiroHookFile> {
       eventType: fc.constantFrom('promptSubmit', 'agentStop', 'postToolUse'),
       shimPath: shimPathArb(),
     })
-    .map(({ name, description, eventType, shimPath }) => {
+    .chain(({ name, description, eventType, shimPath }) => {
       const when: KiroHookFile['when'] = { type: eventType };
       if (eventType === 'postToolUse') {
         when.toolTypes = ['*'];
       }
-      return {
-        enabled: true,
+
+      if (eventType === 'agentStop') {
+        return fc
+          .string({ minLength: 1, maxLength: 200 })
+          .filter((s) => s.trim().length > 0)
+          .map((prompt) => ({
+            enabled: true as const,
+            name,
+            description,
+            version: '1',
+            when,
+            then: { type: 'askAgent' as const, prompt },
+          }));
+      }
+
+      return fc.constant({
+        enabled: true as const,
         name,
         description,
         version: '1',
         when,
-        then: {
-          type: 'runCommand',
-          command: `"${shimPath}" ${eventType} || true`,
-        },
-      };
+        then: { type: 'runCommand' as const, command: `"${shimPath}" ${eventType} || true` },
+      });
     });
 }
 

@@ -47,5 +47,9 @@ yarn-error.log*
 .kiro/agents/kiro-learn.json
 .kiro/agents/kiro-learn-compressor.json
 
+# kiro-learn generated IDE hook files (written by `writeIdeHookFiles` per-project).
+# These are runtime artifacts with user-specific absolute paths to ~/.kiro-learn/bin/ide-shim.
+.kiro/hooks/kiro-learn-*.kiro.hook
+
 # kiro-learn local state (if tests/dev ever write here)
 .kiro-learn/

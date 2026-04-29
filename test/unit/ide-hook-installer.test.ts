@@ -130,8 +130,13 @@ describe('writeIdeHookFiles', () => {
     );
     const parsed = JSON.parse(raw) as Record<string, unknown>;
     const when = parsed['when'] as Record<string, unknown>;
+    const then = parsed['then'] as Record<string, unknown>;
 
     expect(when['type']).toBe('agentStop');
+    expect(then['type']).toBe('askAgent');
+    expect(typeof then['prompt']).toBe('string');
+    expect((then['prompt'] as string).length).toBeGreaterThan(0);
+    expect(then['command']).toBeUndefined();
   });
 
   it('tool hook has when.toolTypes: ["*"]', () => {
@@ -151,16 +156,23 @@ describe('writeIdeHookFiles', () => {
   it('then.command quotes the shim path', () => {
     writeIdeHookFiles(tmpProjectRoot);
 
-    const raw = readFileSync(
-      join(tmpProjectRoot, '.kiro', 'hooks', 'kiro-learn-prompt.kiro.hook'),
-      'utf8',
-    );
-    const parsed = JSON.parse(raw) as Record<string, unknown>;
-    const then = parsed['then'] as Record<string, unknown>;
-    const command = then['command'] as string;
+    const hooksDir = join(tmpProjectRoot, '.kiro', 'hooks');
 
-    // Command should start with a quoted path
-    expect(command).toMatch(/^"[^"]+"/);
+    // Prompt hook command should start with a quoted path
+    const promptRaw = readFileSync(join(hooksDir, 'kiro-learn-prompt.kiro.hook'), 'utf8');
+    const promptThen = (JSON.parse(promptRaw) as Record<string, unknown>)['then'] as Record<
+      string,
+      unknown
+    >;
+    expect((promptThen['command'] as string)).toMatch(/^"[^"]+"/);
+
+    // Tool hook command should start with a quoted path
+    const toolRaw = readFileSync(join(hooksDir, 'kiro-learn-tool.kiro.hook'), 'utf8');
+    const toolThen = (JSON.parse(toolRaw) as Record<string, unknown>)['then'] as Record<
+      string,
+      unknown
+    >;
+    expect((toolThen['command'] as string)).toMatch(/^"[^"]+"/);
   });
 
   it('overwrites existing kiro-learn hook files on upgrade', () => {
@@ -189,6 +201,84 @@ describe('writeIdeHookFiles', () => {
     // Custom hook should still exist
     const raw = readFileSync(join(hooksDir, 'my-custom-hook.kiro.hook'), 'utf8');
     expect(JSON.parse(raw)).toEqual({ custom: true });
+  });
+
+  it('stop hook prompt contains required fields', () => {
+    writeIdeHookFiles(tmpProjectRoot);
+
+    const raw = readFileSync(
+      join(tmpProjectRoot, '.kiro', 'hooks', 'kiro-learn-stop.kiro.hook'),
+      'utf8',
+    );
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const then = parsed['then'] as Record<string, unknown>;
+    const prompt = then['prompt'] as string;
+
+    expect(prompt).toContain('save_session_summary');
+    expect(prompt).toContain('kiro-learn-memory');
+
+    const requiredFields = [
+      'request',
+      'investigated',
+      'learned',
+      'completed',
+      'next_steps',
+      'files_read',
+      'files_modified',
+    ];
+    for (const field of requiredFields) {
+      expect(prompt).toContain(field);
+    }
+  });
+
+  it('stop hook prompt is concise (under 200 words)', () => {
+    writeIdeHookFiles(tmpProjectRoot);
+
+    const raw = readFileSync(
+      join(tmpProjectRoot, '.kiro', 'hooks', 'kiro-learn-stop.kiro.hook'),
+      'utf8',
+    );
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const then = parsed['then'] as Record<string, unknown>;
+    const prompt = then['prompt'] as string;
+
+    const wordCount = prompt.split(/\s+/).filter((w) => w.length > 0).length;
+    expect(wordCount).toBeLessThan(200);
+  });
+
+  it('upgrade from runCommand to askAgent', () => {
+    const hooksDir = join(tmpProjectRoot, '.kiro', 'hooks');
+    mkdirSync(hooksDir, { recursive: true });
+
+    // Write an old-format stop hook with runCommand
+    const oldStopHook = {
+      enabled: true,
+      name: 'kiro-learn-stop',
+      description: 'kiro-learn: capture session summaries for memory',
+      version: '1',
+      when: { type: 'agentStop' },
+      then: {
+        type: 'runCommand',
+        command: '"/some/path/to/ide-shim" agentStop || true',
+      },
+    };
+    writeFileSync(
+      join(hooksDir, 'kiro-learn-stop.kiro.hook'),
+      JSON.stringify(oldStopHook, null, 2) + '\n',
+    );
+
+    // Re-run writeIdeHookFiles (simulating upgrade)
+    writeIdeHookFiles(tmpProjectRoot);
+
+    // Verify the stop hook now uses askAgent
+    const raw = readFileSync(join(hooksDir, 'kiro-learn-stop.kiro.hook'), 'utf8');
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const then = parsed['then'] as Record<string, unknown>;
+
+    expect(then['type']).toBe('askAgent');
+    expect(typeof then['prompt']).toBe('string');
+    expect((then['prompt'] as string).length).toBeGreaterThan(0);
+    expect(then['command']).toBeUndefined();
   });
 
   it('serializes with 2-space indentation and trailing newline', () => {

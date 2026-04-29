@@ -584,6 +584,24 @@ const IDE_SHIM_PATH: string = path.join(INSTALL_DIR, 'bin', 'ide-shim');
 const QUOTED_IDE_SHIM: string = `"${IDE_SHIM_PATH}"`;
 
 /**
+ * Prompt for the `askAgent` stop hook. Instructs the agent to call
+ * `save_session_summary` on the `kiro-learn-memory` MCP server with all
+ * seven required fields derived from the conversation context.
+ *
+ * @see Requirements 3.1–3.6
+ */
+const SESSION_SUMMARY_PROMPT: string = `Summarize this session by calling the save_session_summary tool on the kiro-learn-memory MCP server. Provide all required fields based on the conversation context:
+- request: what the user asked for
+- investigated: what was investigated or explored
+- learned: key learnings or discoveries
+- completed: what was completed or delivered
+- next_steps: suggested next steps or follow-ups
+- files_read: array of files that were read
+- files_modified: array of files that were modified
+
+Call the tool once and do not produce any other output.`;
+
+/**
  * Write the three kiro-learn `.kiro.hook` files to `<projectRoot>/.kiro/hooks/`.
  *
  * Creates the hooks directory if it doesn't exist. Each file is valid JSON
@@ -623,8 +641,8 @@ export function writeIdeHookFiles(projectRoot: string): void {
         version: '1',
         when: { type: 'agentStop' },
         then: {
-          type: 'runCommand',
-          command: `${QUOTED_IDE_SHIM} agentStop || true`,
+          type: 'askAgent',
+          prompt: SESSION_SUMMARY_PROMPT,
         },
       },
     },
