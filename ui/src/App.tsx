@@ -168,7 +168,11 @@ export default function App() {
   return (
     <>
       <TopNavigation
-        identity={{ href: '/ui', title: 'kiro-learn', logo: undefined }}
+        identity={{
+          href: '/ui',
+          title: 'kiro-learn',
+          logo: { src: '/ui/favicon.svg', alt: 'kiro-learn' },
+        }}
         utilities={[
           {
             type: 'button',
