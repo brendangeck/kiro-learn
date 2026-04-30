@@ -152,13 +152,14 @@ describe('Property 10: End-to-end tokenized retrieval', () => {
             const firstUsedToken = Array.from(allUsedTokens)[0] ?? 'quasar';
             const substringQuery = firstUsedToken.slice(1, 4); // e.g. "uas" from "quasar"
 
-            // Safety check: if the substring is itself a full indexed token
-            // (unlikely with 3-letter substrings of distinctive words), skip.
+            // Discard the iteration if the substring happens to tokenize to
+            // a full indexed token (rare with 3-letter substrings of
+            // distinctive words) or is too short. Using fc.pre rather than a
+            // bare return so the discard is tracked explicitly and a broken
+            // overlap check can't silently mark every case as passing.
             const substringTokens = tokenizeForQuery(substringQuery);
             const substringOverlap = substringTokens.some((t) => allUsedTokens.has(t));
-            if (substringOverlap || substringQuery.length < 2) {
-              return;
-            }
+            fc.pre(!substringOverlap && substringQuery.length >= 2);
 
             const negativeResults = await storage.searchMemoryRecords({
               namespace,

@@ -509,16 +509,15 @@ describe('SQLite backend — handle-bound sanitizer wiring (task 8)', () => {
     // If the LIKE fallback were invoked on the empty query, the escaped
     // pattern `%%` would match every record and this one would surface.
     // The short-circuit asserts `[]`, proving LIKE was not called.
-    await storage.putMemoryRecord(
-      makeValidRecord({
-        record_id: 'mr_01JF8ZS4Z00000000000000080',
-        title: 'Should not appear',
-        summary: 'This record exists but empty query should skip SQL entirely',
-      }),
-    );
+    const seeded = makeValidRecord({
+      record_id: 'mr_01JF8ZS4Z00000000000000080',
+      title: 'Should not appear',
+      summary: 'This record exists but empty query should skip SQL entirely',
+    });
+    await storage.putMemoryRecord(seeded);
 
     const result = await storage.searchMemoryRecords({
-      namespace: '/actor/alice/project/abc/',
+      namespace: seeded.namespace,
       query: '',
       limit: 10,
     });
@@ -529,16 +528,15 @@ describe('SQLite backend — handle-bound sanitizer wiring (task 8)', () => {
   });
 
   it('whitespace-only query returns [] without invoking prepared statements', async () => {
-    await storage.putMemoryRecord(
-      makeValidRecord({
-        record_id: 'mr_01JF8ZS4Z00000000000000081',
-        title: 'Should not appear either',
-        summary: 'Whitespace query should short-circuit',
-      }),
-    );
+    const seeded = makeValidRecord({
+      record_id: 'mr_01JF8ZS4Z00000000000000081',
+      title: 'Should not appear either',
+      summary: 'Whitespace query should short-circuit',
+    });
+    await storage.putMemoryRecord(seeded);
 
     const result = await storage.searchMemoryRecords({
-      namespace: '/actor/alice/project/abc/',
+      namespace: seeded.namespace,
       query: '   \t\n  ',
       limit: 10,
     });
@@ -570,7 +568,7 @@ describe('SQLite backend — handle-bound sanitizer wiring (task 8)', () => {
 
     // Query containing the shared token "quasar" — should return both.
     const hits = await storage.searchMemoryRecords({
-      namespace: '/actor/alice/project/abc/',
+      namespace: record1.namespace,
       query: 'quasar',
       limit: 10,
     });
