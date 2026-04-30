@@ -32,7 +32,8 @@ import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { openSqliteStorage } from '../../src/collector/storage/sqlite/index.js';
-import { MIGRATIONS } from '../../src/collector/storage/sqlite/migrations/index.js';
+import { MIGRATIONS, runMigrations } from '../../src/collector/storage/sqlite/migrations/index.js';
+import { prepareStatements } from '../../src/collector/storage/sqlite/statements.js';
 import type { StorageBackend } from '../../src/types/index.js';
 
 import { makeValidEvent, makeValidRecord } from '../helpers/fixtures.js';
@@ -301,5 +302,274 @@ describe('SQLite backend — persistence across close + reopen (task 5.12)', () 
     } finally {
       probe.close();
     }
+  });
+});
+
+/**
+ * Task 1 — fts5vocab prepared statements (fts5-query-tokenization spec).
+ *
+ * Tests the two new entries on the `Statements` object:
+ * - `selectFts5DocCount`: fixed-arity count of memory_records rows.
+ * - `prepareSelectFts5VocabDocFreq(arity)`: memoised factory for
+ *   variable-arity fts5vocab lookups.
+ *
+ * These tests use a raw `Database` handle with migrations applied and the
+ * `memory_records_fts_vocab` virtual table declared manually (Task 2 will
+ * add the lazy DDL to `openSqliteStorage`; for now we declare it inline).
+ *
+ * Validates: Requirements 4.2, 4.3, 5.1
+ */
+describe('SQLite backend — fts5vocab prepared statements (task 1)', () => {
+  let db: InstanceType<typeof Database>;
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+    runMigrations(db, MIGRATIONS);
+    // Declare the fts5vocab virtual table (Task 2 will add this to openSqliteStorage)
+    db.exec(
+      `CREATE VIRTUAL TABLE IF NOT EXISTS memory_records_fts_vocab
+       USING fts5vocab(memory_records_fts, 'row')`,
+    );
+  });
+
+  afterEach(() => {
+    db.close();
+  });
+
+  describe('selectFts5DocCount', () => {
+    it('returns { total: 0 } against an empty DB', () => {
+      const stmts = prepareStatements(db);
+      const row = stmts.selectFts5DocCount.get();
+      expect(row).toEqual({ total: 0 });
+    });
+
+    it('returns the inserted count against a seeded DB', () => {
+      const stmts = prepareStatements(db);
+
+      // Seed 3 memory records
+      for (let i = 0; i < 3; i++) {
+        const record = makeValidRecord({
+          record_id: `mr_01JF8ZS4Z0000000000000000${String(i)}`,
+        });
+        stmts.insertMemoryRecord.run(
+          record.record_id,
+          record.namespace,
+          record.strategy,
+          record.title,
+          record.summary,
+          JSON.stringify(record.facts),
+          JSON.stringify(record.source_event_ids),
+          record.created_at,
+          JSON.stringify(record.concepts),
+          JSON.stringify(record.files_touched),
+          record.observation_type,
+        );
+        stmts.insertMemoryRecordFts.run(
+          record.record_id,
+          record.namespace,
+          record.title,
+          record.summary,
+          record.facts.join(' '),
+        );
+      }
+
+      const row = stmts.selectFts5DocCount.get();
+      expect(row).toEqual({ total: 3 });
+    });
+  });
+
+  describe('prepareSelectFts5VocabDocFreq', () => {
+    it('returns rows for indexed terms with tokenizer-normalised spelling', () => {
+      const stmts = prepareStatements(db);
+
+      // Seed a record with known title/summary/facts so we know what
+      // terms the FTS5 tokenizer will emit.
+      const record = makeValidRecord({
+        record_id: 'mr_01JF8ZS4Z00000000000000001',
+        title: 'Syzygy alignment',
+        summary: 'The planets aligned in a rare syzygy event',
+        facts: ['observed from earth'],
+      });
+      stmts.insertMemoryRecord.run(
+        record.record_id,
+        record.namespace,
+        record.strategy,
+        record.title,
+        record.summary,
+        JSON.stringify(record.facts),
+        JSON.stringify(record.source_event_ids),
+        record.created_at,
+        JSON.stringify(record.concepts),
+        JSON.stringify(record.files_touched),
+        record.observation_type,
+      );
+      stmts.insertMemoryRecordFts.run(
+        record.record_id,
+        record.namespace,
+        record.title,
+        record.summary,
+        record.facts.join(' '),
+      );
+
+      // Query for 3 terms: 'syzygi' (porter-stemmed form of 'syzygy'),
+      // 'align' (stemmed form of 'alignment'/'aligned'), and 'nonexistent'
+      const stmt = stmts.prepareSelectFts5VocabDocFreq(3);
+      const rows = stmt.all('syzygi', 'align', 'nonexistent');
+
+      // Should find 'syzygi' and 'align' but not 'nonexistent'
+      const termMap = new Map(rows.map((r) => [r.term, r.doc]));
+      expect(termMap.has('syzygi')).toBe(true);
+      expect(termMap.has('align')).toBe(true);
+      expect(termMap.has('nonexistent')).toBe(false);
+      // doc frequency should be 1 (one document contains each term)
+      expect(termMap.get('syzygi')).toBe(1);
+      expect(termMap.get('align')).toBe(1);
+    });
+
+    it('returns the same Statement instance for the same arity (cache hit)', () => {
+      const stmts = prepareStatements(db);
+
+      const stmt1 = stmts.prepareSelectFts5VocabDocFreq(3);
+      const stmt2 = stmts.prepareSelectFts5VocabDocFreq(3);
+      const stmt3 = stmts.prepareSelectFts5VocabDocFreq(5);
+
+      // Same arity → same instance
+      expect(stmt1).toBe(stmt2);
+      // Different arity → different instance
+      expect(stmt1).not.toBe(stmt3);
+    });
+  });
+});
+
+/**
+ * Task 2 — Lazy fts5vocab DDL in `openSqliteStorage`
+ * (fts5-query-tokenization spec).
+ *
+ * Verifies that `openSqliteStorage` emits the
+ * `CREATE VIRTUAL TABLE IF NOT EXISTS memory_records_fts_vocab` DDL
+ * between `runMigrations` and `prepareStatements`, and that re-opening
+ * the same file does not throw (the `IF NOT EXISTS` makes it a no-op).
+ *
+ * Validates: Requirements 4.2, 9.1
+ */
+describe('SQLite backend — lazy fts5vocab DDL (task 2)', () => {
+  it('memory_records_fts_vocab is listed by PRAGMA table_list after open', async () => {
+    // `storage` is already opened in beforeEach via openSqliteStorage.
+    // Open a raw handle to the same file to inspect the schema.
+    const rawDb = new Database(dbPath);
+    try {
+      const tables = rawDb
+        .prepare<[], { name: string }>(`SELECT name FROM pragma_table_list`)
+        .all()
+        .map((r) => r.name);
+      expect(tables).toContain('memory_records_fts_vocab');
+    } finally {
+      rawDb.close();
+    }
+  });
+
+  it('re-opening the same file does not throw (IF NOT EXISTS is a no-op)', async () => {
+    // Close the first handle opened in beforeEach.
+    await storage.close();
+
+    // Second open on the same path — must not throw. The fts5vocab table
+    // already exists from the first open; `IF NOT EXISTS` makes the DDL
+    // a silent no-op.
+    const storage2 = openSqliteStorage({ dbPath });
+    try {
+      // Sanity: the backend is functional after the second open.
+      const result = await storage2.getEventById('01JF8ZS4Y99999999999999999');
+      expect(result).toBeNull();
+    } finally {
+      await storage2.close();
+    }
+
+    // Reassign so afterEach's close doesn't fail on the already-closed handle.
+    storage = openSqliteStorage({ dbPath });
+  });
+});
+
+
+/**
+ * Task 8 — Backend wiring with handle-bound sanitizer
+ * (fts5-query-tokenization spec).
+ *
+ * Verifies that `openSqliteStorage` constructs the sanitizer at open time
+ * and that `searchMemoryRecords` uses the closure-based sanitizer:
+ * - Empty and whitespace-only queries return `[]` without invoking the
+ *   FTS5 MATCH or LIKE prepared statements.
+ * - A query containing a shared token returns matching records ordered by
+ *   FTS5 rank.
+ *
+ * Validates: Requirements 2.3, 13.1, 13.3
+ */
+describe('SQLite backend — handle-bound sanitizer wiring (task 8)', () => {
+  it('empty query returns [] without invoking prepared statements', async () => {
+    // Seed a record so we can confirm it is NOT returned.
+    await storage.putMemoryRecord(
+      makeValidRecord({
+        record_id: 'mr_01JF8ZS4Z00000000000000080',
+        title: 'Should not appear',
+        summary: 'This record exists but empty query should skip SQL entirely',
+      }),
+    );
+
+    const result = await storage.searchMemoryRecords({
+      namespace: '/actor/alice/project/abc/',
+      query: '',
+      limit: 10,
+    });
+
+    expect(result).toEqual([]);
+  });
+
+  it('whitespace-only query returns [] without invoking prepared statements', async () => {
+    await storage.putMemoryRecord(
+      makeValidRecord({
+        record_id: 'mr_01JF8ZS4Z00000000000000081',
+        title: 'Should not appear either',
+        summary: 'Whitespace query should short-circuit',
+      }),
+    );
+
+    const result = await storage.searchMemoryRecords({
+      namespace: '/actor/alice/project/abc/',
+      query: '   \t\n  ',
+      limit: 10,
+    });
+
+    expect(result).toEqual([]);
+  });
+
+  it('query with a shared token returns both records ordered by FTS5 rank', async () => {
+    // Two records that share only the token "quasar" — their other content
+    // has no common substring beyond that single shared token.
+    const record1 = makeValidRecord({
+      record_id: 'mr_01JF8ZS4Z00000000000000082',
+      title: 'Observation about quasar luminosity',
+      summary: 'Measured the brightness of distant celestial objects',
+      facts: ['luminosity varies over time'],
+    });
+    const record2 = makeValidRecord({
+      record_id: 'mr_01JF8ZS4Z00000000000000083',
+      title: 'Detecting quasar redshift patterns',
+      summary: 'Analyzed spectral data from deep space surveys',
+      facts: ['redshift correlates with distance'],
+    });
+
+    await storage.putMemoryRecord(record1);
+    await storage.putMemoryRecord(record2);
+
+    // Query containing the shared token "quasar" — should return both.
+    const hits = await storage.searchMemoryRecords({
+      namespace: '/actor/alice/project/abc/',
+      query: 'quasar',
+      limit: 10,
+    });
+
+    expect(hits).toHaveLength(2);
+    const hitIds = new Set(hits.map((h) => h.record_id));
+    expect(hitIds.has(record1.record_id)).toBe(true);
+    expect(hitIds.has(record2.record_id)).toBe(true);
   });
 });

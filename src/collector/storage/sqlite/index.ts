@@ -49,7 +49,7 @@ import type {
   StorageBackend,
 } from '../../../types/index.js';
 
-import { escapeLikePattern, sanitizeForFts5 } from './fts5.js';
+import { createFts5Sanitizer, escapeLikePattern } from './fts5.js';
 import { MIGRATIONS, runMigrations } from './migrations/index.js';
 import {
   prepareStatements,
@@ -111,9 +111,25 @@ export function openSqliteStorage(opts: SqliteStorageOptions): StorageBackend {
   // (e.g. MigrationDriftError, corrupt DDL, missing table), close the
   // handle before rethrowing so the SQLite file is not left locked.
   let stmts;
+  let sanitize: (query: string) => string;
   try {
     runMigrations(db, MIGRATIONS);
+
+    // Lazily declare the fts5vocab virtual table so the term-ranker's
+    // prepared statements (which reference `memory_records_fts_vocab`)
+    // compile against an existing table. `IF NOT EXISTS` makes re-open a
+    // no-op. This is not a migration — fts5vocab is a stateless view over
+    // `memory_records_fts` with no data of its own (design § Migration
+    // Concerns).
+    //
+    // @see Requirements 4.2, 9.1
+    db.exec(
+      `CREATE VIRTUAL TABLE IF NOT EXISTS memory_records_fts_vocab
+       USING fts5vocab(memory_records_fts, 'row')`,
+    );
+
     stmts = prepareStatements(db);
+    sanitize = createFts5Sanitizer(stmts);
   } catch (err) {
     db.close();
     throw err;
@@ -205,13 +221,18 @@ export function openSqliteStorage(opts: SqliteStorageOptions): StorageBackend {
     assertOpen();
     const { namespace, query, limit } = params;
 
+    // Short-circuit: if the sanitizer returns '' (empty/whitespace-only input),
+    // skip both MATCH and LIKE and return immediately. Requirement 2.3, 13.3.
+    const match = sanitize(query);
+    if (match === '') return [];
+
     let rows: MemoryRecordRow[];
     try {
-      // Primary path: FTS5 MATCH with the user query quoted as a single
-      // phrase by `sanitizeForFts5`. Namespace isolation rides on
+      // Primary path: FTS5 MATCH with the tokenized OR-of-phrases expression
+      // produced by the handle-bound sanitizer. Namespace isolation rides on
       // `mr.namespace LIKE ? || '%'` in the prepared statement.
       rows = stmts.selectMemoryRecordsFtsMatch.all(
-        sanitizeForFts5(query),
+        match,
         namespace,
         limit,
       );
@@ -220,14 +241,8 @@ export function openSqliteStorage(opts: SqliteStorageOptions): StorageBackend {
       // error bubbled out of the MATCH pipeline). The contract is
       // "availability over rank quality" — we'd rather return
       // creation-date-ordered substring hits than fail the enrichment
-      // request over a query-format issue. The discriminator is
-      // deliberately broad: design.md § Error Handling specifies the
-      // fallback triggers on "malformed FTS5 query", and `better-sqlite3`
-      // surfaces those as generic `SqliteError` with code
-      // `SQLITE_ERROR`. Narrowing further (by code or message) would
-      // risk papering over a real failure; we already rebind to a
-      // different statement, so any underlying issue that also breaks
-      // LIKE will surface from the fallback `.all(...)` below.
+      // request over a query-format issue. The LIKE fallback is fed from
+      // the original unsanitised query string (Requirement 8.3).
       const escaped = escapeLikePattern(query);
       const pattern = `%${escaped}%`;
       rows = stmts.selectMemoryRecordsLike.all(namespace, pattern, pattern, limit);

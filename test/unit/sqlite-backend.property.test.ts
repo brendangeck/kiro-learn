@@ -41,7 +41,7 @@ import Database from 'better-sqlite3';
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 
-import { sanitizeForFts5 } from '../../src/collector/storage/sqlite/fts5.js';
+import { sanitizeForFts5, tokenizeForQuery } from '../../src/collector/storage/sqlite/fts5.js';
 import { openSqliteStorage } from '../../src/collector/storage/sqlite/index.js';
 import { NAMESPACE_RE, parseEvent } from '../../src/types/schemas.js';
 import type {
@@ -586,21 +586,21 @@ describe('SQLite backend — property: XML extraction fields round-trip (finding
  * ──────────────────────────────────────────────────────────────────── */
 
 describe('SQLite backend — property: sanitizeForFts5 output shape (task 6.6A)', () => {
-  it('wraps input in double-quotes and doubles every interior quote', () => {
+  it('returns empty string for zero-token input, otherwise OR-of-quoted-phrases', () => {
     /**
-     * **Validates: Requirements 12.2**
+     * **Validates: Requirements 1.4, 1.5, 3.2, 3.3, 3.4**
      *
      * For any input string `q`, `sanitizeForFts5(q)`:
-     *   - starts with `"`;
-     *   - ends with `"`;
-     *   - contains no unescaped interior `"` — every interior `"` is
-     *     paired, i.e. appears as `""`.
+     *   - returns `''` when the input tokenises to zero tokens (empty or
+     *     whitespace-only input);
+     *   - otherwise returns an OR-of-quoted-phrases expression where each
+     *     ` OR `-separated segment is a balanced `"…"` phrase with no
+     *     unescaped interior `"` (every interior `"` appears as `""`).
      *
-     * The "no unescaped interior" test removes every `""` pair from the
-     * interior substring and asserts no `"` remains. This catches both
-     * missing-escape bugs (`a"b` → `"a"b"`) and stray-quote bugs
-     * (`abc` → `"a"bc"`) without needing to model the escape algorithm
-     * directly in the test.
+     * Property 3 from the fts5-query-tokenization design supersedes the
+     * old single-phrase shape assertion. The branching on empty input
+     * reflects the new semantics where the sanitizer signals "skip query"
+     * by returning an empty string.
      *
      * Input domain is `fc.string()`, which covers empty strings, pure
      * quote strings like `"""`, mixed content, and unicode.
@@ -608,16 +608,30 @@ describe('SQLite backend — property: sanitizeForFts5 output shape (task 6.6A)'
     fc.assert(
       fc.property(fc.string(), (q) => {
         const out = sanitizeForFts5(q);
+        const tokens = tokenizeForQuery(q);
 
-        expect(out.startsWith('"')).toBe(true);
-        expect(out.endsWith('"')).toBe(true);
-        // Length ≥ 2: even for the empty input we get `""`.
-        expect(out.length).toBeGreaterThanOrEqual(2);
+        if (tokens.length === 0) {
+          // Empty tokenization → empty output (signal to skip MATCH query)
+          expect(out).toBe('');
+          return;
+        }
 
-        const interior = out.slice(1, -1);
-        // After removing every `""` pair, no `"` may remain: every
-        // interior quote must have been paired.
-        expect(interior.replace(/""/g, '')).not.toContain('"');
+        // Non-empty tokenization → OR-of-quoted-phrases shape.
+        // Split on ` OR ` to get individual phrases.
+        const phrases = out.split(' OR ');
+        expect(phrases.length).toBeGreaterThanOrEqual(1);
+        expect(phrases.length).toBeLessThanOrEqual(32); // default term cap
+
+        for (const phrase of phrases) {
+          // Each phrase must start and end with `"`
+          expect(phrase.startsWith('"')).toBe(true);
+          expect(phrase.endsWith('"')).toBe(true);
+          expect(phrase.length).toBeGreaterThanOrEqual(2);
+
+          // Interior: after removing every `""` pair, no `"` may remain
+          const interior = phrase.slice(1, -1);
+          expect(interior.replace(/""/g, '')).not.toContain('"');
+        }
       }),
     );
   });

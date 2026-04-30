@@ -555,6 +555,36 @@ export interface Statements {
    * @see Requirements 2.2, 9.4
    */
   selectEventCountAll: Statement<[], EventCountRow>;
+
+  // -----------------------------------------------------------------------
+  // fts5vocab lookup statements (fts5-query-tokenization task 1)
+  // -----------------------------------------------------------------------
+
+  /**
+   * Total document count in the `memory_records` table. Used by the term
+   * ranker to compute IDF (`log(N / max(df, 1))`). No parameters.
+   *
+   * Row shape: `{ total: number }`.
+   *
+   * @see Requirements 4.3, 5.1, 9.3
+   */
+  selectFts5DocCount: Statement<[], { total: number }>;
+
+  /**
+   * Factory that returns an arity-specific prepared statement for querying
+   * `memory_records_fts_vocab` with a variable-length `IN (?, ?, …)` clause.
+   *
+   * Each distinct arity is prepared at most once per handle (memoised in an
+   * internal `Map<number, Statement>`). The returned statement accepts
+   * `string[]` positional parameters and produces rows of
+   * `{ term: string; doc: number }`.
+   *
+   * @param arity - A positive integer specifying the number of `?` placeholders.
+   * @returns A prepared statement for the given arity.
+   *
+   * @see Requirements 4.2, 9.3
+   */
+  prepareSelectFts5VocabDocFreq: (arity: number) => Statement<string[], { term: string; doc: number }>;
 }
 
 /**
@@ -878,6 +908,40 @@ export function prepareStatements(db: Database): Statements {
     `SELECT COUNT(*) AS total FROM events`,
   );
 
+  // -----------------------------------------------------------------------
+  // fts5vocab lookup statements (fts5-query-tokenization task 1)
+  // -----------------------------------------------------------------------
+
+  // Total document count in memory_records. Used by the term ranker to
+  // compute IDF. Fixed-arity, no parameters.
+  //
+  // @see Requirements 4.3, 5.1, 9.3
+  const selectFts5DocCount = db.prepare<[], { total: number }>(
+    `SELECT COUNT(*) AS total FROM memory_records`,
+  );
+
+  // Memoisation cache for variable-arity fts5vocab lookup statements.
+  // Each distinct arity is prepared at most once per handle.
+  const vocabStmtCache = new Map<number, Statement<string[], { term: string; doc: number }>>();
+
+  // Factory that returns an arity-specific prepared statement for querying
+  // memory_records_fts_vocab with a variable-length IN clause.
+  //
+  // @see Requirements 4.2, 9.3
+  const prepareSelectFts5VocabDocFreq = (
+    arity: number,
+  ): Statement<string[], { term: string; doc: number }> => {
+    const cached = vocabStmtCache.get(arity);
+    if (cached !== undefined) return cached;
+
+    const placeholders = Array.from({ length: arity }, () => '?').join(', ');
+    const stmt = db.prepare<string[], { term: string; doc: number }>(
+      `SELECT term, doc FROM memory_records_fts_vocab WHERE term IN (${placeholders})`,
+    );
+    vocabStmtCache.set(arity, stmt);
+    return stmt;
+  };
+
   return {
     insertEvent,
     selectEventById,
@@ -902,5 +966,7 @@ export function prepareStatements(db: Database): Statements {
     selectEventCountByNamespace,
     selectEventsAll,
     selectEventCountAll,
+    selectFts5DocCount,
+    prepareSelectFts5VocabDocFreq,
   };
 }
