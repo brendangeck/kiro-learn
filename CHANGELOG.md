@@ -1,3 +1,9 @@
+## [0.15.1](https://github.com/brendangeck/kiro-learn/compare/v0.15.0...v0.15.1) (2026-04-30)
+
+### Bug Fixes
+
+* **storage:** tokenize FTS5 queries into OR-of-phrases with IDF ranking ([#26](https://github.com/brendangeck/kiro-learn/issues/26)) ([6072f10](https://github.com/brendangeck/kiro-learn/commit/6072f103a5bc64215d5f1bb0c10e31b1396c28ce))
+
 ## [0.15.0](https://github.com/brendangeck/kiro-learn/compare/v0.14.0...v0.15.0) (2026-04-29)
 
 ### Features
