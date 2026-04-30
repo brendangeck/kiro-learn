@@ -1,3 +1,9 @@
+## [0.16.0](https://github.com/brendangeck/kiro-learn/compare/v0.15.1...v0.16.0) (2026-04-30)
+
+### Features
+
+* **ui:** apply kiro-learn purple theme to Cloudscape chrome ([#28](https://github.com/brendangeck/kiro-learn/issues/28)) ([15c0f81](https://github.com/brendangeck/kiro-learn/commit/15c0f81bbb4920d7376da1c2f1734c7e1e787405))
+
 ## [0.15.1](https://github.com/brendangeck/kiro-learn/compare/v0.15.0...v0.15.1) (2026-04-30)
 
 ### Bug Fixes
