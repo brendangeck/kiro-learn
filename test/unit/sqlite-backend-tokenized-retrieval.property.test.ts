@@ -75,9 +75,7 @@ describe('Property 10: End-to-end tokenized retrieval', () => {
           ),
           { minLength: 8, maxLength: 8 },
         ),
-        // A random string for the negative query (filtered to not contain any distinctive token)
-        fc.stringMatching(/^[0-9]{6,12}$/),
-        async (n, targetIdx, tokenIndices, negativeQueryBase) => {
+        async (n, targetIdx, tokenIndices) => {
           // Open a fresh in-memory DB per iteration to avoid PK collisions
           const storage = openSqliteStorage({ dbPath: ':memory:' });
 
@@ -140,29 +138,38 @@ describe('Property 10: End-to-end tokenized retrieval', () => {
             );
             expect(foundTarget).toBe(true);
 
-            // --- Negative query: use a numeric string that cannot match any token ---
-            // The negative query is a numeric string (e.g. "123456789") which
-            // will not match any of our distinctive alphabetic tokens.
-            // Verify it doesn't overlap with any used token.
-            const negativeTokens = tokenizeForQuery(negativeQueryBase);
-            const hasOverlap = negativeTokens.some((t) => allUsedTokens.has(t));
+            // --- Negative query: a substring of an indexed token ---
+            // If we chose a purely numeric string, LIKE would also return []
+            // (numeric patterns don't match alphabetic titles), so the test
+            // couldn't distinguish "LIKE ran and returned 0" from "LIKE didn't
+            // run". Instead, use a 3-letter substring of an indexed distinctive
+            // token. FTS5 MATCH won't match (FTS5 indexes by token, not
+            // substring), but LIKE's `%sub%` pattern WOULD match if invoked.
+            // An empty result therefore proves LIKE did not run.
+            //
+            // Pick a 3-letter substring from an indexed token, avoiding any
+            // token that happens to be fully contained in another.
+            const firstUsedToken = Array.from(allUsedTokens)[0] ?? 'quasar';
+            const substringQuery = firstUsedToken.slice(1, 4); // e.g. "uas" from "quasar"
 
-            if (hasOverlap) {
-              // Skip this iteration if by chance the numeric string matches
-              // (extremely unlikely with our distinctive token set)
+            // Safety check: if the substring is itself a full indexed token
+            // (unlikely with 3-letter substrings of distinctive words), skip.
+            const substringTokens = tokenizeForQuery(substringQuery);
+            const substringOverlap = substringTokens.some((t) => allUsedTokens.has(t));
+            if (substringOverlap || substringQuery.length < 2) {
               return;
             }
 
             const negativeResults = await storage.searchMemoryRecords({
               namespace,
-              query: negativeQueryBase,
+              query: substringQuery,
               limit: 10,
             });
 
-            // No records should be returned for a query with no token overlap.
-            // This also implicitly validates that LIKE fallback was not invoked,
-            // because LIKE with a numeric pattern like "123456789" would not
-            // match our alphabetic distinctive tokens either.
+            // FTS5 MATCH on a substring-not-a-token returns []. If LIKE had
+            // been invoked as a fallback, `%uas%` would match "quasar" in a
+            // seeded title and return the record. `[]` therefore proves the
+            // LIKE fallback was not invoked — satisfying Requirement 13.2.
             expect(negativeResults).toEqual([]);
           } finally {
             await storage.close();

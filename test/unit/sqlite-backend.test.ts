@@ -505,7 +505,10 @@ describe('SQLite backend — lazy fts5vocab DDL (task 2)', () => {
  */
 describe('SQLite backend — handle-bound sanitizer wiring (task 8)', () => {
   it('empty query returns [] without invoking prepared statements', async () => {
-    // Seed a record so we can confirm it is NOT returned.
+    // Seed a record whose title contains "should" as a common substring.
+    // If the LIKE fallback were invoked on the empty query, the escaped
+    // pattern `%%` would match every record and this one would surface.
+    // The short-circuit asserts `[]`, proving LIKE was not called.
     await storage.putMemoryRecord(
       makeValidRecord({
         record_id: 'mr_01JF8ZS4Z00000000000000080',
@@ -520,6 +523,8 @@ describe('SQLite backend — handle-bound sanitizer wiring (task 8)', () => {
       limit: 10,
     });
 
+    // The seeded record is LIKE-matchable by the empty-query pattern `%%`.
+    // An empty result therefore proves neither FTS5 MATCH nor LIKE ran.
     expect(result).toEqual([]);
   });
 
@@ -538,6 +543,9 @@ describe('SQLite backend — handle-bound sanitizer wiring (task 8)', () => {
       limit: 10,
     });
 
+    // Same construction-proof: whitespace tokenizes to zero tokens, so the
+    // sanitizer returns ''. If LIKE were called with the escaped whitespace
+    // pattern, it would match the seeded record. `[]` proves the skip path.
     expect(result).toEqual([]);
   });
 

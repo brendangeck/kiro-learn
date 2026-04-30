@@ -10,6 +10,7 @@
  */
 
 import fc from 'fast-check';
+import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
@@ -17,8 +18,8 @@ import {
   sanitizeForFts5,
   tokenizeForQuery,
 } from '../../src/collector/storage/sqlite/fts5.js';
-import { openSqliteStorage } from '../../src/collector/storage/sqlite/index.js';
-import type { StorageBackend } from '../../src/types/index.js';
+import { MIGRATIONS, runMigrations } from '../../src/collector/storage/sqlite/migrations/index.js';
+import { prepareStatements } from '../../src/collector/storage/sqlite/statements.js';
 
 describe('tokenizeForQuery — property tests', () => {
   it('Property 1: Tokenizer round-trip', () => {
@@ -129,21 +130,31 @@ describe('buildFts5OrQuery — property tests', () => {
 
 describe('sanitizeForFts5 — property tests', () => {
   /**
-   * Shared in-memory SQLite backend for Property 4. Opened once per test
-   * via `beforeEach` so each iteration of the property has a clean handle.
-   * The backend is closed in `afterEach`.
+   * Raw DB handle for Property 4. Using a raw handle (rather than the full
+   * `openSqliteStorage` facade) lets us invoke `selectMemoryRecordsFtsMatch`
+   * directly with the exact string produced by `sanitizeForFts5(s, k)` —
+   * the property is "that string is accepted by the FTS5 MATCH prepared
+   * statement", so we must exercise the statement with the shim's output,
+   * not let the backend re-sanitize.
    */
-  let storage: StorageBackend;
+  let db: InstanceType<typeof Database>;
+  let stmts: ReturnType<typeof prepareStatements>;
 
   beforeEach(() => {
-    storage = openSqliteStorage({ dbPath: ':memory:' });
+    db = new Database(':memory:');
+    runMigrations(db, MIGRATIONS);
+    db.exec(
+      `CREATE VIRTUAL TABLE IF NOT EXISTS memory_records_fts_vocab
+       USING fts5vocab(memory_records_fts, 'row')`,
+    );
+    stmts = prepareStatements(db);
   });
 
-  afterEach(async () => {
-    await storage.close();
+  afterEach(() => {
+    db.close();
   });
 
-  it('Property 4: Sanitizer output is always valid FTS5 or empty', async () => {
+  it('Property 4: Sanitizer output is always valid FTS5 or empty', () => {
     /**
      * **Validates: Requirements 1.6, 3.1, 11.3**
      *
@@ -151,30 +162,42 @@ describe('sanitizeForFts5 — property tests', () => {
      * or a string that `selectMemoryRecordsFtsMatch` accepts without throwing
      * when executed against a prepared in-memory SQLite handle.
      *
-     * We seed one record so the FTS5 table exists and the prepared statement
-     * can be exercised. The test does not assert on results — only that the
-     * statement does not throw.
+     * This test directly feeds the sanitizer's output into the MATCH
+     * prepared statement (rather than going through searchMemoryRecords,
+     * which would re-sanitize). That way we're asserting exactly what
+     * Property 4 says: the string produced by sanitizeForFts5 is valid
+     * FTS5 grammar.
+     *
+     * We seed one record so the FTS5 table is non-empty; the assertion is
+     * only that `.all(...)` returns without throwing.
      */
-    // Seed a single record so the FTS5 table has content to query against.
-    await storage.putMemoryRecord({
-      record_id: 'mr_00000000000000000000000000',
-      namespace: '/actor/test/project/prop4/',
-      strategy: 'llm-summary',
-      title: 'seed record for property 4',
-      summary: 'ensures the FTS5 table is non-empty',
-      facts: ['seed'],
-      source_event_ids: ['01JF8ZS4Y00000000000000000'],
-      created_at: '2026-01-01T00:00:00Z',
-      concepts: ['testing'],
-      files_touched: ['src/index.ts'],
-      observation_type: 'tool_use',
-    });
+    // Seed one record directly via the prepared statements.
+    stmts.insertMemoryRecord.run(
+      'mr_00000000000000000000000000',
+      '/actor/test/project/prop4/',
+      'llm-summary',
+      'seed record for property 4',
+      'ensures the FTS5 table is non-empty',
+      JSON.stringify(['seed']),
+      JSON.stringify(['01JF8ZS4Y00000000000000000']),
+      '2026-01-01T00:00:00Z',
+      JSON.stringify(['testing']),
+      JSON.stringify(['src/index.ts']),
+      'tool_use',
+    );
+    stmts.insertMemoryRecordFts.run(
+      'mr_00000000000000000000000000',
+      '/actor/test/project/prop4/',
+      'seed record for property 4',
+      'ensures the FTS5 table is non-empty',
+      'seed',
+    );
 
-    await fc.assert(
-      fc.asyncProperty(
+    fc.assert(
+      fc.property(
         fc.string(),
         fc.integer({ min: 1, max: 32 }),
-        async (s, k) => {
+        (s, k) => {
           const out = sanitizeForFts5(s, k);
 
           if (out === '') {
@@ -182,17 +205,15 @@ describe('sanitizeForFts5 — property tests', () => {
             return;
           }
 
-          // Non-empty output must be accepted by searchMemoryRecords without
-          // throwing. We use the full backend method which internally calls
-          // selectMemoryRecordsFtsMatch.all(out, namespace, limit).
-          const results = await storage.searchMemoryRecords({
-            namespace: '/actor/test/project/prop4/',
-            query: s,
-            limit: 10,
-          });
+          // The exact string `out` must be accepted by the MATCH prepared
+          // statement without throwing. This is the direct Property 4 check.
+          const rows = stmts.selectMemoryRecordsFtsMatch.all(
+            out,
+            '/actor/test/project/prop4/',
+            10,
+          );
 
-          // The call must return an array (not throw).
-          expect(Array.isArray(results)).toBe(true);
+          expect(Array.isArray(rows)).toBe(true);
         },
       ),
       { numRuns: 100 },
@@ -289,11 +310,7 @@ describe('sanitizeForFts5 — property tests', () => {
 // Properties 7–9: Term ranker (requires in-memory SQLite)
 // ---------------------------------------------------------------------------
 
-import Database from 'better-sqlite3';
-
 import { createTermRanker } from '../../src/collector/storage/sqlite/fts5.js';
-import { MIGRATIONS, runMigrations } from '../../src/collector/storage/sqlite/migrations/index.js';
-import { prepareStatements } from '../../src/collector/storage/sqlite/statements.js';
 
 /**
  * Helper: open an in-memory DB, run migrations, declare fts5vocab, and
