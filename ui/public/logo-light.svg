@@ -1,0 +1,19 @@
+<svg width="124" height="23" viewBox="0 0 124 23" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- kiro-learn glyph: 3 dots in a triangle, thick edges -->
+  <g stroke="#8D47FF" stroke-width="2.4" stroke-linecap="round">
+    <line x1="5" y1="18" x2="18" y2="18" />
+    <line x1="5" y1="18" x2="11.5" y2="5" />
+    <line x1="18" y1="18" x2="11.5" y2="5" />
+  </g>
+  <circle cx="11.5" cy="5" r="3.6" fill="#8D47FF" />
+  <circle cx="5" cy="18" r="3" fill="#7D25E6" />
+  <circle cx="18" cy="18" r="3" fill="#C7A0FF" />
+
+  <!-- Wordmark -->
+  <text x="28" y="17"
+        font-family="Inter, ui-sans-serif, system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif"
+        font-size="17"
+        font-weight="700"
+        fill="#09090B"
+        letter-spacing="-0.02em">kiro-learn</text>
+</svg>
