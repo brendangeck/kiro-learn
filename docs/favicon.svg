@@ -1,0 +1,11 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- kiro-learn glyph: 3 dots in a triangle, thick edges -->
+  <g stroke="#8D47FF" stroke-width="44" stroke-linecap="round">
+    <line x1="128" y1="384" x2="384" y2="384" />
+    <line x1="128" y1="384" x2="256" y2="128" />
+    <line x1="384" y1="384" x2="256" y2="128" />
+  </g>
+  <circle cx="256" cy="128" r="72" fill="#8D47FF" />
+  <circle cx="128" cy="384" r="60" fill="#7D25E6" />
+  <circle cx="384" cy="384" r="60" fill="#C7A0FF" />
+</svg>

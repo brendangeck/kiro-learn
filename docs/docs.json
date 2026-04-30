@@ -1,0 +1,86 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "theme": "linden",
+  "name": "kiro-learn",
+  "colors": {
+    "primary": "#8D47FF",
+    "light": "#C7A0FF",
+    "dark": "#7D25E6"
+  },
+  "favicon": "/favicon.svg",
+  "navigation": {
+    "groups": [
+      {
+        "group": "Overview",
+        "pages": [
+          "introduction"
+        ]
+      },
+      {
+        "group": "Getting started",
+        "pages": [
+          "getting-started/install",
+          "getting-started/quickstart",
+          "getting-started/verify"
+        ]
+      },
+      {
+        "group": "Concepts",
+        "pages": [
+          "how-it-works"
+        ]
+      },
+      {
+        "group": "Guides",
+        "pages": [
+          "guides/kiro-cli",
+          "guides/kiro-ide"
+        ]
+      },
+      {
+        "group": "Architecture",
+        "pages": [
+          "architecture/overview",
+          "architecture/cli-shim",
+          "architecture/ide-shim",
+          "architecture/buffer-pipeline",
+          "architecture/extraction",
+          "architecture/compaction",
+          "architecture/summarization",
+          "architecture/retrieval",
+          "architecture/storage"
+        ]
+      }
+    ]
+  },
+  "logo": {
+    "light": "/logo/light.svg",
+    "dark": "/logo/dark.svg"
+  },
+  "navbar": {
+    "links": [
+      {
+        "label": "GitHub",
+        "href": "https://github.com/brendangeck/kiro-learn"
+      }
+    ],
+    "primary": {
+      "type": "button",
+      "label": "Install",
+      "href": "/getting-started/install"
+    }
+  },
+  "contextual": {
+    "options": [
+      "copy",
+      "view",
+      "chatgpt",
+      "claude"
+    ]
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/brendangeck/kiro-learn"
+    }
+  }
+}
