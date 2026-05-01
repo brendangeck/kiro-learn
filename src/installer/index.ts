@@ -125,6 +125,25 @@ export const KIRO_LEARN_TRIGGERS: HookTriggerMap = {
 } as const;
 
 /**
+ * The `kiro-learn-memory` MCP server entry injected into every
+ * `kiro-learn.json` agent config. Uses the same binary path and entry
+ * shape as {@link writeMcpConfig} so the agent config and the project-
+ * scoped `mcp.json` are always consistent.
+ *
+ * Extracted to module scope so both the seed-then-merge success path and
+ * the fallback writer can reference the same object literal.
+ *
+ * @see Requirements 9.1, 9.2 — MCP server binary path
+ */
+export const KIRO_LEARN_MCP_SERVER_ENTRY: {
+  readonly command: string;
+  readonly args: readonly string[];
+} = {
+  command: path.join(INSTALL_DIR, 'bin', 'mcp-server'),
+  args: [] as string[],
+};
+
+/**
  * Project markers used by {@link detectScope} to identify a project root.
  * Checked in order at each directory during the upward walk; the first
  * match at the nearest directory wins.
@@ -1070,6 +1089,9 @@ export function writeKiroLearnAgent(targetDir: string): void {
         postToolUse: KIRO_LEARN_TRIGGERS.postToolUse,
         stop: KIRO_LEARN_TRIGGERS.stop,
       },
+      mcpServers: {
+        'kiro-learn-memory': KIRO_LEARN_MCP_SERVER_ENTRY,
+      },
     };
     writeFileSync(targetFile, JSON.stringify(fallback, null, 2) + '\n');
     process.stderr.write(
@@ -1121,6 +1143,25 @@ export function writeKiroLearnAgent(targetDir: string): void {
   if (typeof merged['prompt'] === 'string') {
     merged['prompt'] = merged['prompt'] + '\n\n' + KIRO_LEARN_PROMPT_SUFFIX;
   }
+
+  // (d.3) Upsert the kiro-learn-memory MCP server entry into the merged
+  // config. mergeHooks() preserves any mcpServers from the seed via
+  // shallow copy, but it has no knowledge of kiro-learn-memory — that is
+  // the caller's responsibility. Defensive: coerce mcpServers to {} if
+  // it is undefined, null, not an object, or an array, mirroring the
+  // pattern in writeMcpConfig().
+  let mcpServers = merged['mcpServers'];
+  if (
+    mcpServers === undefined ||
+    mcpServers === null ||
+    typeof mcpServers !== 'object' ||
+    Array.isArray(mcpServers)
+  ) {
+    mcpServers = {};
+  }
+  (mcpServers as Record<string, unknown>)['kiro-learn-memory'] =
+    KIRO_LEARN_MCP_SERVER_ENTRY;
+  merged['mcpServers'] = mcpServers;
 
   writeFileSync(targetFile, JSON.stringify(merged, null, 2) + '\n');
 }
