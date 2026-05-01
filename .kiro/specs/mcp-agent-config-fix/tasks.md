@@ -1,0 +1,84 @@
+# Implementation Plan
+
+- [x] 1. Write bug condition exploration test
+  - **Property 1: Bug Condition** — Agent config missing kiro-learn-memory MCP server
+  - **CRITICAL**: This test MUST FAIL on unfixed code — failure confirms the bug exists
+  - **DO NOT attempt to fix the test or the code when it fails**
+  - **NOTE**: This test encodes the expected behavior — it will validate the fix when it passes after implementation
+  - **GOAL**: Surface counterexamples that demonstrate the bug exists in both the seed-then-merge path and the fallback path
+  - **Scoped PBT Approach**: Scope the property to the four concrete scenarios from the design: (1) seed success with no `mcpServers`, (2) seed success with existing other MCP servers, (3) seed failure (fallback path), (4) seed success with `mcpServers: null`
+  - Create test file `test/unit/installer-mcp-agent-config-bug.property.test.ts`
+  - Mock `node:child_process` using the same `execFileSync` mock pattern as `installer-write-kiro-learn-agent.test.ts` and `installer-fallback-bytes.property.test.ts`
+  - For each scenario, call `writeKiroLearnAgent(targetDir)` and read the resulting `kiro-learn.json`
+  - Assert: `config.mcpServers` is a non-null, non-array object
+  - Assert: `config.mcpServers['kiro-learn-memory']` exists
+  - Assert: `config.mcpServers['kiro-learn-memory'].command === path.join(INSTALL_DIR, 'bin', 'mcp-server')`
+  - Assert: `config.mcpServers['kiro-learn-memory'].args` deep-equals `[]`
+  - Run test on UNFIXED code
+  - **EXPECTED OUTCOME**: Test FAILS (this is correct — it proves the bug exists in both the merge path and the fallback path)
+  - Document counterexamples found (e.g., "fallback config has no mcpServers field", "merged config preserves seed mcpServers but never adds kiro-learn-memory")
+  - Mark task complete when test is written, run, and failure is documented
+  - _Requirements: 1.1, 1.2, 1.3, 1.4, 2.1, 2.2, 2.3, 2.4_
+
+- [x] 2. Write preservation property tests (BEFORE implementing fix)
+  - **Property 2: Preservation** — Seed fields and non-mcpServers behavior unchanged
+  - **IMPORTANT**: Follow observation-first methodology
+  - Create test file `test/unit/installer-mcp-agent-config-preservation.property.test.ts`
+  - Mock `node:child_process` using the same pattern as existing installer tests
+  - Use `fast-check` to generate random seed configs with varying combinations of `tools`, `prompt`, `hooks`, `allowedTools`, and arbitrary extra fields
+  - Observe on UNFIXED code: for each generated seed config, call `writeKiroLearnAgent(targetDir)` and record the output for all non-`mcpServers` fields
+  - Write property-based tests asserting:
+    - `merged.name` is always `'kiro-learn'`
+    - `merged.description` is always `KIRO_LEARN_DESCRIPTION`
+    - The four owned hook triggers (`agentSpawn`, `userPromptSubmit`, `postToolUse`, `stop`) match `KIRO_LEARN_TRIGGERS`
+    - Non-owned seed fields (`tools`, `allowedTools`, and any arbitrary extra keys) are preserved unchanged
+    - Non-owned hook triggers (e.g., `preToolUse`) from the seed are preserved unchanged
+    - When seed has `mcpServers` with other entries (e.g., `some-other-server`), those entries are preserved in the output (shallow-copy via `mergeHooks`)
+    - The fallback path still emits the `[kiro-learn] warning:` message to stderr
+    - The prompt suffix append logic still works (when seed has a string `prompt`, the output prompt ends with `KIRO_LEARN_PROMPT_SUFFIX`)
+  - Verify tests PASS on UNFIXED code (these properties hold today and must continue to hold after the fix)
+  - **EXPECTED OUTCOME**: Tests PASS (this confirms baseline behavior to preserve)
+  - Mark task complete when tests are written, run, and passing on unfixed code
+  - _Requirements: 3.1, 3.2, 3.3, 3.4, 3.5, 3.6_
+
+- [x] 3. Fix writeKiroLearnAgent to inject kiro-learn-memory MCP server
+
+  - [x] 3.1 Implement the fix in `src/installer/index.ts`
+    - Extract a module-level constant or helper for the MCP server entry: `{ command: path.join(INSTALL_DIR, 'bin', 'mcp-server'), args: [] as string[] }` — same shape as used by `writeMcpConfig()`
+    - In the success path of `writeKiroLearnAgent()`, after `mergeHooks()` returns and after the prompt suffix append (~line 1135), add upsert logic:
+      - Read `merged['mcpServers']`
+      - If it is `undefined`, `null`, not an object, or an array, replace with `{}`
+      - Set `mcpServers['kiro-learn-memory']` to the MCP server entry
+      - Assign back to `merged['mcpServers']`
+    - In the `writeFallback()` inner function, add a `mcpServers` field to the fallback object containing the `kiro-learn-memory` entry (after `hooks` in key order)
+    - Do NOT modify `mergeHooks()` — the MCP server injection is the caller's responsibility
+    - Handle defensive cases: seed `mcpServers` that is `null`, a primitive, or an array — coerce to `{}` before inserting, mirroring the defensive pattern in `writeMcpConfig()`
+    - _Bug_Condition: isBugCondition(input) where config['mcpServers'] is missing or lacks 'kiro-learn-memory' entry_
+    - _Expected_Behavior: every kiro-learn.json contains mcpServers['kiro-learn-memory'] with command = path.join(INSTALL_DIR, 'bin', 'mcp-server') and args = []_
+    - _Preservation: mergeHooks() unchanged, other seed MCP servers preserved, fallback warning preserved, writeMcpConfig() unchanged, compressor/compactor agents unchanged_
+    - _Requirements: 1.1, 1.2, 1.3, 1.4, 2.1, 2.2, 2.3, 2.4, 3.1, 3.2, 3.3, 3.4, 3.5, 3.6_
+
+  - [x] 3.2 Verify bug condition exploration test now passes
+    - **Property 1: Expected Behavior** — Agent config contains kiro-learn-memory MCP server
+    - **IMPORTANT**: Re-run the SAME test from task 1 — do NOT write a new test
+    - The test from task 1 encodes the expected behavior (mcpServers['kiro-learn-memory'] present with correct command and args)
+    - When this test passes, it confirms the expected behavior is satisfied for all four scenarios
+    - Run `npm run test -- --run test/unit/installer-mcp-agent-config-bug.property.test.ts`
+    - **EXPECTED OUTCOME**: Test PASSES (confirms bug is fixed in both merge path and fallback path)
+    - _Requirements: 2.1, 2.2, 2.3, 2.4_
+
+  - [x] 3.3 Verify preservation tests still pass
+    - **Property 2: Preservation** — Seed fields and non-mcpServers behavior unchanged
+    - **IMPORTANT**: Re-run the SAME tests from task 2 — do NOT write new tests
+    - Run `npm run test -- --run test/unit/installer-mcp-agent-config-preservation.property.test.ts`
+    - **EXPECTED OUTCOME**: Tests PASS (confirms no regressions in hook merging, seed field preservation, fallback warning, prompt suffix)
+    - Confirm all preservation properties still hold after the fix
+    - _Requirements: 3.1, 3.2, 3.3, 3.4, 3.5, 3.6_
+
+- [x] 4. Checkpoint — Ensure all tests pass
+  - Run `npm run test` to execute the full unit test suite
+  - Verify the new bug condition test passes (task 1 test now green)
+  - Verify the new preservation tests pass (task 2 tests still green)
+  - Verify all existing installer tests still pass (`installer-write-kiro-learn-agent.test.ts`, `installer-fallback-bytes.property.test.ts`, `installer-write-agent-configs.test.ts`, `installer-write-agent-configs-ordering.property.test.ts`, `installer-wrappers.test.ts`, `installer-upgrade-preservation.property.test.ts`, `installer-compressor-prompt.test.ts`, `installer-init-integration.test.ts`)
+  - Verify no regressions in any other test files
+  - Ensure all tests pass, ask the user if questions arise

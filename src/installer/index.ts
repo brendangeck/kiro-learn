@@ -1096,7 +1096,7 @@ export function writeKiroLearnAgent(targetDir: string): void {
     writeFileSync(targetFile, JSON.stringify(fallback, null, 2) + '\n');
     process.stderr.write(
       `[kiro-learn] warning: could not seed kiro-learn agent from kiro_default (${cause}) for ${scope} scope. ` +
-        `Writing minimal hooks-only config — the agent will not have the default tools, prompt, or MCP servers until ` +
+        `Writing minimal hooks and MCP server config — the agent will not have the default tools or prompt until ` +
         `you install/upgrade kiro-cli and rerun 'kiro-learn init'.\n`,
     );
   }
