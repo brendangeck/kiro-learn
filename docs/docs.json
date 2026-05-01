@@ -9,46 +9,51 @@
   },
   "favicon": "/favicon.svg",
   "navigation": {
-    "groups": [
+    "versions": [
       {
-        "group": "Overview",
-        "pages": [
-          "introduction"
-        ]
-      },
-      {
-        "group": "Getting started",
-        "pages": [
-          "getting-started/install",
-          "getting-started/quickstart",
-          "getting-started/verify"
-        ]
-      },
-      {
-        "group": "Concepts",
-        "pages": [
-          "how-it-works"
-        ]
-      },
-      {
-        "group": "Guides",
-        "pages": [
-          "guides/kiro-cli",
-          "guides/kiro-ide"
-        ]
-      },
-      {
-        "group": "Architecture",
-        "pages": [
-          "architecture/overview",
-          "architecture/cli-shim",
-          "architecture/ide-shim",
-          "architecture/buffer-pipeline",
-          "architecture/extraction",
-          "architecture/compaction",
-          "architecture/summarization",
-          "architecture/retrieval",
-          "architecture/storage"
+        "version": "v0",
+        "groups": [
+          {
+            "group": "Overview",
+            "pages": [
+              "introduction"
+            ]
+          },
+          {
+            "group": "Getting started",
+            "pages": [
+              "getting-started/install",
+              "getting-started/quickstart",
+              "getting-started/verify"
+            ]
+          },
+          {
+            "group": "Concepts",
+            "pages": [
+              "how-it-works"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/kiro-cli",
+              "guides/kiro-ide"
+            ]
+          },
+          {
+            "group": "Architecture",
+            "pages": [
+              "architecture/overview",
+              "architecture/cli-shim",
+              "architecture/ide-shim",
+              "architecture/buffer-pipeline",
+              "architecture/extraction",
+              "architecture/compaction",
+              "architecture/summarization",
+              "architecture/retrieval",
+              "architecture/storage"
+            ]
+          }
         ]
       }
     ]
