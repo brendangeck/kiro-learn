@@ -1,0 +1,57 @@
+---
+title: "Introduction"
+description: "Continuous learning for Kiro agents."
+---
+
+<Frame>
+  <video src="/assets/dashboard-preview.mp4" controls autoPlay loop muted playsInline />
+</Frame>
+
+## The problem
+
+Every new agent session starts from zero. You explain the project layout again. You point at the same files again. You watch the agent rediscover the same gotchas it rediscovered yesterday, reach for patterns your repo doesn't use, and suggest libraries you've already rejected.
+
+Some tools solve this by asking you to write memory manually: save a note here, update a doc there, maintain a `CLAUDE.md` or `AGENTS.md` by hand. That works until you forget, which is usually by Tuesday.
+
+kiro-learn takes a different approach. It watches your Kiro sessions passively — capturing prompts, tool uses, and session summaries as they happen — and uses an LLM to extract structured memory records in the background. On the next session, relevant memories are retrieved and injected into the agent's context automatically. Your agent picks up your preferences, coding style, and repo conventions over time. No manual bookkeeping, no extra steps.
+
+## What you get
+
+<Columns cols={2}>
+  <Column>
+    ### <Icon icon="brain" size={20} /> Memory across sessions
+
+    Prompts, tool uses, and session summaries are captured automatically and extracted into structured memory records you can search.
+  </Column>
+  <Column>
+    ### <Icon icon="lock" size={20} /> Local and private
+
+    Events and memories live in a SQLite database on your machine. Nothing leaves except during extraction, which runs through your own Bedrock account via `kiro-cli`.
+  </Column>
+  <Column>
+    ### <Icon icon="chart-network" size={20} /> Visual dashboard
+
+    An interactive memory graph, live event feed, and project metrics — served by the daemon at a local URL.
+  </Column>
+  <Column>
+    ### <Icon icon="plug" size={20} /> MCP tools
+
+    Agents can search memory and save observations explicitly via `search_memory`, `save_observation`, and `save_session_summary`.
+  </Column>
+  <Column>
+    ### <Icon icon="terminal" size={20} /> CLI and IDE
+
+    Works with both Kiro CLI and Kiro IDE through the same collector. Memory is shared across both surfaces automatically.
+  </Column>
+  <Column>
+    ### <Icon icon="folder-tree" size={20} /> Per-project isolation
+
+    Each project gets its own memory space. Switch repositories and you get a clean context — no cross-contamination.
+  </Column>
+</Columns>
+
+## Get started
+
+<Card title="Install and quickstart" icon="rocket" href="/getting-started/install">
+  Install the package, initialize a project, start the daemon, and see your first memory.
+</Card>

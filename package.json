@@ -95,7 +95,19 @@
     "learning",
     "continuous-learning",
     "memory",
-    "agentcore"
+    "agentcore",
+    "mcp",
+    "mcp-server",
+    "sqlite",
+    "fts5",
+    "ide",
+    "cli",
+    "passive-memory",
+    "session-memory",
+    "context-injection",
+    "rag",
+    "knowledge-base",
+    "claude-mem-alternative"
   ],
   "publishConfig": {
     "access": "public"
@@ -111,5 +123,5 @@
   "bugs": {
     "url": "https://github.com/brendangeck/kiro-learn/issues"
   },
-  "homepage": "https://github.com/brendangeck/kiro-learn#readme"
+  "homepage": "https://kiro-learn.mintlify.app"
 }

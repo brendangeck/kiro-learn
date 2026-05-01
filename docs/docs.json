@@ -14,32 +14,19 @@
         "version": "v0",
         "groups": [
           {
-            "group": "Overview",
-            "pages": [
-              "introduction"
-            ]
-          },
-          {
             "group": "Getting started",
             "pages": [
-              "getting-started/install",
-              "getting-started/quickstart",
-              "getting-started/verify"
+              "getting-started/introduction",
+              "getting-started/install"
             ]
           },
           {
             "group": "Concepts",
             "pages": [
-              "how-it-works",
               "concepts/projects",
-              "concepts/event-buffer"
-            ]
-          },
-          {
-            "group": "Guides",
-            "pages": [
-              "guides/kiro-cli",
-              "guides/kiro-ide"
+              "concepts/event-types",
+              "concepts/event-buffer",
+              "concepts/privacy"
             ]
           },
           {
@@ -53,7 +40,8 @@
               "architecture/compaction",
               "architecture/summarization",
               "architecture/retrieval",
-              "architecture/database"
+              "architecture/database",
+              "architecture/viewer"
             ]
           }
         ]
@@ -69,6 +57,10 @@
       {
         "label": "GitHub",
         "href": "https://github.com/brendangeck/kiro-learn"
+      },
+      {
+        "label": "npm",
+        "href": "https://www.npmjs.com/package/kiro-learn"
       }
     ],
     "primary": {
@@ -84,6 +76,15 @@
       "chatgpt",
       "claude"
     ]
+  },
+  "metadata": {
+    "description": "Continuous learning for Kiro agents. Passive capture, LLM extraction, and context injection — local-first, project-scoped, AWS Bedrock-powered.",
+    "og:title": "kiro-learn — Continuous learning for Kiro agents",
+    "og:description": "Passive agent memory that captures session context, extracts structured knowledge via AWS Bedrock, and injects it into future Kiro sessions automatically.",
+    "og:image": "/assets/dashboard-preview.gif"
+  },
+  "seo": {
+    "indexHiddenPages": false
   },
   "footer": {
     "socials": {

@@ -1,5 +1,5 @@
 ---
-title: "Event Buffer"
+title: "Event buffer"
 description: "How kiro-learn stages events between ingestion and memory extraction."
 ---
 
@@ -11,10 +11,10 @@ The buffer holds events that are waiting to be extracted. It decouples the speed
 
 ```mermaid
 flowchart LR
-    A[Shim] -->|POST event| B[Collector Pipeline]
+    A[Shim] -->|POST event| B[Collector pipeline]
     B -->|store| C[Database]
-    B -->|append| D[Event Buffer]
-    D -->|batch| E[Extraction Worker]
+    B -->|append| D[Event buffer]
+    D -->|batch| E[Extraction worker]
     E -->|memory records| C
 ```
 
@@ -100,8 +100,8 @@ The buffer connects two async workers:
 
 | Worker | Triggered by | What it does |
 |---|---|---|
-| **[Extraction Worker](/architecture/extraction)** | Size threshold or idle timer | Reads the buffer snapshot, frames entries as XML, sends to the LLM, stores resulting memory records, clears the buffer on success. |
-| **[Compaction Worker](/architecture/compaction)** | Compaction threshold | Summarizes existing memory records via LLM, evicts old records, atomically replaces the buffer with compacted content. |
+| **[Extraction worker](/architecture/extraction)** | Size threshold or idle timer | Reads the buffer snapshot, frames entries as XML, sends to the LLM, stores resulting memory records, clears the buffer on success. |
+| **[Compaction worker](/architecture/compaction)** | Compaction threshold | Summarizes existing memory records via LLM, evicts old records, atomically replaces the buffer with compacted content. |
 
 Both workers operate asynchronously — they never block event ingestion. The [collector](/architecture/collector) returns a response to the shim immediately after appending to the buffer.
 
@@ -127,3 +127,23 @@ The buffer is designed to handle failures gracefully:
 <Callout type="tip">
   You can inspect a project's buffer directly by reading the NDJSON file at `~/.kiro-learn/buffers/<project_id>/buffer.ndjson`. Each line is a JSON object you can pipe through `jq` for readability.
 </Callout>
+
+## Related pages
+
+<CardGroup cols={2}>
+  <Card title="Collector" href="/architecture/collector">
+    The daemon that appends events to the buffer
+  </Card>
+  <Card title="Extraction" href="/architecture/extraction">
+    The worker that reads buffer snapshots and creates memory records
+  </Card>
+  <Card title="Compaction" href="/architecture/compaction">
+    The pressure valve when buffers grow too large
+  </Card>
+  <Card title="Projects" href="/concepts/projects">
+    How per-project buffer isolation is defined
+  </Card>
+  <Card title="Database" href="/architecture/database">
+    Where events and memory records are persisted
+  </Card>
+</CardGroup>

@@ -1,0 +1,55 @@
+<svg width="1280" height="640" viewBox="0 0 1280 640" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Background -->
+  <rect width="1280" height="640" fill="#0D0D0D"/>
+
+  <!-- Subtle gradient overlay -->
+  <defs>
+    <radialGradient id="glow" cx="50%" cy="40%" r="60%">
+      <stop offset="0%" stop-color="#8D47FF" stop-opacity="0.08"/>
+      <stop offset="100%" stop-color="#0D0D0D" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="1280" height="640" fill="url(#glow)"/>
+
+  <!-- Logo glyph — scaled up, centered -->
+  <g transform="translate(590, 160)">
+    <!-- Triangle edges -->
+    <g stroke="#8D47FF" stroke-width="6" stroke-linecap="round">
+      <line x1="0" y1="78" x2="78" y2="78"/>
+      <line x1="0" y1="78" x2="39" y2="0"/>
+      <line x1="78" y1="78" x2="39" y2="0"/>
+    </g>
+    <!-- Dots -->
+    <circle cx="39" cy="0" r="12" fill="#8D47FF"/>
+    <circle cx="0" cy="78" r="10" fill="#7D25E6"/>
+    <circle cx="78" cy="78" r="10" fill="#C7A0FF"/>
+  </g>
+
+  <!-- Project name -->
+  <text x="640" y="330"
+        font-family="Inter, ui-sans-serif, system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif"
+        font-size="64"
+        font-weight="700"
+        fill="#FFFFFF"
+        text-anchor="middle"
+        letter-spacing="-0.02em">kiro-learn</text>
+
+  <!-- Tagline -->
+  <text x="640" y="385"
+        font-family="Inter, ui-sans-serif, system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif"
+        font-size="26"
+        font-weight="400"
+        fill="#A0A0A0"
+        text-anchor="middle">Continuous learning for Kiro agents</text>
+
+  <!-- Subtitle keywords -->
+  <text x="640" y="430"
+        font-family="Inter, ui-sans-serif, system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif"
+        font-size="18"
+        font-weight="400"
+        fill="#666666"
+        text-anchor="middle">Passive capture · LLM extraction · Context injection · Local-first</text>
+
+  <!-- Bottom accent line -->
+  <rect x="540" y="470" width="200" height="3" rx="1.5" fill="#8D47FF" opacity="0.6"/>
+</svg>
