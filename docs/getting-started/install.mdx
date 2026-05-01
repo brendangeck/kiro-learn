@@ -1,6 +1,127 @@
 ---
-title: "Install"
-description: "Install kiro-learn and run the collector daemon."
+title: "Install and quickstart"
+description: "Install kiro-learn, initialize your project, and see your first memory."
 ---
 
-_Coming soon._
+## Prerequisites
+
+Before you begin, make sure you have:
+
+- **Node.js 22 or later** — kiro-learn uses modern Node APIs and will refuse to install on older versions.
+- **Kiro CLI or Kiro IDE** — you need at least one Kiro surface to generate events. The CLI shim works with `kiro-cli` hooks; the IDE shim works with Kiro IDE's `.kiro/hooks/` system.
+- **AWS credentials for extraction** — kiro-learn uses `kiro-cli` to call Amazon Bedrock for memory extraction. Without valid credentials, events are captured but never promoted to memory records.
+
+## Install
+
+<Steps>
+  <Step title="Install kiro-learn globally">
+    ```bash
+    npm install -g kiro-learn
+    ```
+    This puts the `kiro-learn` command on your PATH.
+  </Step>
+
+  <Step title="Initialize in your project">
+    ```bash
+    cd your-project
+    kiro-learn init
+    ```
+
+    Run this in each project where you want memory capture. `init` handles everything:
+
+    - **Global + project install** — writes agent configs at both `~/.kiro/agents/` and your project's `.kiro/agents/`.
+    - **Hooks auto-configured** — deploys hook files into `.kiro/hooks/` so events are captured automatically.
+    - **MCP server registered** — configures the `kiro-learn-memory` MCP server in your Kiro agent settings, giving agents access to `search_memory`, `save_observation`, and `save_session_summary` tools.
+    - **Daemon starts** — launches the collector and opens the Viewer at [http://127.0.0.1:21100/ui/](http://127.0.0.1:21100/ui/).
+  </Step>
+</Steps>
+
+## Your first session
+
+Once the daemon is running, walk through a single session to see the full loop in action.
+
+<Steps>
+  <Step title="Open a Kiro session">
+    Start a new session in Kiro CLI (`kiro-cli`) or open your project in Kiro IDE. If you ran `init` with project scope, the IDE hooks are already wired.
+  </Step>
+
+  <Step title="Do one simple task">
+    Ask the agent to do something concrete — edit a file, run a command, answer a question about your codebase. This generates `prompt` and `tool_use` events that flow into the collector.
+  </Step>
+
+  <Step title="Watch events arrive">
+    Open the Viewer at [http://127.0.0.1:21100/ui/](http://127.0.0.1:21100/ui/). The **Recent Events** table shows events arriving in real time. You should see your prompt and any tool uses appear within seconds.
+  </Step>
+
+  <Step title="Wait for extraction">
+    After the session's events accumulate in the buffer (triggered by size threshold or an idle timer), the extraction worker sends them to Bedrock via `kiro-cli`. Watch the **Memory Graph** — a new memory node appears when extraction completes. This typically takes 10–30 seconds after the buffer triggers.
+  </Step>
+
+  <Step title="Start a new session and see context">
+    Open a fresh session and ask something related to what you just did. On the first prompt, kiro-learn retrieves relevant memory records and injects them into the agent's context. The agent now knows about your previous session without you repeating anything.
+  </Step>
+</Steps>
+
+## The Viewer
+
+The collector serves a visual Viewer at [http://127.0.0.1:21100/ui/](http://127.0.0.1:21100/ui/). It shows:
+
+- **Health indicator** — whether the daemon is responsive.
+- **Metric cards** — total memories, events, projects, and concepts at a glance.
+- **Memory graph** — an interactive node graph showing projects, concepts, and memory records with their relationships. Click any node to open the detail panel.
+- **Recent Events** — a live table of recent events, newest first.
+
+The Viewer polls the collector every 10 seconds. It supports dark mode (toggle in the top-right corner, persisted to localStorage).
+
+## Other commands
+
+```bash
+kiro-learn stop       # Stop the collector daemon
+kiro-learn status     # Show install info and daemon state
+kiro-learn uninstall  # Remove kiro-learn (add --keep-data to preserve your database)
+```
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Daemon won't start">
+    **Port conflict** — another process is using port 21100. Check with `lsof -i :21100` (macOS/Linux) and stop the conflicting process, or stop and restart kiro-learn.
+
+    **Node version too old** — the daemon requires Node 22+. Run `node --version` to confirm. If you have multiple Node versions, make sure the one on your `PATH` is 22 or later.
+
+    **Permission issues** — the daemon writes to `~/.kiro-learn/`. Ensure your user owns that directory.
+  </Accordion>
+
+  <Accordion title="No events appearing">
+    **Hooks not installed** — re-run `kiro-learn init` in your project directory. For IDE users, verify that `.kiro/hooks/kiro-learn-prompt.kiro.hook`, `kiro-learn-tool.kiro.hook`, and `kiro-learn-stop.kiro.hook` exist.
+
+    **Agent config not pointing to kiro-learn** — for CLI users, check that `kiro-learn` is the active agent (`kiro-cli agent list`). Run `kiro-learn init` again or `kiro-cli agent set-default kiro-learn`.
+
+    **Shim errors** — the shim writes errors to stderr but always exits 0 (it never blocks the agent). Check the daemon log at `~/.kiro-learn/logs/collector-<date>.log` for POST failures.
+  </Accordion>
+
+  <Accordion title="Events appear but no memory records">
+    **`kiro-cli` not installed** — extraction spawns `kiro-cli` under the hood. Run `kiro-cli --version` to confirm it's on your PATH.
+
+    **Bedrock credentials missing** — extraction calls Amazon Bedrock via your AWS credentials. Ensure your credentials are configured (`aws configure` or environment variables) and have Bedrock model access.
+
+    **Circuit breaker tripped** — after 3 consecutive extraction failures, the circuit breaker disables further attempts. Restart the daemon (`kiro-learn stop && kiro-learn start`) to reset it. Check `~/.kiro-learn/logs/` for the underlying error.
+  </Accordion>
+</AccordionGroup>
+
+## Related pages
+
+<CardGroup cols={2}>
+  <Card title="Projects" href="/concepts/projects">
+    How kiro-learn scopes memory per repository
+  </Card>
+  <Card title="Privacy" href="/concepts/privacy">
+    What lives on your machine and what leaves
+  </Card>
+  <Card title="Architecture overview" href="/architecture/overview">
+    How the pieces fit together
+  </Card>
+  <Card title="Event buffer" href="/concepts/event-buffer">
+    What happens between capture and extraction
+  </Card>
+</CardGroup>

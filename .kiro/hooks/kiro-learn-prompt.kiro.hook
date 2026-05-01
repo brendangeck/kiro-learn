@@ -1,0 +1,13 @@
+{
+  "enabled": true,
+  "name": "kiro-learn-prompt",
+  "description": "kiro-learn: capture user prompts for memory",
+  "version": "1",
+  "when": {
+    "type": "promptSubmit"
+  },
+  "then": {
+    "type": "runCommand",
+    "command": "\"/Users/bgeck/.kiro-learn/bin/ide-shim\" promptSubmit || true"
+  }
+}

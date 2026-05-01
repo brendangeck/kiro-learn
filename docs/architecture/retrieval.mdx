@@ -1,6 +1,198 @@
 ---
 title: "Retrieval"
-description: "FTS5 tokenization, query construction, and the latency budget on the retrieval assembler."
+description: "Finds relevant memories at prompt time, formats them for injection, and returns within a hard latency budget."
 ---
 
-_Coming soon._
+Retrieval is the path that turns the user's next prompt into a block of context the agent can read before responding. When a prompt event arrives, the [Collector](/architecture/collector) asks retrieval to find relevant memory records, format them, and hand back a string — all within a bounded time window so the agent is never kept waiting.
+
+Retrieval is inline: it runs during the shim's POST and rides back in the same HTTP response. It is also best-effort: if the search fails or runs long, an empty context is returned and the prompt goes through unchanged. The agent proceeds either way.
+
+## When it runs
+
+Retrieval fires when two conditions are both true:
+
+- The shim appends `?retrieve=true` to the POST.
+- The event's `kind` is `prompt`.
+
+Both conditions must hold. Tool-use events and session summaries never trigger retrieval, even if the shim requested it. This keeps retrieval concentrated at the one point in a turn where injected context is actually useful — the moment the agent is about to start work.
+
+```mermaid
+sequenceDiagram
+    participant Shim
+    participant Collector
+    participant Retrieval
+    participant Query
+    participant Database
+
+    Shim->>Collector: POST prompt event ?retrieve=true
+    Collector->>Collector: ingest event (dedup, scrub, store)
+    Collector->>Retrieval: assemble(event, budget)
+    Retrieval->>Retrieval: extract query from prompt body
+    Retrieval->>Query: search(namespace, query, limit)
+    Query->>Database: full-text search
+    Database-->>Query: matching records
+    Query-->>Retrieval: records
+    Retrieval->>Retrieval: format as context string
+    Retrieval-->>Collector: { context, record_ids, latency_ms }
+    Collector-->>Shim: response with retrieval
+    Shim->>Shim: write context to stdout
+```
+
+The rest of this page walks the stages in order: pulling a query out of the prompt, running the search, falling back when the search is unhappy, honoring the latency budget, and formatting the records into context.
+
+## Extracting a query
+
+The prompt event's body determines the search string. Bodies come in three shapes and each maps differently:
+
+| Body type | What becomes the query |
+|-----------|------------------------|
+| `text` | The body's content verbatim |
+| `message` | The content of the last turn |
+| `json` | The body data serialized as JSON |
+
+If the extracted query is empty — for example, a text body with no content — retrieval short-circuits and returns an empty result. There is nothing to search for.
+
+## How search works
+
+The query layer is a thin seam over the [database](/architecture/database). It forwards a namespace, a query string, and a limit to the storage backend and returns whatever comes back. No ranking, no reshuffling, no filtering beyond what storage does. The seam exists so later versions can layer hybrid retrieval (lexical plus vector plus recency) without rewriting the collector.
+
+Storage handles the actual search in two stages: a primary full-text path and a substring fallback.
+
+### Primary path: full-text search
+
+The primary path uses SQLite's [FTS5 full-text index](https://www.sqlite.org/fts5.html) on memory record titles and summaries. FTS5 gives real ranking (BM25) and respects stemming and diacritics, so a search for "migrations" will hit records that mention "migration" and "migrate".
+
+The catch is that FTS5's match expression is a small query language — bare words, operators like `AND`/`OR`/`NOT`, special characters like `*` and `(`. Passing a raw user prompt into it is both unsafe and useless: typos can cause parse errors, and operator words get interpreted as operators instead of content. So the query is rewritten before it reaches the index.
+
+The rewrite, in order:
+
+1. **Tokenize.** Split the query on whitespace. Drop empty tokens. Deduplicate, preserving the order of first appearance.
+2. **Rank and cap.** If the tokenized list exceeds 32 terms, rank tokens by [inverse document frequency](https://en.wikipedia.org/wiki/Tf%E2%80%93idf#Inverse_document_frequency) and keep the top 32. Rare terms are more discriminating, so they survive; common terms get dropped first. IDF is read from FTS5's own vocabulary table, so "rare" is defined relative to the actual memory corpus, not some external dictionary.
+3. **Quote and join.** Wrap each retained token in double quotes (which makes it an FTS5 phrase with no operator semantics) and join with the `OR` keyword.
+
+The result is a valid FTS5 expression that matches any of the user's terms and produces BM25-ranked results. A prompt like `migrate the user table to use uuid` becomes an `OR` of seven quoted phrases. A prompt like `what's the migration status?` survives the apostrophe, the question mark, and the word "what" without crashing the parser.
+
+Namespace isolation is applied in the SQL itself — the statement joins against `mr.namespace LIKE ? || '%'` — so a project can only ever see its own memories, regardless of what the query looks like.
+
+### Fallback path: substring search
+
+The tokenizer aims to produce syntactically valid FTS5 expressions, but SQLite's FTS5 parser has enough corner cases that defending against all of them is not worth the effort. Instead, retrieval leans on a fallback:
+
+```mermaid
+flowchart TD
+    Start["search(namespace, query, limit)"] --> Sanitize["Tokenize → rank → build FTS5 OR expression"]
+    Sanitize --> Empty{"Empty expression?"}
+    Empty -->|Yes| Done1["Return empty array"]
+    Empty -->|No| TryFts["Run FTS5 MATCH"]
+    TryFts --> Ok{"FTS5 accepts?"}
+    Ok -->|Yes| Rank["Return BM25-ranked results"]
+    Ok -->|No| Like["Run LIKE '%query%'<br/>on original query"]
+    Like --> Order["Return results by recency"]
+```
+
+If FTS5 refuses the sanitized query for any reason, the storage layer catches the error and runs a `LIKE '%query%'` search against the original user string instead. LIKE is slower and does no ranking — results come back ordered by creation date — but it always works, and it treats the query as a literal substring (the escape clause neutralizes `%` and `_` so a prompt containing those characters still means what it says).
+
+The tradeoff is explicit: **availability over ranking quality**. A search that returns weaker results is better than one that errors out, because a failed search shows up to the agent as "no context at all" and that is worse than substring hits.
+
+## Latency budget
+
+Retrieval runs on the shim's critical path. Every millisecond spent searching is a millisecond the developer spends staring at a blank prompt. So the assembler enforces a hard budget — default 500 ms — on the search step.
+
+The mechanism is a race between two promises: the query and a timeout. Whichever resolves first wins.
+
+```mermaid
+sequenceDiagram
+    participant Assembler
+    participant Query
+    participant Timer
+
+    par Search
+        Assembler->>Query: search(namespace, query, limit)
+    and Budget
+        Assembler->>Timer: setTimeout(budgetMs)
+    end
+    alt Query wins
+        Query-->>Assembler: records
+        Assembler->>Assembler: format context
+    else Timer wins
+        Timer-->>Assembler: timeout
+        Assembler->>Assembler: return empty result
+    end
+```
+
+If the timer wins, retrieval returns an empty context with the elapsed latency recorded. The search may still complete in the background; the storage layer is not cancelled. But nothing is injected into the prompt.
+
+The assembler catches every error too. An unexpected exception inside the query, a storage outage, an unhandled rejection — all of them resolve to the same empty-result response. The only information that surfaces to the caller is the latency, which the collector records so the behavior is visible in logs and the viewer UI.
+
+Why 500 ms? It is long enough that full-text search over a realistic memory corpus finishes comfortably, and short enough that the developer does not notice it. Prompts do not feel laggy. The budget is configurable per collector instance if a specific deployment wants different tuning.
+
+## Context assembly
+
+Once records come back, the assembler turns them into a markdown block the agent can read. The format is intentionally plain:
+
+```markdown
+## Prior observations from kiro-learn
+
+### Title of the first memory record
+
+Summary of the first memory record.
+
+- A fact from this record
+- Another fact
+
+### Title of the second memory record
+
+Summary of the second memory record.
+
+- A fact from this record
+```
+
+A header introduces the block, then each record appears as a level-three heading plus its summary plus its facts as a bullet list. That is the whole format. No metadata, no record IDs, no timestamps, no concept lists — just the human-readable parts the agent can use as context.
+
+If the search returned zero records, the context is an empty string. The collector still returns a retrieval object in the response (with `latency_ms` and an empty `records` array), but the context field is empty. The shim detects the empty string and does not write anything to stdout, so no header is injected if there is nothing to say.
+
+The record IDs are returned separately in the `records` field. That field is for audit and debugging — the viewer UI shows which memories were retrieved on a given prompt — not for the agent's consumption. The agent sees only the context string.
+
+## What comes back to the agent
+
+The shim writes the context string to stdout. In Kiro CLI and Kiro IDE both, the agent runtime reads that stdout and prepends it to the prompt before invoking the model. From the model's perspective, the prompt now starts with a "Prior observations" section and then continues with whatever the user typed.
+
+From the developer's perspective, retrieval is invisible. The prompt goes in, the response comes out. If kiro-learn has relevant prior context, the response reflects it. If not, the response is the same one the model would have produced anyway.
+
+## Key design decisions
+
+**Retrieval never throws.** The assembler returns a `RetrievalResult` under every condition: success, empty result, FTS5 error, storage error, timeout. There is no path where retrieval breaks an agent turn. The cost of this is quiet failures — if retrieval is consistently returning empty results, the symptom is "memory feels useless" rather than a visible error. The viewer UI's latency-per-retrieval metric is the counterweight.
+
+**Availability over ranking.** The LIKE fallback exists so every reasonable query eventually produces results, even when the FTS5 sanitizer misses an edge case. Worse rankings are a better failure mode than no rankings at all.
+
+**Budget enforced at assembly, not at storage.** The 500 ms budget wraps the entire search, including whatever the storage backend does internally. If a future storage backend — vector search, remote KB — is slower than FTS5, the budget still applies. Storage does not need to know about it.
+
+**Formatting is fixed.** The context format is not configurable. Every agent sees the same structure: a header, a list of records, summaries, facts. Keeping the format fixed means the model has one consistent shape to parse across every turn, and the project does not accumulate formatting flags the way a template engine would.
+
+**Inline, not pull.** Retrieval runs on the prompt event's ingest path, not as a separate API call. The shim gets one HTTP round-trip per prompt — POST the event, get the context back. This is different from the [MCP server](/architecture/collector), which exposes a pull-based `search_memory` tool for agents that prefer to query explicitly. The inline path is the default; the MCP path is available when the agent wants more control.
+
+## Related pages
+
+<CardGroup cols={2}>
+  <Card title="Database" href="/architecture/database">
+    The FTS5 index that backs the primary search path
+  </Card>
+  <Card title="Viewer" href="/architecture/viewer">
+    Where retrieved records surface in the dashboard
+  </Card>
+  <Card title="Extraction" href="/architecture/extraction">
+    Where the memory records retrieval searches over come from
+  </Card>
+  <Card title="Summarization" href="/architecture/summarization">
+    Turn summaries that surface through the same retrieval path
+  </Card>
+  <Card title="Collector" href="/architecture/collector">
+    The daemon that invokes retrieval on prompt ingestion
+  </Card>
+  <Card title="Kiro CLI shim" href="/architecture/kiro-cli-shim">
+    How the CLI shim requests retrieval and writes context to stdout
+  </Card>
+  <Card title="Kiro IDE shim" href="/architecture/kiro-ide-shim">
+    How the IDE shim requests retrieval and writes context to stdout
+  </Card>
+</CardGroup>

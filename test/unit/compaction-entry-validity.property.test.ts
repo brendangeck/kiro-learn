@@ -118,9 +118,19 @@ describe('Property 8: Compacted entry validity', () => {
         fc.constantFrom('kiro-cli' as const, 'kiro-ide' as const),
         // Generate 1–5 timestamps, then build entries from them
         fc.array(isoDateArb(), { minLength: 1, maxLength: 5 }),
-        // Generate 1–3 summary strings for the model response
+        // Generate 1–3 summary strings for the model response.
+        // Must be non-empty after trimming — whitespace-only strings are
+        // legitimately skipped by parseCompactionResponse.
+        // Must not contain XML-special characters that would break the
+        // synthetic <compacted_entry> wrapper built by buildModelResponse.
         fc.array(
-          fc.string({ minLength: 1, maxLength: 200 }).filter((s) => s.length > 0),
+          fc.string({ minLength: 1, maxLength: 200 }).filter(
+            (s) =>
+              s.trim().length > 0 &&
+              !s.includes('<') &&
+              !s.includes('>') &&
+              !s.includes('&'),
+          ),
           { minLength: 1, maxLength: 3 },
         ),
         async (namespace, surface, timestamps, summaries) => {

@@ -1,0 +1,13 @@
+{
+  "enabled": true,
+  "name": "kiro-learn-stop",
+  "description": "kiro-learn: capture session summaries for memory",
+  "version": "1",
+  "when": {
+    "type": "agentStop"
+  },
+  "then": {
+    "type": "runCommand",
+    "command": "\"/Users/bgeck/.kiro-learn/bin/ide-shim\" agentStop || true"
+  }
+}

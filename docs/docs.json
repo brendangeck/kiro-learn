@@ -9,46 +9,41 @@
   },
   "favicon": "/favicon.svg",
   "navigation": {
-    "groups": [
+    "versions": [
       {
-        "group": "Overview",
-        "pages": [
-          "introduction"
-        ]
-      },
-      {
-        "group": "Getting started",
-        "pages": [
-          "getting-started/install",
-          "getting-started/quickstart",
-          "getting-started/verify"
-        ]
-      },
-      {
-        "group": "Concepts",
-        "pages": [
-          "how-it-works"
-        ]
-      },
-      {
-        "group": "Guides",
-        "pages": [
-          "guides/kiro-cli",
-          "guides/kiro-ide"
-        ]
-      },
-      {
-        "group": "Architecture",
-        "pages": [
-          "architecture/overview",
-          "architecture/cli-shim",
-          "architecture/ide-shim",
-          "architecture/buffer-pipeline",
-          "architecture/extraction",
-          "architecture/compaction",
-          "architecture/summarization",
-          "architecture/retrieval",
-          "architecture/storage"
+        "version": "v0",
+        "groups": [
+          {
+            "group": "Getting started",
+            "pages": [
+              "getting-started/introduction",
+              "getting-started/install"
+            ]
+          },
+          {
+            "group": "Concepts",
+            "pages": [
+              "concepts/projects",
+              "concepts/event-types",
+              "concepts/event-buffer",
+              "concepts/privacy"
+            ]
+          },
+          {
+            "group": "Architecture",
+            "pages": [
+              "architecture/overview",
+              "architecture/kiro-cli-shim",
+              "architecture/kiro-ide-shim",
+              "architecture/collector",
+              "architecture/extraction",
+              "architecture/compaction",
+              "architecture/summarization",
+              "architecture/retrieval",
+              "architecture/database",
+              "architecture/viewer"
+            ]
+          }
         ]
       }
     ]
@@ -62,6 +57,10 @@
       {
         "label": "GitHub",
         "href": "https://github.com/brendangeck/kiro-learn"
+      },
+      {
+        "label": "npm",
+        "href": "https://www.npmjs.com/package/kiro-learn"
       }
     ],
     "primary": {
@@ -77,6 +76,15 @@
       "chatgpt",
       "claude"
     ]
+  },
+  "metadata": {
+    "description": "Continuous learning for Kiro agents. Passive capture, LLM extraction, and context injection — local-first, project-scoped, AWS Bedrock-powered.",
+    "og:title": "kiro-learn — Continuous learning for Kiro agents",
+    "og:description": "Passive agent memory that captures session context, extracts structured knowledge via AWS Bedrock, and injects it into future Kiro sessions automatically.",
+    "og:image": "/assets/dashboard-preview.gif"
+  },
+  "seo": {
+    "indexHiddenPages": false
   },
   "footer": {
     "socials": {

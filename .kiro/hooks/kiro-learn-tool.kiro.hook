@@ -1,0 +1,16 @@
+{
+  "enabled": true,
+  "name": "kiro-learn-tool",
+  "description": "kiro-learn: capture tool-use events for memory",
+  "version": "1",
+  "when": {
+    "type": "postToolUse",
+    "toolTypes": [
+      "*"
+    ]
+  },
+  "then": {
+    "type": "runCommand",
+    "command": "\"/Users/bgeck/.kiro-learn/bin/ide-shim\" postToolUse || true"
+  }
+}
