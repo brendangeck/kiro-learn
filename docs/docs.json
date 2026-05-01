@@ -30,7 +30,9 @@
           {
             "group": "Concepts",
             "pages": [
-              "how-it-works"
+              "how-it-works",
+              "concepts/projects",
+              "concepts/event-buffer"
             ]
           },
           {
@@ -44,14 +46,14 @@
             "group": "Architecture",
             "pages": [
               "architecture/overview",
-              "architecture/cli-shim",
-              "architecture/ide-shim",
-              "architecture/buffer-pipeline",
+              "architecture/kiro-cli-shim",
+              "architecture/kiro-ide-shim",
+              "architecture/collector",
               "architecture/extraction",
               "architecture/compaction",
               "architecture/summarization",
               "architecture/retrieval",
-              "architecture/storage"
+              "architecture/database"
             ]
           }
         ]
