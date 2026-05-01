@@ -1,3 +1,9 @@
+## [0.16.1](https://github.com/brendangeck/kiro-learn/compare/v0.16.0...v0.16.1) (2026-05-01)
+
+### Bug Fixes
+
+* inject kiro-learn-memory MCP server into agent config ([#30](https://github.com/brendangeck/kiro-learn/issues/30)) ([e1b518a](https://github.com/brendangeck/kiro-learn/commit/e1b518a254b202e89a82212aa8fce2d87109be54))
+
 ## [0.16.0](https://github.com/brendangeck/kiro-learn/compare/v0.15.1...v0.16.0) (2026-04-30)
 
 ### Features
