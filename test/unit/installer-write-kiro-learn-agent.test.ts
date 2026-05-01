@@ -193,7 +193,7 @@ function expectFallbackShape(): void {
     hooks: Record<string, unknown>;
   };
 
-  expect(Object.keys(parsed)).toEqual(['name', 'description', 'hooks']);
+  expect(Object.keys(parsed)).toEqual(['name', 'description', 'hooks', 'mcpServers']);
   expect(parsed.name).toBe('kiro-learn');
   expect(parsed.description).toBe(KIRO_LEARN_DESCRIPTION);
 
@@ -209,6 +209,13 @@ function expectFallbackShape(): void {
   );
   expect(parsed.hooks['postToolUse']).toEqual(KIRO_LEARN_TRIGGERS.postToolUse);
   expect(parsed.hooks['stop']).toEqual(KIRO_LEARN_TRIGGERS.stop);
+
+  // mcpServers contains the kiro-learn-memory entry (bugfix: mcp-agent-config-fix)
+  const mcpServers = (parsed as Record<string, unknown>)['mcpServers'] as Record<string, unknown>;
+  expect(mcpServers).toBeDefined();
+  const memoryEntry = mcpServers['kiro-learn-memory'] as Record<string, unknown>;
+  expect(memoryEntry).toBeDefined();
+  expect(memoryEntry['args']).toEqual([]);
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────
@@ -255,6 +262,10 @@ describe('writeKiroLearnAgent', () => {
       expect(merged['tools']).toEqual(['fs_read', 'fs_write']);
       expect(merged['mcpServers']).toEqual({
         example: { command: 'example-mcp' },
+        'kiro-learn-memory': {
+          command: expect.stringContaining('mcp-server'),
+          args: [],
+        },
       });
 
       // Non-owned hook trigger preserved verbatim.

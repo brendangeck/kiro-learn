@@ -106,6 +106,12 @@ const goldenFallback = {
     postToolUse: [{ matcher: '*', command: quotedShim + ' || true' }],
     stop: [{ command: quotedShim + ' || true' }],
   },
+  mcpServers: {
+    'kiro-learn-memory': {
+      command: path.join(INSTALL_DIR, 'bin', 'mcp-server'),
+      args: [] as string[],
+    },
+  },
 };
 
 /** The exact bytes the installer should write in every failure branch. */
