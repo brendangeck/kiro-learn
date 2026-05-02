@@ -37,9 +37,13 @@ describe('ui/src/graph/transform.ts — no react or @cosmos.gl/graph imports', (
     //   import '...';
     //   import type ... from '...';
     //   export ... from '...';
-    // The specifier is captured in group 1.
+    // Imports: the `from ... '...'` clause is optional so bare
+    // `import '...';` still matches. Exports: we require the literal
+    // `from` token so we don't false-positive on `export const x = '...'`
+    // (which has a string literal but isn't a module specifier). The
+    // actual specifier is captured in group 1.
     const specPattern =
-      /(?:^|\n)\s*(?:import|export)(?:\s[\s\S]*?)?\s*(?:from\s+)?['"]([^'"]+)['"]/g;
+      /(?:^|\n)\s*(?:import(?:\s[\s\S]*?)?\s*(?:from\s+)?|export\s[\s\S]*?\sfrom\s+)['"]([^'"]+)['"]/g;
 
     const forbidden = ['react', 'react-dom', '@cosmos.gl/graph'];
 

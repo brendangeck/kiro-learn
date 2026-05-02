@@ -446,3 +446,75 @@ describe('CosmosGraph — unmount', () => {
     expect(destroyCalls.length).toBe(1);
   });
 });
+
+describe('CosmosGraph — hover interaction (engine-internal, no React callback)', () => {
+  beforeEach(() => {
+    getMockGraph().reset();
+    getMockLabelRenderer().reset();
+    installResizeObserverStub();
+  });
+
+  it('on hover, pushes outlinedPointIndices + highlightedLinkIndices via setConfigPartial', () => {
+    const data = buildData();
+    render(
+      <CosmosGraph data={data} backgroundColor="#ffffff" onPointClick={() => {}} />,
+    );
+
+    const inst = getMockGraph().last();
+    inst.calls = []; // Isolate the hover call from the mount-time uploads.
+
+    const memIdx = data.indexToKind.findIndex((k) => k === 'memory');
+    expect(memIdx).toBeGreaterThanOrEqual(0);
+    inst.triggerPointMouseOver(memIdx);
+
+    const setConfigCalls = inst.calls.filter((c) => c.method === 'setConfigPartial');
+    expect(setConfigCalls.length).toBe(1);
+    const payload = setConfigCalls[0]?.args[0] as Record<string, unknown>;
+    expect(Array.isArray(payload['outlinedPointIndices'])).toBe(true);
+    expect(Array.isArray(payload['highlightedLinkIndices'])).toBe(true);
+    // The hovered index itself is always part of the outlined set.
+    expect(payload['outlinedPointIndices']).toContain(memIdx);
+  });
+
+  it('on hover-out, clears outlinedPointIndices + highlightedLinkIndices', () => {
+    const data = buildData();
+    render(
+      <CosmosGraph data={data} backgroundColor="#ffffff" onPointClick={() => {}} />,
+    );
+
+    const inst = getMockGraph().last();
+    inst.calls = [];
+    inst.triggerPointMouseOut();
+
+    const setConfigCalls = inst.calls.filter((c) => c.method === 'setConfigPartial');
+    expect(setConfigCalls.length).toBe(1);
+    expect(setConfigCalls[0]?.args[0]).toEqual({
+      outlinedPointIndices: undefined,
+      highlightedLinkIndices: undefined,
+    });
+  });
+
+  it('ignores hover while a click selection is active', () => {
+    const data = buildData();
+    render(
+      <CosmosGraph data={data} backgroundColor="#ffffff" onPointClick={() => {}} />,
+    );
+
+    const inst = getMockGraph().last();
+    const memIdx = data.indexToKind.findIndex((k) => k === 'memory');
+    expect(memIdx).toBeGreaterThanOrEqual(0);
+
+    // Activate the click selection, then clear the call log so we only
+    // observe hover-induced calls afterward.
+    inst.triggerClick(memIdx);
+    inst.calls = [];
+
+    inst.triggerPointMouseOver(memIdx);
+    inst.triggerPointMouseOut();
+
+    // The hover handlers early-return when `clickedRef` is set, so they
+    // should NOT invoke setConfigPartial.
+    const setConfigCalls = inst.calls.filter((c) => c.method === 'setConfigPartial');
+    expect(setConfigCalls).toEqual([]);
+  });
+});

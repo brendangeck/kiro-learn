@@ -151,8 +151,7 @@ export function transform(
   const indexToKind: NodeKind[] = new Array<NodeKind>(pointCount);
   const indexToLabel: (string | null)[] = new Array<string | null>(pointCount);
   const idToIndex = new Map<NodeId, number>();
-  for (let i = 0; i < pointCount; i++) {
-    const n = nodes[i]!;
+  for (const [i, n] of nodes.entries()) {
     indexToId[i] = n.id;
     indexToKind[i] = n.kind;
     idToIndex.set(n.id, i);
@@ -174,9 +173,7 @@ export function transform(
   const DEFAULT_SIZE = 4;
   const PROJECT_SIZE = DEFAULT_SIZE * 3;
 
-  for (let i = 0; i < pointCount; i++) {
-    const n = nodes[i]!;
-
+  for (const [i, n] of nodes.entries()) {
     // Baseline seed: match the cosmos.gl demo's tight random cluster near
     // the center of the default `spaceSize` (4096). Every point starts
     // within a ~0.5%-wide box at the center and the simulation forces
@@ -201,13 +198,22 @@ export function transform(
   }
 
   // 4. Links: memory→project and memory→concept. No project→concept.
+  //
+  // `m.concepts` is not guaranteed unique by the API type, so we dedupe
+  // per-memory before emitting links. Without this, a memory that repeats
+  // a concept in its array would produce duplicate memory→concept edges
+  // to the same concept point (the concept point itself is already deduped
+  // during node emission via `seenConcept`).
   const linkPairs: number[] = [];
   for (const m of sortedMemories) {
     const memIdx = idToIndex.get(`memory:${m.record_id}`);
     if (memIdx === undefined) continue;
     const projIdx = idToIndex.get(`project:${m.namespace}`);
     if (projIdx !== undefined) linkPairs.push(memIdx, projIdx);
+    const seenConcepts = new Set<string>();
     for (const c of m.concepts) {
+      if (seenConcepts.has(c)) continue;
+      seenConcepts.add(c);
       const cIdx = idToIndex.get(`concept:${m.namespace}:${c}`);
       if (cIdx !== undefined) linkPairs.push(memIdx, cIdx);
     }
@@ -217,8 +223,15 @@ export function transform(
   const links = new Float32Array(2 * linkCount);
   const linkColors = new Float32Array(4 * linkCount);
   for (let i = 0; i < linkCount; i++) {
-    links[2 * i] = linkPairs[2 * i]!;
-    links[2 * i + 1] = linkPairs[2 * i + 1]!;
+    const src = linkPairs[2 * i];
+    const dst = linkPairs[2 * i + 1];
+    // `linkPairs` is populated in contiguous (src, dst) pairs above, so
+    // both reads are always defined at this point. Guard defensively
+    // anyway to satisfy noUncheckedIndexedAccess without non-null
+    // assertions.
+    if (src === undefined || dst === undefined) continue;
+    links[2 * i] = src;
+    links[2 * i + 1] = dst;
     linkColors[4 * i] = theme.edgeColor[0];
     linkColors[4 * i + 1] = theme.edgeColor[1];
     linkColors[4 * i + 2] = theme.edgeColor[2];

@@ -504,7 +504,7 @@ iteration. Not imported from `src/` or `ui/src/`, not part of
 `npm run test`, not bundled into production.
 
 Usage:
-```
+```bash
 # Terminal 1
 npm run dev:ui       # Vite on :5173
 

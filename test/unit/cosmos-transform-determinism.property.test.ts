@@ -17,9 +17,21 @@ import { transformInputArb } from '../helpers/cosmos-arb.js';
 describe('transform() — P6: structurally-equal inputs produce element-equal outputs', () => {
   it('Float32Arrays and parallel arrays match across calls', () => {
     fc.assert(
-      fc.property(transformInputArb, ({ memories, projects, theme }) => {
-        const a = transform(memories, projects, theme);
-        const b = transform(memories, projects, theme);
+      fc.property(transformInputArb, (input) => {
+        // Deep-clone the generated input for each call so a theoretical
+        // mutation inside `transform` would produce observable drift
+        // between the two runs. `transform` is contractually pure, but
+        // deep-clones are the property-test analogue of "prove it."
+        const a = transform(
+          structuredClone(input.memories),
+          structuredClone(input.projects),
+          structuredClone(input.theme),
+        );
+        const b = transform(
+          structuredClone(input.memories),
+          structuredClone(input.projects),
+          structuredClone(input.theme),
+        );
 
         expect(b.positions).toEqual(a.positions);
         expect(b.colors).toEqual(a.colors);

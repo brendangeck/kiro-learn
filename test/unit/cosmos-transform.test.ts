@@ -262,3 +262,33 @@ describe('transform() — stable sort across polling refreshes', () => {
     expect(dataA.indexToId).toEqual(dataB.indexToId);
   });
 });
+
+describe('transform() — duplicate concepts on the same memory', () => {
+  it('emits exactly one memory→concept link per unique (memory, concept) pair', () => {
+    // MemoryRecord.concepts is typed `string[]` with no uniqueness
+    // guarantee. A memory that lists the same concept twice should not
+    // produce two edges to the same concept point.
+    const projects = [proj(NS1, 'P1')];
+    const memories = [
+      mem({
+        record_id: 'r1',
+        namespace: NS1,
+        concepts: ['dup', 'dup', 'other', 'dup'],
+      }),
+    ];
+
+    const data = transform(memories, projects, THEME);
+
+    // Exactly one concept node for `dup` and one for `other` — the node
+    // emission loop already deduplicates, so this is a sanity check.
+    expect(data.idToIndex.has(`concept:${NS1}:dup`)).toBe(true);
+    expect(data.idToIndex.has(`concept:${NS1}:other`)).toBe(true);
+    expect(data.indexToKind.filter((k) => k === 'concept').length).toBe(2);
+
+    // Link count: 1 memory→project + 1 memory→concept(dup) + 1 memory→concept(other).
+    // Without the dedup fix in the link loop, we would get 3 dup edges
+    // for a total link count of 5.
+    const linkCount = data.links.length / 2;
+    expect(linkCount).toBe(3);
+  });
+});
