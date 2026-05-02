@@ -1,8 +1,11 @@
-import { useCallback, useMemo } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 
+import Box from '@cloudscape-design/components/box';
+import Button from '@cloudscape-design/components/button';
+import Container from '@cloudscape-design/components/container';
+import Header from '@cloudscape-design/components/header';
 import Spinner from '@cloudscape-design/components/spinner';
 import StatusIndicator from '@cloudscape-design/components/status-indicator';
-import Box from '@cloudscape-design/components/box';
 
 import { transform, type NodeId, type NodeKind, type ProjectInfo } from '../graph/transform.js';
 import { getPackedTheme } from '../graph/theme.js';
@@ -11,13 +14,19 @@ import { GraphLegend } from '../graph/GraphLegend.js';
 import type { MemoryRecord } from '../types/api.js';
 
 /**
- * Outer shell for the memory graph.
+ * Memory graph card.
  *
- * Deliberately minimal. No filter checkboxes, no label selection, no local
- * focus/hover state — `CosmosGraph` owns its own exploration state via the
- * engine's `setConfigPartial`. This component owns data transformation,
- * loading/error/empty placeholders, click routing to the detail panel,
- * and the color legend.
+ * Owns its own Cloudscape Container + Header chrome (title, refresh
+ * icon button in the top-right). Click routing, theme derivation, data
+ * transformation, and loading/error/empty placeholders all live here.
+ *
+ * Refresh model: `CosmosGraph` uploads its data snapshot exactly once
+ * per mount. Background polling in `App.tsx` keeps the React-side
+ * `memories` array live, but the graph ignores those mid-simulation
+ * updates to keep the force layout from constantly restarting. The
+ * refresh button bumps `refreshKey` which, via `key={refreshKey}`,
+ * unmounts the old `CosmosGraph` and mounts a new one against the
+ * latest data.
  */
 interface MemoryGraphProps {
   memories: MemoryRecord[];
@@ -38,6 +47,7 @@ export function MemoryGraph({
 }: MemoryGraphProps) {
   const theme = useMemo(() => getPackedTheme(darkMode), [darkMode]);
   const data = useMemo(() => transform(memories, projects, theme), [memories, projects, theme]);
+  const [refreshKey, setRefreshKey] = useState(0);
 
   const handleClick = useCallback(
     (id: NodeId | null, kind: NodeKind | null) => {
@@ -55,14 +65,32 @@ export function MemoryGraph({
         const sep = rest.lastIndexOf(':');
         onNodeClick(null, sep >= 0 ? rest.slice(sep + 1) : rest);
       }
-      // Project clicks: focus the point visually (cosmos.gl handles that
-      // internally) but don't open the detail panel.
+      // Project clicks: cosmos.gl handles the visual focus internally.
+      // Don't open the detail panel.
     },
     [memories, onNodeClick],
   );
 
+  const header = (
+    <Header
+      variant="h2"
+      actions={
+        <Button
+          iconName="refresh"
+          variant="icon"
+          ariaLabel="Refresh graph"
+          onClick={() => setRefreshKey((k) => k + 1)}
+          data-testid="cosmos-refresh"
+        />
+      }
+    >
+      Memory Graph
+    </Header>
+  );
+
+  let body: React.ReactNode;
   if (loading) {
-    return (
+    body = (
       <Box textAlign="center" padding={{ vertical: 'xxl' }}>
         <Spinner size="large" />
         <Box variant="p" color="text-body-secondary" margin={{ top: 's' }}>
@@ -70,34 +98,35 @@ export function MemoryGraph({
         </Box>
       </Box>
     );
-  }
-  if (error) {
-    return (
+  } else if (error) {
+    body = (
       <Box textAlign="center" padding={{ vertical: 'xxl' }}>
         <StatusIndicator type="error">Failed to load memories</StatusIndicator>
       </Box>
     );
-  }
-  if (memories.length === 0) {
-    return (
+  } else if (memories.length === 0) {
+    body = (
       <Box textAlign="center" padding={{ vertical: 'xxl' }} color="text-body-secondary">
         No memories yet — run some sessions to see your graph
       </Box>
     );
+  } else {
+    body = (
+      <>
+        <Box margin={{ bottom: 's' }}>
+          <GraphLegend darkMode={darkMode} />
+        </Box>
+        <div style={{ height: 500 }}>
+          <CosmosGraph
+            key={refreshKey}
+            data={data}
+            backgroundColor={theme.backgroundColor}
+            onPointClick={handleClick}
+          />
+        </div>
+      </>
+    );
   }
 
-  return (
-    <>
-      <Box margin={{ bottom: 's' }}>
-        <GraphLegend darkMode={darkMode} />
-      </Box>
-      <div style={{ height: 500 }}>
-        <CosmosGraph
-          data={data}
-          backgroundColor={theme.backgroundColor}
-          onPointClick={handleClick}
-        />
-      </div>
-    </>
-  );
+  return <Container header={header}>{body}</Container>;
 }

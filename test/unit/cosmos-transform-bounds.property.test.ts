@@ -49,9 +49,9 @@ describe('transform() — per-kind sizes: projects are strictly larger than leav
         for (let i = 0; i < data.indexToKind.length; i++) {
           const size = data.sizes[i]!;
           if (data.indexToKind[i] === 'project') {
-            expect(size).toBeGreaterThan(4); // default leaf size
+            expect(size).toBeGreaterThan(6); // default leaf size
           } else {
-            expect(size).toBe(4);
+            expect(size).toBe(6);
           }
         }
       }),

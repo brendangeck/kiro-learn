@@ -201,7 +201,7 @@ describe('transform() — node ordering (concepts → memories → projects)', (
 });
 
 describe('transform() — per-kind point sizes', () => {
-  it('assigns size 12 to projects (3× default) and size 4 to memories and concepts', () => {
+  it('assigns size 14 to projects and size 6 to memories and concepts', () => {
     const projects = [proj(NS1, 'P1')];
     const memories = [
       mem({ record_id: 'r1', namespace: NS1, concepts: ['c1'] }),
@@ -213,9 +213,9 @@ describe('transform() — per-kind point sizes', () => {
     const m1Idx = indexOf(data, 'memory:r1');
     const p1Idx = indexOf(data, `project:${NS1}`);
 
-    expect(data.sizes[c1Idx]).toBe(4);
-    expect(data.sizes[m1Idx]).toBe(4);
-    expect(data.sizes[p1Idx]).toBe(12);
+    expect(data.sizes[c1Idx]).toBe(6);
+    expect(data.sizes[m1Idx]).toBe(6);
+    expect(data.sizes[p1Idx]).toBe(14);
   });
 });
 
@@ -238,7 +238,7 @@ describe('transform() — buffer shape at a known size', () => {
     // Project is the last index (emission order = concepts, memories, projects).
     const projIdx = indexOf(data, `project:${NS1}`);
     expect(projIdx).toBe(5);
-    expect(data.sizes[projIdx]).toBe(12);
+    expect(data.sizes[projIdx]).toBe(14);
   });
 });
 

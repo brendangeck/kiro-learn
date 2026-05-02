@@ -205,6 +205,59 @@ describe('MemoryGraph — state replacements for the canvas', () => {
   });
 });
 
+describe('MemoryGraph — refresh button', () => {
+  beforeEach(() => {
+    resetRecorder();
+  });
+
+  it('renders a refresh button next to the canvas', () => {
+    render(
+      <MemoryGraph
+        memories={[mem()]}
+        projects={DEFAULT_PROJECTS}
+        loading={false}
+        error={null}
+        darkMode={false}
+        onNodeClick={() => {}}
+      />,
+    );
+
+    expect(screen.getByTestId('cosmos-refresh')).toBeTruthy();
+    // Cloudscape renders the icon button with its ariaLabel as the
+    // accessible name.
+    expect(screen.getByRole('button', { name: 'Refresh graph' })).toBeTruthy();
+  });
+
+  it('remounts CosmosGraph when the refresh button is clicked', () => {
+    render(
+      <MemoryGraph
+        memories={[mem()]}
+        projects={DEFAULT_PROJECTS}
+        loading={false}
+        error={null}
+        darkMode={false}
+        onNodeClick={() => {}}
+      />,
+    );
+
+    // Initial mount produces exactly one recorded render.
+    const mountCallCount = cosmosGraphCalls.length;
+    expect(mountCallCount).toBeGreaterThanOrEqual(1);
+
+    // Click the refresh button. The shell bumps its `refreshKey` state,
+    // which is passed to `<CosmosGraph key={refreshKey} />`, forcing
+    // React to unmount the old tree and mount a fresh one.
+    const button = screen.getByRole('button', { name: 'Refresh graph' });
+    act(() => {
+      button.click();
+    });
+
+    // A new render pass produces at least one additional recorded call
+    // (the old instance is unmounted and a new one is mounted).
+    expect(cosmosGraphCalls.length).toBeGreaterThan(mountCallCount);
+  });
+});
+
 describe('MemoryGraph — click routing to onNodeClick', () => {
   beforeEach(() => {
     resetRecorder();

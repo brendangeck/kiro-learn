@@ -2,15 +2,18 @@
 /**
  * Component test for `ui/src/components/CosmosGraph.tsx`.
  *
- * Mocks `@cosmos.gl/graph` and `@interacta/css-labels` so we can assert the
- * component's imperative contract with both without touching WebGL or real
- * DOM measurement.
+ * Mocks `@cosmos.gl/graph` and `@interacta/css-labels` so we can assert
+ * the component's imperative contract with both without touching WebGL
+ * or real DOM measurement.
  *
- * We use `vi.doMock` + dynamic `await import` because a statically-hoisted
+ * Uses `vi.doMock` + dynamic `await import` because a statically-hoisted
  * `vi.mock` interacts poorly with `@vitejs/plugin-react`'s auto-injected
  * `react/jsx-runtime` import in a `.tsx` file.
  *
- * @see .kiro/specs/cosmos-gl-graph/design.md
+ * Lifecycle model under test: the component uploads its data snapshot
+ * exactly once per mount. Subsequent `data`/`backgroundColor`/callback
+ * prop changes do NOT reupload. The caller refreshes by bumping `key`
+ * (React remounts the subtree).
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -82,7 +85,6 @@ function installCosmosMock(): void {
       trackPointPositionsByIndices = (...a: unknown[]): void => {
         this.calls.push({ method: 'trackPointPositionsByIndices', args: a });
       };
-      getPointPositions = (): number[] => [];
       getNeighboringPointIndices = (_i: number): number[] => [];
       getConnectedLinkIndices = (_indices: number[]): number[] => [];
       destroy = (): void => {
@@ -172,9 +174,8 @@ function getMockLabelRenderer(): MockLabelRendererCtor {
 
 installCosmosMock();
 
-// Static `import type` statements: these are stripped at compile time, so
-// they don't conflict with `vi.doMock` hoisting. Runtime imports still go
-// through the dynamic `await import` below.
+// Static `import type` statements: stripped at compile time, no conflict
+// with `vi.doMock` hoisting. Runtime imports go through `await import`.
 import type { CosmosGraphData, PackedTheme, ProjectInfo } from '../../ui/src/graph/transform.js';
 import type { MemoryRecord } from '../../ui/src/types/api.js';
 
@@ -220,8 +221,8 @@ function buildData(): CosmosGraphData {
   return transform(memories, projects, THEME);
 }
 
-/** The exact ordered sequence of engine calls the data effect produces on a full-reset upload. */
-const DATA_EFFECT_CALL_ORDER = [
+/** The exact ordered sequence of engine calls the mount effect produces on a fresh upload. */
+const MOUNT_UPLOAD_CALL_ORDER = [
   'setPointPositions',
   'setPointColors',
   'setPointSizes',
@@ -281,16 +282,16 @@ describe('CosmosGraph — mount', () => {
     expect(typeof inst.config['onZoom']).toBe('function');
   });
 
-  it('invokes engine methods in the exact order the data effect specifies', () => {
+  it('invokes engine methods in the exact order the mount effect specifies', () => {
     const data = buildData();
     render(<CosmosGraph data={data} backgroundColor="#ffffff" onPointClick={() => {}} />);
 
     const methods = getMockGraph()
       .last()
       .calls.map((c) => c.method)
-      .filter((m) => (DATA_EFFECT_CALL_ORDER as readonly string[]).includes(m));
+      .filter((m) => (MOUNT_UPLOAD_CALL_ORDER as readonly string[]).includes(m));
 
-    expect(methods).toEqual([...DATA_EFFECT_CALL_ORDER]);
+    expect(methods).toEqual([...MOUNT_UPLOAD_CALL_ORDER]);
   });
 
   it('tracks project indices (and only project indices) for label positioning', () => {
@@ -302,25 +303,48 @@ describe('CosmosGraph — mount', () => {
       .calls.find((c) => c.method === 'trackPointPositionsByIndices');
     expect(trackCall).toBeDefined();
     const tracked = trackCall?.args[0] as number[];
-    // Every tracked index must be a project.
     for (const idx of tracked) {
       expect(data.indexToKind[idx]).toBe('project');
     }
-    // Every project index must be tracked.
     for (let i = 0; i < data.indexToKind.length; i++) {
       if (data.indexToKind[i] === 'project') expect(tracked).toContain(i);
     }
   });
 });
 
-describe('CosmosGraph — visual-only prop change (backgroundColor)', () => {
+describe('CosmosGraph — prop changes without a key change are engine no-ops', () => {
   beforeEach(() => {
     getMockGraph().reset();
     getMockLabelRenderer().reset();
     installResizeObserverStub();
   });
 
-  it('triggers setConfigPartial but does not re-invoke any data setter', () => {
+  it('does not reupload buffers or touch setConfigPartial when data or backgroundColor change', () => {
+    const data = buildData();
+    const { rerender } = render(
+      <CosmosGraph data={data} backgroundColor="#ffffff" onPointClick={() => {}} />,
+    );
+
+    const inst = getMockGraph().last();
+    inst.calls = [];
+
+    // New data reference AND new backgroundColor. The component uploads
+    // data exactly once per mount, so neither should reach the engine.
+    const newData = buildData();
+    rerender(
+      <CosmosGraph data={newData} backgroundColor="#000000" onPointClick={() => {}} />,
+    );
+
+    expect(getMockGraph().instances.length).toBe(1);
+    const dataSetterCalls = inst.calls.filter((c) =>
+      (MOUNT_UPLOAD_CALL_ORDER as readonly string[]).includes(c.method),
+    );
+    expect(dataSetterCalls).toEqual([]);
+    const setConfigCalls = inst.calls.filter((c) => c.method === 'setConfigPartial');
+    expect(setConfigCalls).toEqual([]);
+  });
+
+  it('does not reconstruct the engine when only onPointClick identity changes', () => {
     const data = buildData();
     const { rerender } = render(
       <CosmosGraph data={data} backgroundColor="#ffffff" onPointClick={() => {}} />,
@@ -330,46 +354,48 @@ describe('CosmosGraph — visual-only prop change (backgroundColor)', () => {
     inst.calls = [];
 
     rerender(
-      <CosmosGraph data={data} backgroundColor="#000000" onPointClick={() => {}} />,
+      <CosmosGraph data={data} backgroundColor="#ffffff" onPointClick={() => {}} />,
     );
 
-    const setConfigPartialCalls = inst.calls.filter((c) => c.method === 'setConfigPartial');
-    expect(setConfigPartialCalls.length).toBeGreaterThanOrEqual(1);
-    expect(setConfigPartialCalls[0]?.args[0]).toEqual({ backgroundColor: '#000000' });
-
+    expect(getMockGraph().instances.length).toBe(1);
     const dataSetterCalls = inst.calls.filter((c) =>
-      (DATA_EFFECT_CALL_ORDER as readonly string[]).includes(c.method),
+      (MOUNT_UPLOAD_CALL_ORDER as readonly string[]).includes(c.method),
     );
     expect(dataSetterCalls).toEqual([]);
-    expect(getMockGraph().instances.length).toBe(1);
   });
 });
 
-describe('CosmosGraph — callback identity change only', () => {
+describe('CosmosGraph — key-prop remount uploads fresh data', () => {
   beforeEach(() => {
     getMockGraph().reset();
     getMockLabelRenderer().reset();
     installResizeObserverStub();
   });
 
-  it('does not reconstruct the engine or re-invoke data setters', () => {
+  it('destroys the old engine+labels and constructs a new pair against the latest data', () => {
     const data = buildData();
     const { rerender } = render(
-      <CosmosGraph data={data} backgroundColor="#ffffff" onPointClick={() => {}} />,
-    );
-
-    const inst = getMockGraph().last();
-    inst.calls = [];
-
-    rerender(
-      <CosmosGraph data={data} backgroundColor="#ffffff" onPointClick={() => {}} />,
+      <CosmosGraph key={0} data={data} backgroundColor="#ffffff" onPointClick={() => {}} />,
     );
 
     expect(getMockGraph().instances.length).toBe(1);
-    const dataSetterCalls = inst.calls.filter((c) =>
-      (DATA_EFFECT_CALL_ORDER as readonly string[]).includes(c.method),
+    const firstGraph = getMockGraph().last();
+    const firstLabels = getMockLabelRenderer().last();
+
+    rerender(
+      <CosmosGraph key={1} data={data} backgroundColor="#ffffff" onPointClick={() => {}} />,
     );
-    expect(dataSetterCalls).toEqual([]);
+
+    expect(getMockGraph().instances.length).toBe(2);
+    expect(getMockLabelRenderer().instances.length).toBe(2);
+    expect(firstGraph.destroyed).toBe(true);
+    expect(firstLabels.destroyed).toBe(true);
+
+    const newGraph = getMockGraph().last();
+    const methods = newGraph.calls
+      .map((c) => c.method)
+      .filter((m) => (MOUNT_UPLOAD_CALL_ORDER as readonly string[]).includes(m));
+    expect(methods).toEqual([...MOUNT_UPLOAD_CALL_ORDER]);
   });
 });
 
@@ -429,33 +455,6 @@ describe('CosmosGraph — click dispatch', () => {
   });
 });
 
-describe('CosmosGraph — unmount', () => {
-  beforeEach(() => {
-    getMockGraph().reset();
-    getMockLabelRenderer().reset();
-    installResizeObserverStub();
-  });
-
-  it('calls destroy() on both Graph and LabelRenderer exactly once', () => {
-    const data = buildData();
-    const { unmount } = render(
-      <CosmosGraph data={data} backgroundColor="#ffffff" onPointClick={() => {}} />,
-    );
-
-    const graph = getMockGraph().last();
-    const labels = getMockLabelRenderer().last();
-    expect(graph.destroyed).toBe(false);
-    expect(labels.destroyed).toBe(false);
-
-    unmount();
-
-    expect(graph.destroyed).toBe(true);
-    expect(labels.destroyed).toBe(true);
-    const destroyCalls = graph.calls.filter((c) => c.method === 'destroy');
-    expect(destroyCalls.length).toBe(1);
-  });
-});
-
 describe('CosmosGraph — hover interaction (engine-internal, no React callback)', () => {
   beforeEach(() => {
     getMockGraph().reset();
@@ -470,7 +469,7 @@ describe('CosmosGraph — hover interaction (engine-internal, no React callback)
     );
 
     const inst = getMockGraph().last();
-    inst.calls = []; // Isolate the hover call from the mount-time uploads.
+    inst.calls = [];
 
     const memIdx = data.indexToKind.findIndex((k) => k === 'memory');
     expect(memIdx).toBeGreaterThanOrEqual(0);
@@ -481,7 +480,6 @@ describe('CosmosGraph — hover interaction (engine-internal, no React callback)
     const payload = setConfigCalls[0]?.args[0] as Record<string, unknown>;
     expect(Array.isArray(payload['outlinedPointIndices'])).toBe(true);
     expect(Array.isArray(payload['highlightedLinkIndices'])).toBe(true);
-    // The hovered index itself is always part of the outlined set.
     expect(payload['outlinedPointIndices']).toContain(memIdx);
   });
 
@@ -513,17 +511,40 @@ describe('CosmosGraph — hover interaction (engine-internal, no React callback)
     const memIdx = data.indexToKind.findIndex((k) => k === 'memory');
     expect(memIdx).toBeGreaterThanOrEqual(0);
 
-    // Activate the click selection, then clear the call log so we only
-    // observe hover-induced calls afterward.
     inst.triggerClick(memIdx);
     inst.calls = [];
 
     inst.triggerPointMouseOver(memIdx);
     inst.triggerPointMouseOut();
 
-    // The hover handlers early-return when `clickedRef` is set, so they
-    // should NOT invoke setConfigPartial.
     const setConfigCalls = inst.calls.filter((c) => c.method === 'setConfigPartial');
     expect(setConfigCalls).toEqual([]);
+  });
+});
+
+describe('CosmosGraph — unmount', () => {
+  beforeEach(() => {
+    getMockGraph().reset();
+    getMockLabelRenderer().reset();
+    installResizeObserverStub();
+  });
+
+  it('calls destroy() on both Graph and LabelRenderer exactly once', () => {
+    const data = buildData();
+    const { unmount } = render(
+      <CosmosGraph data={data} backgroundColor="#ffffff" onPointClick={() => {}} />,
+    );
+
+    const graph = getMockGraph().last();
+    const labels = getMockLabelRenderer().last();
+    expect(graph.destroyed).toBe(false);
+    expect(labels.destroyed).toBe(false);
+
+    unmount();
+
+    expect(graph.destroyed).toBe(true);
+    expect(labels.destroyed).toBe(true);
+    const destroyCalls = graph.calls.filter((c) => c.method === 'destroy');
+    expect(destroyCalls.length).toBe(1);
   });
 });

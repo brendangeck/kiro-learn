@@ -167,11 +167,10 @@ export function transform(
   const colors = new Float32Array(4 * pointCount);
   const sizes = new Float32Array(pointCount);
 
-  // Per-kind size. Projects are 3× the default so they stand out as the
-  // anchor points of each namespace; memories and concepts use the engine
-  // default (4 simulation-space units).
-  const DEFAULT_SIZE = 4;
-  const PROJECT_SIZE = DEFAULT_SIZE * 3;
+  // Per-kind size. Projects are visibly larger than leaves so hubs
+  // stand out as cluster anchors.
+  const DEFAULT_SIZE = 6;
+  const PROJECT_SIZE = 14;
 
   for (const [i, n] of nodes.entries()) {
     // Baseline seed: match the cosmos.gl demo's tight random cluster near

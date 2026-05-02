@@ -7,17 +7,27 @@ import { CosmosLabels } from './CosmosLabels.js';
 /**
  * Thin React wrapper around `@cosmos.gl/graph`.
  *
+ * Lifecycle model:
+ * - Uploads data exactly once, at mount time. Subsequent prop changes to
+ *   `data`, `backgroundColor`, or `onPointClick` do NOT reupload buffers
+ *   or touch the engine's layout state.
+ * - The parent triggers a fresh layout by changing the component's `key`
+ *   prop, which remounts the whole subtree: the old engine/labels are
+ *   destroyed and a new pair is built against the latest `data` + theme.
+ * - This decouples UI polling (which refreshes `data` every 10s) from
+ *   simulation (which would otherwise restart on every poll and never
+ *   fully settle).
+ *
  * Visual model:
- * - Pure colored dots. No labels. Node kind is communicated by color only,
- *   surfaced in the dashboard via `GraphLegend`.
+ * - Pure colored dots. Project hubs render with floating text labels
+ *   managed by `CosmosLabels`; memory/concept leaves are unlabeled.
  * - Hover a point: outline it and its neighbors, soft-fade other links.
  * - Click a point: full highlight — ring around the clicked point, its
  *   neighborhood stays bright, everything else greys out. Click the same
  *   point or the background to clear.
- *
- * All dimming/highlighting uses cosmos.gl's native
- * `highlightedPointIndices` / `outlinedPointIndices` / `focusedPointIndex`
- * config — no custom DOM layer, no rAF loop, no per-frame React re-renders.
+ * - All dimming/highlighting uses cosmos.gl's native
+ *   `highlightedPointIndices` / `outlinedPointIndices` / `focusedPointIndex`
+ *   config — no custom DOM layer, no rAF loop, no per-frame React renders.
  */
 export interface CosmosGraphProps {
   readonly data: CosmosGraphData;
@@ -30,22 +40,16 @@ export function CosmosGraph(props: CosmosGraphProps): React.ReactElement {
   const labelsContainerRef = useRef<HTMLDivElement>(null);
   const graphRef = useRef<Graph | null>(null);
   const labelsRef = useRef<CosmosLabels | null>(null);
-  // Latest-props ref so engine callbacks (registered once at mount) read the
-  // current data and onPointClick without rebuilding the engine when those
-  // prop identities change.
+  // Latest-props ref so engine callbacks (registered once at mount) read
+  // the current `data` and `onPointClick` without rebuilding the engine
+  // when their identities change between renders.
   const propsRef = useRef(props);
   propsRef.current = props;
-  // Currently-clicked index; null when no point is in the "exploring" state.
-  // Kept in a ref so hover callbacks can cheaply skip their soft-preview
-  // updates while an explicit click selection is active.
+  // Currently-clicked index; null when no point is in the "exploring"
+  // state. Kept in a ref so hover callbacks can cheaply skip their
+  // soft-preview updates while an explicit click selection is active.
   const clickedRef = useRef<number | null>(null);
-  // Previous `data` prop, kept so we can diff on every data-effect run and
-  // decide whether we can do an incremental (layout-preserving) upload or
-  // we need a full reset. Incremental works when the new id set is a
-  // superset of the previous (only additions, no removals or reorders).
-  const prevDataRef = useRef<CosmosGraphData | null>(null);
 
-  // --- Mount: construct engine exactly once. ---
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
@@ -62,27 +66,17 @@ export function CosmosGraph(props: CosmosGraphProps): React.ReactElement {
     };
 
     const config: GraphConfig = {
-      // Baseline: use cosmos.gl defaults for everything except the items
-      // ported from the point-labels demo palette. Background is set via
-      // propsRef.current.backgroundColor (which `getPackedTheme` now
-      // returns the demo's #2d313a), and edge default width is matched to
-      // the demo's 0.6 so the ratio of edge-to-point stays consistent.
+      // Baseline: cosmos.gl defaults for everything except the items we
+      // deliberately override from the point-labels demo.
       //
-      // Settling is controlled primarily by `simulationDecay` (alpha
-      // half-life), NOT `simulationFriction`. Friction damps stored
-      // velocity between ticks, but repulsion + link springs write fresh
-      // velocity every tick scaled by `alpha` — so the simulation keeps
-      // producing motion until alpha decays past the engine's threshold.
-      //
-      // `simulationDecay: 1500` — tuned for ~3 seconds of active
-      // simulation. Default is 5000 (~10 seconds); empirical testing
-      // against our live data showed 500 settled in ~1 second, 1500
-      // lands near the 3-second sweet spot where the initial unfurling
-      // is satisfying to watch but ends before it feels stale.
+      // `simulationDecay: 300` — tuned for ~2 seconds of active
+      // simulation. Default is 5000 (~10 seconds). Larger points make
+      // sub-pixel late-frame motion more visible on screen, so we decay
+      // harder than we would with smaller sprites to compensate.
       backgroundColor: propsRef.current.backgroundColor,
       linkDefaultWidth: 0.6,
       enableDrag: true,
-      simulationDecay: 1500,
+      simulationDecay: 300,
 
       // Reposition label spans every time the engine advances — both
       // during the force simulation (points moving in simulation space)
@@ -96,8 +90,9 @@ export function CosmosGraph(props: CosmosGraphProps): React.ReactElement {
         if (g) labelsRef.current?.update(g);
       },
 
-      // Hover: soft preview. Outline the hovered point and its neighborhood
-      // and fade unrelated links. Skip if a click selection is active.
+      // Hover: soft preview. Outline the hovered point and its
+      // neighborhood and fade unrelated links. Skip if a click selection
+      // is active.
       onPointMouseOver: (pointIndex: number): void => {
         if (clickedRef.current !== null) return;
         const g = graphRef.current;
@@ -147,80 +142,25 @@ export function CosmosGraph(props: CosmosGraphProps): React.ReactElement {
       },
     };
 
+    // Build the engine + label overlay.
     const graph = new Graph(container, config);
     graphRef.current = graph;
 
-    // Label overlay. Constructed after the engine so that the labels div
-    // already exists in the DOM. Initial index→label map is empty; the
-    // data-effect below populates it on every data upload.
     const labelsContainer = labelsContainerRef.current;
     if (labelsContainer) {
       labelsRef.current = new CosmosLabels(labelsContainer, new Map());
     }
 
-    return () => {
-      labelsRef.current?.destroy();
-      labelsRef.current = null;
-      graph.destroy();
-      graphRef.current = null;
-    };
-  }, []);
-
-  // --- Upload buffers when data changes.
-  //
-  // Two paths. The "incremental" path preserves layout positions, camera
-  // zoom/pan, and click selection — so polling refreshes that only add new
-  // memories feel seamless, like nodes popping in without the graph
-  // resetting. It is taken when the new data is an id-superset of the old.
-  //
-  // The "full" path is a clean reset — positions from the seed, camera
-  // fit to the data's actual extent (via `fitView()`, NOT a fixed zoom
-  // level — the correct zoom depends on how wide the data spreads and the
-  // canvas size), selection cleared. Taken on first mount and on any change
-  // that isn't strictly additive (id removed, filter toggled, dark-mode
-  // swap, etc.). Since `transform()` stable-sorts memories by record_id,
-  // ordinary polling refreshes always land in the incremental path.
-  useEffect(() => {
-    const graph = graphRef.current;
-    if (!graph) return;
-    const { data } = props;
-    const prev = prevDataRef.current;
-
-    // Is the new id set a strict superset of the previous one (with every
-    // previously-existing id still at its old index)? If so, we can
-    // preserve layout.
-    const canIncrementallyAdd = (() => {
-      if (prev === null) return false;
-      if (data.indexToId.length < prev.indexToId.length) return false;
-      for (let i = 0; i < prev.indexToId.length; i++) {
-        if (prev.indexToId[i] !== data.indexToId[i]) return false;
-      }
-      return true;
-    })();
-
-    let positionsToUpload: Float32Array;
-    if (canIncrementallyAdd && prev !== null) {
-      // Read back current simulation positions for existing points and
-      // preserve them. New points get their hash-seeded positions from the
-      // freshly-transformed data. Cosmos.gl's `getPointPositions()` returns
-      // a flat number[] interleaved as [x0, y0, x1, y1, ...].
-      const current = graph.getPointPositions();
-      positionsToUpload = new Float32Array(data.positions);
-      const keep = Math.min(current.length, positionsToUpload.length);
-      for (let i = 0; i < keep; i++) positionsToUpload[i] = current[i] ?? 0;
-    } else {
-      positionsToUpload = data.positions;
-    }
-
-    graph.setPointPositions(positionsToUpload);
+    // Upload the initial (and only) data snapshot.
+    const { data } = propsRef.current;
+    graph.setPointPositions(data.positions);
     graph.setPointColors(data.colors);
     graph.setPointSizes(data.sizes);
     graph.setLinks(data.links);
     graph.setLinkColors(data.linkColors);
 
-    // Build the set of project indices to track for labels, and the
-    // matching index→label map for the overlay renderer. Only project
-    // points are labeled for now (memories/concepts carry `null` labels).
+    // Build the label map and the set of project indices to track, so
+    // the overlay can follow project points through the simulation.
     const projectIndices: number[] = [];
     const labelMap = new Map<number, string>();
     for (let i = 0; i < data.indexToKind.length; i++) {
@@ -231,33 +171,19 @@ export function CosmosGraph(props: CosmosGraphProps): React.ReactElement {
     }
     labelsRef.current?.setPointIndexToLabel(labelMap);
 
-    if (!canIncrementallyAdd) {
-      // Full reset: drop any selection because the old click-index may now
-      // point at a different (or removed) node.
-      clickedRef.current = null;
-      graph.setConfigPartial({
-        focusedPointIndex: undefined,
-        highlightedPointIndices: undefined,
-        outlinedPointIndices: undefined,
-        highlightedLinkIndices: undefined,
-      });
-    }
-
     graph.render();
-    // Track project positions for the label overlay AFTER render, matching
-    // the demo's order. Calling this before render can leave the tracker
-    // holding stale indices that get reset by the upload pipeline.
+    // Track project positions AFTER render, matching the demo's order.
+    // Calling this before render leaves the tracker holding stale
+    // indices that get wiped by the upload pipeline.
     graph.trackPointPositionsByIndices(projectIndices);
-    // Baseline: rely on the engine's default simulation auto-start and
-    // default `fitViewOnInit: true`. No explicit `start()` or `fitView()`
-    // — we want to see what the engine produces with zero overrides.
-    prevDataRef.current = data;
-  }, [props.data]);
 
-  // --- Visual-only delta (dark-mode toggle). ---
-  useEffect(() => {
-    graphRef.current?.setConfigPartial({ backgroundColor: props.backgroundColor });
-  }, [props.backgroundColor]);
+    return () => {
+      labelsRef.current?.destroy();
+      labelsRef.current = null;
+      graph.destroy();
+      graphRef.current = null;
+    };
+  }, []);
 
   return (
     <div
