@@ -91,13 +91,22 @@ function installCosmosMock(): void {
       };
 
       triggerClick(pointIndex: number | undefined): void {
-        (this.config['onClick'] as (i: number | undefined) => void)(pointIndex);
+        const cb = this.config['onClick'];
+        if (typeof cb === 'function') {
+          (cb as (i: number | undefined) => void)(pointIndex);
+        }
       }
       triggerPointMouseOver(pointIndex: number): void {
-        (this.config['onPointMouseOver'] as (i: number) => void)(pointIndex);
+        const cb = this.config['onPointMouseOver'];
+        if (typeof cb === 'function') {
+          (cb as (i: number) => void)(pointIndex);
+        }
       }
       triggerPointMouseOut(): void {
-        (this.config['onPointMouseOut'] as () => void)();
+        const cb = this.config['onPointMouseOut'];
+        if (typeof cb === 'function') {
+          (cb as () => void)();
+        }
       }
     }
 

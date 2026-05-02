@@ -311,7 +311,14 @@ FOR each m IN sortedMemories:
   memIdx ← idToIndex.get(`memory:${m.record_id}`)
   projIdx ← idToIndex.get(`project:${m.namespace}`)
   IF projIdx ≠ undefined THEN linkPairs.push(memIdx, projIdx)
+  // `m.concepts` carries no uniqueness guarantee per its API type, so
+  // dedupe per memory before emitting edges. Without this a memory that
+  // repeats a concept in its array would produce duplicate
+  // memory→concept edges to the same concept point.
+  seenConcepts ← new Set()
   FOR each c IN m.concepts:
+    IF seenConcepts.has(c) THEN continue
+    seenConcepts.add(c)
     cIdx ← idToIndex.get(`concept:${m.namespace}:${c}`)
     IF cIdx ≠ undefined THEN linkPairs.push(memIdx, cIdx)
 
