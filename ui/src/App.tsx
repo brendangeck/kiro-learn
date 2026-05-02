@@ -207,20 +207,19 @@ export default function App() {
               <MetricCard title="Concepts" value={stats?.total_concepts ?? null} loading={statsLoading} error={statsError} />
             </ColumnLayout>
 
-            {/* Memory Graph (Req 4.1 — replaces "coming soon" placeholder) */}
-            <Container header={<Header variant="h2">Memory Graph</Header>}>
-              <MemoryGraph
-                memories={memories}
-                projects={projects}
-                loading={memoriesLoading}
-                error={memoriesError}
-                darkMode={darkMode}
-                onNodeClick={(memory, concept) => {
-                  setSelectedMemory(memory);
-                  setSelectedConcept(concept);
-                }}
-              />
-            </Container>
+            {/* Memory Graph card — owns its own Container header with
+                the refresh icon button, so no outer wrapper here. */}
+            <MemoryGraph
+              memories={memories}
+              projects={projects}
+              loading={memoriesLoading}
+              error={memoriesError}
+              darkMode={darkMode}
+              onNodeClick={(memory, concept) => {
+                setSelectedMemory(memory);
+                setSelectedConcept(concept);
+              }}
+            />
 
             {/* Event tail */}
             <EventTail

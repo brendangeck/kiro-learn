@@ -1,65 +1,33 @@
-import { useState, useMemo, useCallback } from 'react';
-import {
-  ReactFlow,
-  Background,
-  BackgroundVariant,
-  type Node,
-  type Edge,
-} from '@xyflow/react';
-import '@xyflow/react/dist/style.css';
+import { useCallback, useMemo, useState } from 'react';
 
+import Box from '@cloudscape-design/components/box';
+import Button from '@cloudscape-design/components/button';
+import Container from '@cloudscape-design/components/container';
+import Header from '@cloudscape-design/components/header';
 import Spinner from '@cloudscape-design/components/spinner';
 import StatusIndicator from '@cloudscape-design/components/status-indicator';
-import Box from '@cloudscape-design/components/box';
-import Checkbox from '@cloudscape-design/components/checkbox';
-import SpaceBetween from '@cloudscape-design/components/space-between';
 
-import { transformToGraph, type ProjectInfo } from '../graph/transform.js';
-import { applyForceLayout } from '../graph/layout.js';
-import { ProjectNode } from '../graph/ProjectNode.js';
-import { ConceptNode } from '../graph/ConceptNode.js';
-import { MemoryNode } from '../graph/MemoryNode.js';
-import { getGraphColors } from '../graph/theme.js';
+import { transform, type NodeId, type NodeKind, type ProjectInfo } from '../graph/transform.js';
+import { getPackedTheme } from '../graph/theme.js';
+import { CosmosGraph } from './CosmosGraph.js';
+import { GraphLegend } from '../graph/GraphLegend.js';
 import type { MemoryRecord } from '../types/api.js';
 
-const nodeTypes = {
-  projectNode: ProjectNode,
-  conceptNode: ConceptNode,
-  memoryNode: MemoryNode,
-};
-
-/** Node type keys matching the checkbox filters. */
-const TYPE_MAP = {
-  projects: 'projectNode',
-  memories: 'memoryNode',
-  concepts: 'conceptNode',
-} as const;
-
 /**
- * Determines which edge linkTypes to include based on active filters.
+ * Memory graph card.
  *
- * Rules:
- * - All 3 checked: memory→project + memory→concept (no project→concept)
- * - Projects + Memories: memory→project
- * - Projects + Concepts: project→concept
- * - Memories + Concepts: memory→concept
- * - Single type: no edges
+ * Owns its own Cloudscape Container + Header chrome (title, refresh
+ * icon button in the top-right). Click routing, theme derivation, data
+ * transformation, and loading/error/empty placeholders all live here.
+ *
+ * Refresh model: `CosmosGraph` uploads its data snapshot exactly once
+ * per mount. Background polling in `App.tsx` keeps the React-side
+ * `memories` array live, but the graph ignores those mid-simulation
+ * updates to keep the force layout from constantly restarting. The
+ * refresh button bumps `refreshKey` which, via `key={refreshKey}`,
+ * unmounts the old `CosmosGraph` and mounts a new one against the
+ * latest data.
  */
-function getAllowedLinkTypes(p: boolean, m: boolean, c: boolean): Set<string> {
-  const allowed = new Set<string>();
-  if (p && m && c) {
-    allowed.add('memory-project');
-    allowed.add('memory-concept');
-  } else if (p && m) {
-    allowed.add('memory-project');
-  } else if (p && c) {
-    allowed.add('project-concept');
-  } else if (m && c) {
-    allowed.add('memory-concept');
-  }
-  return allowed;
-}
-
 interface MemoryGraphProps {
   memories: MemoryRecord[];
   projects: ProjectInfo[];
@@ -77,110 +45,52 @@ export function MemoryGraph({
   darkMode,
   onNodeClick,
 }: MemoryGraphProps) {
-  const colors = getGraphColors(darkMode);
+  const theme = useMemo(() => getPackedTheme(darkMode), [darkMode]);
+  const data = useMemo(() => transform(memories, projects, theme), [memories, projects, theme]);
+  const [refreshKey, setRefreshKey] = useState(0);
 
-  // Filter checkboxes — all on by default
-  const [showProjects, setShowProjects] = useState(true);
-  const [showMemories, setShowMemories] = useState(true);
-  const [showConcepts, setShowConcepts] = useState(true);
-
-  // Stable content key
-  const contentKey = useMemo(
-    () => memories.map((m) => m.record_id).join(','),
-    [memories],
-  );
-  const projectKey = useMemo(
-    () => projects.map((p) => p.namespace).join(','),
-    [projects],
-  );
-
-  // Compute full graph (all nodes + all edges with linkType tags)
-  const fullGraph = useMemo(() => {
-    if (memories.length === 0) {
-      return { allNodes: [] as Node[], allEdges: [] as Edge[] };
-    }
-    const graph = transformToGraph(memories, projects, darkMode);
-    const positioned = applyForceLayout(graph.nodes, graph.edges);
-
-    // Build position lookup for closest-handle selection
-    const posMap = new Map<string, { x: number; y: number }>();
-    for (const n of positioned) {
-      posMap.set(n.id, n.position);
-    }
-
-    const styledEdges = graph.edges.map((e) => {
-      const sp = posMap.get(e.source);
-      const tp = posMap.get(e.target);
-      let sourceHandle: string | undefined;
-      let targetHandle: string | undefined;
-
-      if (sp && tp) {
-        const dx = tp.x - sp.x;
-        const dy = tp.y - sp.y;
-        if (Math.abs(dx) > Math.abs(dy)) {
-          sourceHandle = dx > 0 ? 's-right' : 's-left';
-          targetHandle = dx > 0 ? 't-left' : 't-right';
-        } else {
-          sourceHandle = dy > 0 ? 's-bottom' : 's-top';
-          targetHandle = dy > 0 ? 't-top' : 't-bottom';
-        }
+  const handleClick = useCallback(
+    (id: NodeId | null, kind: NodeKind | null) => {
+      if (id === null || kind === null) {
+        onNodeClick(null, null);
+        return;
       }
-
-      return {
-        ...e,
-        sourceHandle,
-        targetHandle,
-        animated: true,
-        style: { stroke: colors.edgeStroke, strokeWidth: 1.5 },
-      };
-    });
-
-    return { allNodes: positioned, allEdges: styledEdges };
-  }, [contentKey, projectKey, memories, projects, darkMode, colors.edgeStroke]);
-
-  // Filter nodes and edges based on checkboxes
-  const { filteredNodes, filteredEdges } = useMemo(() => {
-    const visibleTypes = new Set<string>();
-    if (showProjects) visibleTypes.add(TYPE_MAP.projects);
-    if (showMemories) visibleTypes.add(TYPE_MAP.memories);
-    if (showConcepts) visibleTypes.add(TYPE_MAP.concepts);
-
-    const fNodes = fullGraph.allNodes.filter((n) => visibleTypes.has(n.type ?? ''));
-    const visibleNodeIds = new Set(fNodes.map((n) => n.id));
-
-    const allowedLinks = getAllowedLinkTypes(showProjects, showMemories, showConcepts);
-
-    const fEdges = fullGraph.allEdges.filter((e) => {
-      // Both endpoints must be visible
-      if (!visibleNodeIds.has(e.source) || !visibleNodeIds.has(e.target)) return false;
-      // Edge linkType must be allowed
-      const linkType = typeof e.data === 'object' && e.data !== null && 'linkType' in e.data
-        ? String(e.data.linkType)
-        : '';
-      return allowedLinks.has(linkType);
-    });
-
-    return { filteredNodes: fNodes, filteredEdges: fEdges };
-  }, [fullGraph, showProjects, showMemories, showConcepts]);
-
-  const handleNodeClick = useCallback(
-    (_event: React.MouseEvent, node: Node) => {
-      if (node.type === 'memoryNode') {
-        onNodeClick(node.data.memory as MemoryRecord, null);
-      } else if (node.type === 'conceptNode') {
-        onNodeClick(null, node.data.label as string);
+      if (kind === 'memory') {
+        const recordId = id.slice('memory:'.length);
+        onNodeClick(memories.find((m) => m.record_id === recordId) ?? null, null);
+      } else if (kind === 'concept') {
+        // Concept id shape: `concept:<namespace>:<concept>`. Split on the
+        // last `:` so namespaces containing `:` round-trip correctly.
+        const rest = id.slice('concept:'.length);
+        const sep = rest.lastIndexOf(':');
+        onNodeClick(null, sep >= 0 ? rest.slice(sep + 1) : rest);
       }
+      // Project clicks: cosmos.gl handles the visual focus internally.
+      // Don't open the detail panel.
     },
-    [onNodeClick],
+    [memories, onNodeClick],
   );
 
-  const defaultEdgeOptions = useMemo(() => ({
-    style: { stroke: colors.edgeStroke, strokeWidth: 1.5 },
-    animated: true,
-  }), [colors.edgeStroke]);
+  const header = (
+    <Header
+      variant="h2"
+      actions={
+        <Button
+          iconName="refresh"
+          variant="icon"
+          ariaLabel="Refresh graph"
+          onClick={() => setRefreshKey((k) => k + 1)}
+          data-testid="cosmos-refresh"
+        />
+      }
+    >
+      Memory Graph
+    </Header>
+  );
 
+  let body: React.ReactNode;
   if (loading) {
-    return (
+    body = (
       <Box textAlign="center" padding={{ vertical: 'xxl' }}>
         <Spinner size="large" />
         <Box variant="p" color="text-body-secondary" margin={{ top: 's' }}>
@@ -188,58 +98,35 @@ export function MemoryGraph({
         </Box>
       </Box>
     );
-  }
-
-  if (error) {
-    return (
+  } else if (error) {
+    body = (
       <Box textAlign="center" padding={{ vertical: 'xxl' }}>
         <StatusIndicator type="error">Failed to load memories</StatusIndicator>
       </Box>
     );
-  }
-
-  if (memories.length === 0) {
-    return (
+  } else if (memories.length === 0) {
+    body = (
       <Box textAlign="center" padding={{ vertical: 'xxl' }} color="text-body-secondary">
         No memories yet — run some sessions to see your graph
       </Box>
     );
+  } else {
+    body = (
+      <>
+        <Box margin={{ bottom: 's' }}>
+          <GraphLegend darkMode={darkMode} />
+        </Box>
+        <div style={{ height: 500 }}>
+          <CosmosGraph
+            key={refreshKey}
+            data={data}
+            backgroundColor={theme.backgroundColor}
+            onPointClick={handleClick}
+          />
+        </div>
+      </>
+    );
   }
 
-  return (
-    <>
-      <Box margin={{ bottom: 's' }}>
-        <SpaceBetween direction="horizontal" size="l">
-          <Checkbox checked={showProjects} onChange={({ detail }) => setShowProjects(detail.checked)}>
-            Projects
-          </Checkbox>
-          <Checkbox checked={showMemories} onChange={({ detail }) => setShowMemories(detail.checked)}>
-            Memories
-          </Checkbox>
-          <Checkbox checked={showConcepts} onChange={({ detail }) => setShowConcepts(detail.checked)}>
-            Concepts
-          </Checkbox>
-        </SpaceBetween>
-      </Box>
-      <div style={{ height: 500, background: colors.canvasBackground }}>
-        <ReactFlow
-          nodes={filteredNodes}
-          edges={filteredEdges}
-          nodeTypes={nodeTypes}
-          defaultEdgeOptions={defaultEdgeOptions}
-          nodesConnectable={false}
-          nodesDraggable={false}
-          edgesFocusable={false}
-          elementsSelectable={false}
-          deleteKeyCode={null}
-          minZoom={0.1}
-          fitView
-          onNodeClick={handleNodeClick}
-          proOptions={{ hideAttribution: true }}
-        >
-          <Background variant={BackgroundVariant.Dots} color={colors.gridDot} />
-        </ReactFlow>
-      </div>
-    </>
-  );
+  return <Container header={header}>{body}</Container>;
 }

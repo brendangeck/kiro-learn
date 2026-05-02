@@ -49,3 +49,6 @@ yarn-error.log*
 
 # kiro-learn local state (if tests/dev ever write here)
 .kiro-learn/
+
+# cosmos-gl-graph dev harness output (screenshots, etc.)
+.kiro-dev/

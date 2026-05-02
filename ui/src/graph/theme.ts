@@ -1,51 +1,53 @@
 /**
- * Graph styling constants.
+ * Graph styling constants for the cosmos.gl memory graph.
  *
- * All node types use the same outline style (tinted background + saturated border)
- * but different colors per type:
- *   - Project = blue
- *   - Memory = pink/salmon
- *   - Concept = mint/green
+ * Palette is ported from the cosmos.gl `point-labels` storybook demo. Two
+ * node kinds visually:
+ *
+ *   - Projects (hubs, labeled):  #ED69B4  (hot pink, both modes)
+ *   - Memories / concepts:       #4B5BBF  (medium blue-purple, both modes)
+ *   - Edges:                     #5F74C2 on dark,  #4B5BBF on light
+ *   - Canvas background:         #2d313a on dark,  #f2f3f3 on light
+ *
+ * The demo has two node kinds (theaters + performances). We map our three
+ * kinds onto them: `project` is the hub; `memory` and `concept` are both
+ * leaves and share the same blue-purple.
  */
 
-export interface NodeColorScheme {
-  readonly border: string;
-  readonly background: string;
-  readonly text: string;
+import type { PackedTheme } from './transform.js';
+
+/**
+ * Parse `#RRGGBB` or `#RRGGBBAA` into a four-float RGBA tuple in `[0, 1]`.
+ * Throws on malformed input.
+ */
+export function hexToRgba01(hex: string): [number, number, number, number] {
+  if (typeof hex !== 'string' || (hex.length !== 7 && hex.length !== 9) || hex[0] !== '#') {
+    throw new Error(`Invalid hex color: ${hex}`);
+  }
+  const body = hex.slice(1);
+  if (!/^[0-9a-fA-F]+$/.test(body)) throw new Error(`Invalid hex color: ${hex}`);
+  const r = parseInt(body.slice(0, 2), 16);
+  const g = parseInt(body.slice(2, 4), 16);
+  const b = parseInt(body.slice(4, 6), 16);
+  const a = body.length === 8 ? parseInt(body.slice(6, 8), 16) : 255;
+  return [r / 255, g / 255, b / 255, a / 255];
 }
 
-/** Light mode node colors. */
-export const LIGHT_COLORS = {
-  project: { border: '#3B82F6', background: '#DBEAFE', text: '#1E3A5F' },
-  memory:  { border: '#F43F5E', background: '#FFE4E6', text: '#7F1D2B' },
-  concept: { border: '#10B981', background: '#D1FAE5', text: '#064E3B' },
-} as const;
-
-/** Dark mode node colors. */
-export const DARK_COLORS = {
-  project: { border: '#60A5FA', background: '#1E3A5F', text: '#DBEAFE' },
-  memory:  { border: '#FB7185', background: '#7F1D2B', text: '#FFE4E6' },
-  concept: { border: '#34D399', background: '#064E3B', text: '#D1FAE5' },
-} as const;
-
-/** Returns node colors for the given mode. */
-export function getNodeColors(darkMode: boolean) {
-  return darkMode ? DARK_COLORS : LIGHT_COLORS;
+/**
+ * Packed theme for the cosmos.gl renderer. Dark mode is the demo's
+ * verbatim scheme; light mode is a surface swap — same accents, light
+ * canvas, slightly darker edge color for contrast against near-white.
+ */
+export function getPackedTheme(darkMode: boolean): PackedTheme {
+  return {
+    darkMode,
+    projectFill: hexToRgba01('#ED69B4'),
+    memoryFill:  hexToRgba01('#4B5BBF'),
+    conceptFill: hexToRgba01('#4B5BBF'),
+    // Darken the edge slightly in light mode so it remains visible against
+    // the near-white canvas. The demo's #5F74C2 works against #2d313a but
+    // washes out against #f2f3f3.
+    edgeColor:   hexToRgba01(darkMode ? '#5F74C2' : '#4B5BBF'),
+    backgroundColor: darkMode ? '#2d313a' : '#f2f3f3',
+  };
 }
-
-interface GraphThemeColors {
-  readonly edgeStroke: string;
-  readonly canvasBackground: string;
-  readonly gridDot: string;
-}
-
-/** Returns canvas/edge colors for the given mode. */
-export function getGraphColors(darkMode: boolean): GraphThemeColors {
-  return darkMode
-    ? { edgeStroke: '#4B5563', canvasBackground: '#0f1b2d', gridDot: '#1e293b' }
-    : { edgeStroke: '#7d8998', canvasBackground: '#f2f3f3', gridDot: '#d1d5db' };
-}
-
-export const graphTheme = {
-  fontFamily: "'Amazon Ember', 'Helvetica Neue', Roboto, Arial, sans-serif",
-} as const;
