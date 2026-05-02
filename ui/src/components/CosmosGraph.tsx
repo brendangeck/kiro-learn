@@ -67,9 +67,22 @@ export function CosmosGraph(props: CosmosGraphProps): React.ReactElement {
       // propsRef.current.backgroundColor (which `getPackedTheme` now
       // returns the demo's #2d313a), and edge default width is matched to
       // the demo's 0.6 so the ratio of edge-to-point stays consistent.
+      //
+      // Settling is controlled primarily by `simulationDecay` (alpha
+      // half-life), NOT `simulationFriction`. Friction damps stored
+      // velocity between ticks, but repulsion + link springs write fresh
+      // velocity every tick scaled by `alpha` — so the simulation keeps
+      // producing motion until alpha decays past the engine's threshold.
+      //
+      // `simulationDecay: 1500` — tuned for ~3 seconds of active
+      // simulation. Default is 5000 (~10 seconds); empirical testing
+      // against our live data showed 500 settled in ~1 second, 1500
+      // lands near the 3-second sweet spot where the initial unfurling
+      // is satisfying to watch but ends before it feels stale.
       backgroundColor: propsRef.current.backgroundColor,
       linkDefaultWidth: 0.6,
       enableDrag: true,
+      simulationDecay: 1500,
 
       // Reposition label spans every time the engine advances — both
       // during the force simulation (points moving in simulation space)
