@@ -1,3 +1,9 @@
+## [0.17.0](https://github.com/brendangeck/kiro-learn/compare/v0.16.1...v0.17.0) (2026-05-02)
+
+### Features
+
+* **ui:** migrate memory graph to [@cosmos](https://github.com/cosmos).gl/graph ([#31](https://github.com/brendangeck/kiro-learn/issues/31)) ([f85ce8e](https://github.com/brendangeck/kiro-learn/commit/f85ce8e9cdfaa5374a08fa93dca8de11309b0883))
+
 ## [0.16.1](https://github.com/brendangeck/kiro-learn/compare/v0.16.0...v0.16.1) (2026-05-01)
 
 ### Bug Fixes
