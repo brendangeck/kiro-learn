@@ -1,3 +1,9 @@
+## [0.18.0](https://github.com/brendangeck/kiro-learn/compare/v0.17.0...v0.18.0) (2026-05-03)
+
+### Features
+
+* adding embeddings and hybrid search ([#33](https://github.com/brendangeck/kiro-learn/issues/33)) ([7119431](https://github.com/brendangeck/kiro-learn/commit/7119431813330a65bae5c7365c5d0901ce6a8e0f))
+
 ## [0.17.0](https://github.com/brendangeck/kiro-learn/compare/v0.16.1...v0.17.0) (2026-05-02)
 
 ### Features
