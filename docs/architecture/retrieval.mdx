@@ -40,7 +40,7 @@ sequenceDiagram
     Shim->>Shim: write context to stdout
 ```
 
-The vector stage reads its data from the database exactly once per namespace via `listEmbeddings`, then keeps a normalized, in-process cache. Subsequent searches in the same namespace skip the database for the vector side and score directly against the cache; cache misses and invalidations are covered in "How search works" below.
+The vector stage reads its data from the database via `listEmbeddings` once per namespace per cache epoch — that is, once on cold start and again whenever the namespace is invalidated. Every successful `putEmbedding` (from the extraction worker on a fresh record, or the [backfill worker](/architecture/collector#backfill-worker) on a pre-existing one) calls `QueryLayer.invalidateNamespace(ns)`, which bumps the epoch and drops the cached entry; the next search in that namespace reloads. Subsequent searches between invalidations skip the database for the vector side and score directly against the in-process normalized index; cache misses and invalidations are covered in "How search works" below.
 
 The rest of this page walks the stages in order: pulling a query out of the prompt, running the search, falling back when the search is unhappy, honoring the latency budget, and formatting the records into context.
 
@@ -161,7 +161,7 @@ sequenceDiagram
 
 ### Lexical-only fallback
 
-The search never degrades below the FTS5 baseline. Four situations short-circuit the vector path and return lexical-only results:
+The search never degrades below the FTS5 baseline. Five situations short-circuit the vector path and return lexical-only results:
 
 | Situation | What triggers it |
 |-----------|------------------|
@@ -169,6 +169,7 @@ The search never degrades below the FTS5 baseline. Four situations short-circuit
 | Embedder unavailable | `embedder.isReady()` returns `false` — model-load failure on daemon start, or the embedder was never constructed. |
 | Query-embed failure | `embedder.embed(query)` rejects (timeout, internal error). One warning is logged with the error. |
 | Namespace has no embeddings | All records in the namespace have a `NULL` embedding — typically on a fresh install before the backfill worker has caught up. Cosine ranking returns an empty list; fusion collapses to the lexical side only. |
+| Vector-stage internal failure | `QueryLayer.search` wraps the cache load (`listEmbeddings`), cosine ranking (`topKByCosine`), and RRF fusion (`rrfFuse`) in a try/catch. Any exception inside that block — storage error during a cold-cache rebuild, unexpected failure in cosine or fusion — is logged and the function falls back to the lexical baseline rather than propagating the error to the retrieval assembler. |
 
 In every case the function returns whatever the lexical path produced, truncated to `limit`. A record with a `NULL` embedding is not filtered out of results — it just cannot contribute to the vector ranking. The same record still participates in FTS5 matching normally.
 

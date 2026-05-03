@@ -103,7 +103,7 @@ Green boxes are new modules introduced by this spec. Every other component eithe
 | `src/collector/backfill/` | Batch scan for `NULL`-embedding records, embed, write back | MUST NOT import from `src/collector/storage/sqlite/`. MAY import from `src/types/`, the `embedding/` module, and accept a `StorageBackend` via DI. |
 | `src/collector/storage/sqlite/` | Owns the new migration `0005` and the BLOB encode/decode. | Unchanged import rules. Gains new prepared statements and new methods on the `StorageBackend` it returns. |
 | `src/collector/query/` | Hybrid search orchestration. Gets the `Embedder` and new storage surfaces injected. | Unchanged — still forbidden from importing `storage/sqlite/`. |
-| `src/collector/buffer/extraction.ts` | Calls the embedder before `putMemoryRecord`. | Unchanged — still forbidden from importing `storage/sqlite/`. Gets `Embedder` via DI. |
+| `src/collector/buffer/extraction.ts` | Persists the record via `putMemoryRecord` first, then calls the embedder and persists the vector via `putEmbedding`. Embed-failure leaves the record stored without an embedding. | Unchanged — still forbidden from importing `storage/sqlite/`. Gets `Embedder` via DI. |
 | `src/collector/index.ts` | The only module that instantiates concrete `OnnxEmbedder`, `openSqliteStorage`, and `BackfillWorker`, and wires them into everything else. | Unchanged. |
 
 New guard tests (see Testing Strategy) pin these rules in CI.
@@ -113,27 +113,27 @@ New guard tests (see Testing Strategy) pin these rules in CI.
 ```mermaid
 sequenceDiagram
     participant EW as ExtractionWorker
+    participant S as StorageBackend
     participant Comp as input-composition
     participant Emb as OnnxEmbedder
-    participant S as StorageBackend
 
+    EW->>S: putMemoryRecord(record)
+    Note over EW,S: Record is durable before<br/>any embedder interaction.<br/>Req 3.5 (write-path safety).
     EW->>Comp: composeInput(record)
     Comp-->>EW: string (≤ 10 000 chars)
     EW->>Emb: embed(input) [timeout 2s]
     alt embed succeeds
         Emb-->>EW: Float32Array(384)
-        EW->>S: putMemoryRecord(record)
         EW->>S: putEmbedding(record_id, vec)
-        Note over EW,S: Sequential; putEmbedding<br/>failure logs but does not<br/>unmake the record.
+        Note over EW,S: UPDATE on the same row.<br/>Sub-ms gap after the insert.
     else embed fails / times out
         Emb-->>EW: reject(Error)
         EW->>EW: log warning with record_id
-        EW->>S: putMemoryRecord(record)
-        Note over EW,S: Record stored without embedding.<br/>Req 3.4, 3.5.
+        Note over EW,S: Record stays with NULL embedding.<br/>BackfillWorker picks it up later.<br/>Req 3.4, 3.5.
     end
 ```
 
-The two-step write (`putMemoryRecord` then `putEmbedding`) is deliberate. Requirement 3.3 calls for atomic persistence of record + embedding. We satisfy it by implementing `putEmbedding` as an `UPDATE` on the existing row — the row and its embedding end up in the same physical row, and the window in which the row exists without its embedding is sub-millisecond and equivalent, from the reader's perspective, to any record that predates this spec. Reads that catch the gap fall back to lexical-only for that record (Req 8.1), which is indistinguishable from normal degraded behaviour. Wrapping the two calls in a SQLite transaction is viable but requires plumbing transactions across the `StorageBackend` interface; we defer that refactor.
+The two-step write (`putMemoryRecord` then `putEmbedding`) is deliberate. Requirement 3.3 calls for same-row persistence of record + embedding. We satisfy it by implementing `putEmbedding` as an `UPDATE` on the existing row — the row and its embedding end up in the same physical row, and the window in which the row exists without its embedding is sub-millisecond and equivalent, from the reader's perspective, to any record that predates this spec. Reads that catch the gap fall back to lexical-only for that record (Req 8.1), which is indistinguishable from normal degraded behaviour. Wrapping the two calls in a SQLite transaction is viable but requires plumbing transactions across the `StorageBackend` interface; we defer that refactor. Putting the insert strictly before the embed call is what makes Req 3.5 ("failure SHALL NOT block, drop, or delay the record insert") a property of the control flow and not just a guideline — Property 15 pins this ordering down against arbitrary embedder latency.
 
 ### Sequence: hybrid search on read
 

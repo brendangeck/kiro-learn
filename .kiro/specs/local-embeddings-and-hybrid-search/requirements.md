@@ -70,7 +70,7 @@ These are inputs to the requirements, not open questions:
 
 #### Acceptance Criteria
 
-1. WHEN the ExtractionWorker produces a `MemoryRecord`, THE System SHALL compute an embedding for that record before invoking `storage.putMemoryRecord`.
+1. WHEN the ExtractionWorker produces a `MemoryRecord`, THE System SHALL persist the record via `storage.putMemoryRecord` first, then compute the embedding via the Embedder and persist it via `storage.putEmbedding` as a subsequent step, so that a slow or failing embedder cannot block, drop, or delay the record insert (Requirement 3.5).
 2. THE System SHALL derive the Embedder input string from the record's `title`, `summary`, `facts`, and `concepts` fields, combined in a deterministic order defined in the design.
 3. WHEN the embedding computation succeeds, THE Embedding_Store SHALL persist the vector on the same SQLite row as the memory record. The write is performed as two sequential `putMemoryRecord` + `putEmbedding` calls, not a single transaction (see design § Sequence: embedding on write); a reader that catches the sub-millisecond gap observes the record without its embedding and falls back to lexical-only for that record per Requirement 8.1, which is indistinguishable from normal degraded-mode behaviour.
 4. IF the embedding computation fails for a record, THEN THE System SHALL store the memory record without an embedding and log a warning.
@@ -89,7 +89,7 @@ These are inputs to the requirements, not open questions:
 4. WHEN the Embedding_Store reads an embedding, THE Embedding_Store SHALL reconstruct a `Float32Array` whose contents are bitwise-equal to the `Float32Array` that was written.
 5. THE Embedding_Store SHALL introduce the new column via a forward-only SQLite migration that follows the existing monotonic numeric-prefix convention under `src/collector/storage/sqlite/migrations/`.
 6. THE migration SHALL add the embedding column as nullable so that existing rows remain valid without rewrite.
-7. THE Embedding_Store SHALL expose a bulk-load method that returns `(record_id, namespace, embedding)` triples for all non-null embeddings under a given namespace prefix, suitable for building an in-memory `Vector_Index`.
+7. THE Embedding_Store SHALL expose a bulk-load method that returns one row per non-null embedding in a given namespace. The row shape SHALL include `record_id`, `embedding`, and `created_at` so the caller can build an in-memory `Vector_Index` and apply the deterministic `(fused_score DESC, created_at DESC, record_id ASC)` tie-break from Requirement 5.8 without a second round-trip. Namespace scoping SHALL be exact match, not prefix, so the hybrid read path never implicitly widens across sibling namespaces.
 
 ### Requirement 5: Hybrid search query
 
