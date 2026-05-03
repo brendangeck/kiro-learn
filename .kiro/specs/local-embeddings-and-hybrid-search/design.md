@@ -732,18 +732,41 @@ interface NamespaceVectorCache {
 
 Cache invalidation protocol (Req 7.5):
 
-- Every successful `putEmbedding` or `putMemoryRecord` bumps the epoch for that namespace and triggers `invalidate(ns)`.
+- Every successful `putMemoryRecord` or `putEmbedding` in `ExtractionWorker`, and every successful `putEmbedding` in `BackfillWorker`, bumps the epoch for that namespace and triggers `invalidate(ns)`.
 - Because the write path and the read path both run inside the same daemon process, this is in-memory coordination — no DB-level locks are needed.
 - The first `search` after an invalidation pays the rebuild cost (one `listEmbeddings(ns)` + one `listMemoryRecords({namespace: ns})` for the metadata). Subsequent searches hit the cache.
 
-Invalidation is wired by adding a minimal "post-write notify" seam to the storage backend's internal write path, exposed as a callback registration on the `QueryLayer` side:
+Invalidation is wired with an explicit callback that `startCollector` threads through dependency injection. `ExtractionWorker` and `BackfillWorker` each accept an optional `onNamespaceChanged: (namespace: string) => void` in their deps and invoke it after every successful `putMemoryRecord` / `putEmbedding`. The collector wires both workers to the same target:
 
 ```typescript
-// New method on StorageBackend (advisory):
-onEmbeddingChanged?(handler: (namespace: string) => void): void;
+// src/collector/index.ts — inside startCollector after the QueryLayer is built.
+const queryLayer = createQueryLayer({ storage, embedder, config: { ... } });
+
+extractionWorker = createExtractionWorker({
+  bufferStore, watcher: bufferWatcher, storage, embedder,
+  onNamespaceChanged: (ns: string) => {
+    queryLayer.invalidateNamespace(ns);
+  },
+  // ...
+});
+
+if (embedder !== null && embedder.isReady()) {
+  backfillWorker = createBackfillWorker({
+    storage, embedder,
+    onNamespaceChanged: (ns: string) => {
+      queryLayer.invalidateNamespace(ns);
+    },
+    // ...
+  });
+  backfillWorker.start();
+}
 ```
 
-Concrete sqlite backend invokes the handler synchronously after a successful `putMemoryRecord` or `putEmbedding`. The ExtractionWorker and BackfillWorker flow through this automatically because they go through `StorageBackend`. This is the cleanest fit for the existing injection pattern without leaking cache concerns into the storage layer. A simpler alternative — having `startCollector` wire the `QueryLayer.cache.invalidate` call explicitly into both workers — is equivalent and may be preferable; the implementation phase picks one.
+`QueryLayer.invalidateNamespace(ns)` delegates to the `NamespaceVectorCache.invalidate(ns)` call described above. This keeps `StorageBackend` entirely free of cache concerns — the storage layer never knows the cache exists, and the workers only know they have a callback to fire.
+
+Both workers guard the callback invocation with a local try/catch so a throw from a misbehaving cache consumer cannot abort extraction mid-batch (which would leave the buffer uncleared) or convert a successful backfill write into a counted failure (which would pressure the circuit breaker).
+
+Earlier drafts considered a `StorageBackend.onEmbeddingChanged?(handler)` hook that the concrete sqlite backend would fire after every write. That path was rejected because it leaks cache concerns into the storage layer and would require every backend implementation (including future non-SQLite ones) to re-implement the hook; the explicit worker-level callback shipped because it keeps the boundary clean and the direction of dependency correct: the collector wires workers to the query layer, not the storage layer.
 
 For a fully cold cache of 50 000 records at 1536 bytes each, the bulk load transfers ~75 MB and the normalisation pass costs O(N·d) ≈ 50k × 384 ≈ 20M ops. Benchmarks on commodity hardware put this under 200 ms, leaving >300 ms of headroom inside the 500 ms p95 budget for the actual search work (Req 9.1). The cache amortises this cost across all subsequent searches in the namespace until the next write.
 
