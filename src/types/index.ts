@@ -109,7 +109,14 @@ export interface RetrievalResult {
  * Aggregate stats returned by `GET /v1/stats`. Contains global or
  * namespace-scoped counts plus breakdowns by observation type and event kind.
  *
+ * Optional coverage fields (`embeddings_present`, `embeddings_missing`)
+ * are additive and surfaced by backends that track memory-record
+ * embedding coverage. Consumers MUST treat them as optional — a backend
+ * that does not compute them omits the keys entirely (not `undefined`,
+ * under `exactOptionalPropertyTypes`).
+ *
  * @see Requirements 6.2 (visualizer-read-api)
+ * @see Requirements 14.4 (local-embeddings-and-hybrid-search)
  */
 export interface StatsResult {
   total_events: number;
@@ -118,6 +125,10 @@ export interface StatsResult {
   total_concepts: number;
   observation_types: Record<string, number>;
   event_kinds: Record<string, number>;
+  /** Count of memory_records where embedding IS NOT NULL. */
+  embeddings_present?: number;
+  /** Count of memory_records where embedding IS NULL. */
+  embeddings_missing?: number;
 }
 
 /**
@@ -182,4 +193,111 @@ export interface StorageBackend {
     namespace?: string;
     limit: number;
   }): Promise<{ items: KiroMemEvent[]; total: number }>;
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Embedding surface — added by local-embeddings-and-hybrid-search spec.
+  //
+  // These methods are orthogonal to the existing event/record surface and
+  // back the two new write paths (`ExtractionWorker` synchronous embed and
+  // `BackfillWorker` asynchronous embed) plus the hybrid search read path.
+  //
+  // Backends that do not support embeddings are expected to either
+  // - implement them with durable storage of the raw Float32Array (the
+  //   default SQLite backend does this via a 1536-byte little-endian BLOB
+  //   column on `memory_records`), or
+  // - reject with a clear error at daemon startup before any caller invokes
+  //   them (no partial support).
+  //
+  // `searchMemoryRecords` intentionally keeps its signature. The new
+  // `searchMemoryRecordsLexical` variant returns the same records paired
+  // with their 1-based FTS5 rank so the hybrid fusion layer can compute
+  // Reciprocal Rank Fusion without reconstructing rank from ordering.
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Write the embedding for an existing memory record. Idempotent:
+   * repeated writes overwrite. Called by ExtractionWorker immediately
+   * after `putMemoryRecord` and by BackfillWorker for pre-existing
+   * records.
+   *
+   * If `recordId` does not exist, this is a no-op (the underlying
+   * UPDATE matches zero rows). Returns `void` in either case.
+   *
+   * `embedding` MUST be a 384-dimensional `Float32Array`. Passing a
+   * vector of a different length is a caller bug; backends MAY throw.
+   *
+   * @see Requirements 3.3, 4.1, 4.2, 8.6, 19.2
+   */
+  putEmbedding(recordId: string, embedding: Float32Array): Promise<void>;
+
+  /**
+   * Read a single embedding. Returns `null` if the record has no
+   * embedding stored, or if the record does not exist.
+   *
+   * Exposed for tests and future reconciliation flows; the hybrid search
+   * read path uses {@link listEmbeddings} for bulk access.
+   *
+   * @throws If the stored blob is not exactly 1536 bytes; the error
+   *         message includes the offending `recordId` to ease
+   *         identification.
+   *
+   * @see Requirements 4.1, 15.3
+   */
+  getEmbedding(recordId: string): Promise<Float32Array | null>;
+
+  /**
+   * Bulk-load all non-null embeddings for records whose namespace
+   * equals the given `namespace` (exact match, not prefix — the hybrid
+   * search read path scopes to a single concrete namespace).
+   *
+   * Returns embeddings as raw `Float32Array`; normalisation and cosine
+   * math live in the embedding module, not the storage backend.
+   *
+   * `created_at` is returned alongside the vector because the fusion
+   * layer uses it as a deterministic tie-break when two records have
+   * identical fused scores.
+   *
+   * @see Requirements 4.7, 5.8
+   */
+  listEmbeddings(namespace: string): Promise<
+    Array<{
+      record_id: string;
+      embedding: Float32Array;
+      created_at: string;
+    }>
+  >;
+
+  /**
+   * Return up to `limit` memory records whose embedding is NULL,
+   * optionally scoped to a namespace. When `namespace` is `null`, the
+   * scan is global across all namespaces.
+   *
+   * Order: `created_at ASC` — oldest records first, so the
+   * BackfillWorker progresses deterministically and crash-resumes
+   * cleanly (every iteration re-queries `embedding IS NULL`; already-
+   * embedded rows are skipped on restart).
+   *
+   * @see Requirements 8.4, 8.6, 19.2
+   */
+  listRecordsWithoutEmbedding(
+    namespace: string | null,
+    limit: number,
+  ): Promise<MemoryRecord[]>;
+
+  /**
+   * Lexical-only search surface for the hybrid layer. Returns FTS5-
+   * ranked records paired with their 1-based rank so the fusion layer
+   * does not have to reconstruct rank from ordering.
+   *
+   * Behaviour is otherwise identical to {@link searchMemoryRecords} —
+   * same `SearchParams` shape, same namespace-prefix isolation, same
+   * sanitisation and LIKE fallback. The existing `searchMemoryRecords`
+   * method is retained unchanged for backward compatibility; callers
+   * that do not need the rank MUST keep using it.
+   *
+   * @see Requirements 5.1, 8.1 (local-embeddings-and-hybrid-search)
+   */
+  searchMemoryRecordsLexical(
+    params: SearchParams,
+  ): Promise<Array<{ record: MemoryRecord; rank: number }>>;
 }

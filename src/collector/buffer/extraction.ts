@@ -15,6 +15,8 @@ import { ulid } from 'ulidx';
 
 import { parseMemoryRecord } from '../../types/index.js';
 import type { StorageBackend } from '../../types/index.js';
+import { composeEmbeddingInput } from '../embedding/index.js';
+import type { Embedder } from '../embedding/index.js';
 import { createAcpSession } from '../pipeline/acp-client.js';
 import type { AcpSession } from '../pipeline/acp-client.js';
 import { frameEvent } from '../pipeline/xml-framer.js';
@@ -84,6 +86,28 @@ export interface ExtractionWorkerDeps {
   bufferStore: BufferStore;
   watcher: BufferWatcher;
   storage: StorageBackend;
+  /**
+   * Optional embedder used to compute and persist a vector for every
+   * memory record emitted by the batch compressor. Pass `null` to
+   * disable embedding on write (the record is still stored).
+   *
+   * @see Requirements 3.1, 3.2, 3.3, 3.4, 3.5
+   */
+  embedder: Embedder | null;
+  /**
+   * Optional callback invoked after every successful
+   * `putMemoryRecord` or `putEmbedding` write, passing the
+   * namespace of the affected record. Used by the collector
+   * to invalidate the per-namespace vector index cache so
+   * the next hybrid search sees the freshest data.
+   *
+   * Wired as an explicit dependency (rather than a
+   * storage-layer hook) to keep `StorageBackend` unaware of
+   * query-layer concerns.
+   *
+   * @see Requirements 7.5
+   */
+  onNamespaceChanged?: (namespace: string) => void;
   config?: Partial<ExtractionWorkerConfig>;
 }
 
@@ -208,7 +232,7 @@ async function invokeBatchCompressor(
  * @see Requirements 10.1–10.8, 11.1–11.4
  */
 export function createExtractionWorker(deps: ExtractionWorkerDeps): ExtractionWorker {
-  const { bufferStore, watcher, storage } = deps;
+  const { bufferStore, watcher, storage, embedder, onNamespaceChanged } = deps;
   const config: ExtractionWorkerConfig = { ...DEFAULT_CONFIG, ...deps.config };
 
   // ── Semaphore state ─────────────────────────────────────────────────
@@ -329,6 +353,48 @@ export function createExtractionWorker(deps: ExtractionWorkerDeps): ExtractionWo
 
         const record = parseMemoryRecord(enriched);
         await storage.putMemoryRecord(record);
+
+        // Invalidate the per-namespace vector index cache so the next
+        // hybrid search sees this record. We call this immediately
+        // after the record write (before the embed attempt) because
+        // the record is already visible to FTS5 and ID lookups even
+        // if the embed step later fails in degraded mode.
+        // @see Requirement 7.5
+        onNamespaceChanged?.(namespace);
+
+        // Embed on write: compute the vector and persist it alongside
+        // the record. Failures are logged but do NOT re-throw — the
+        // memory record is already stored.
+        // @see Requirements 3.1, 3.2, 3.3, 3.4, 3.5, 14.1, 14.3
+        if (embedder !== null) {
+          if (embedder.isReady()) {
+            try {
+              const input = composeEmbeddingInput(record);
+              const vec = await embedder.embed(input);
+              await storage.putEmbedding(record.record_id, vec);
+              // Embedding succeeded — invalidate again so the cache
+              // drops any entry built between the record write and
+              // this embed write.
+              // @see Requirement 7.5
+              onNamespaceChanged?.(namespace);
+            } catch (err: unknown) {
+              const message = err instanceof Error ? err.message : String(err);
+              process.stderr.write(
+                `[kiro-learn] embedding failed for record ${record.record_id}: ${message}\n`,
+              );
+              // Do NOT re-throw; record is already stored.
+            }
+          } else {
+            // Degraded mode: embedder is injected but not ready (model
+            // load failed or never completed). Skip the embed step and
+            // warn so operators see each affected write.
+            // @see Requirement 14.3
+            process.stderr.write(
+              `[kiro-learn] degraded mode: skipping embed for record ${record.record_id} (embedder not ready)\n`,
+            );
+          }
+        }
+
         memoriesCreated += 1;
       }
 

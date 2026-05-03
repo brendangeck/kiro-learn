@@ -80,7 +80,12 @@ const mockStorage: StorageBackend = {
   listEvents() { return Promise.resolve({ items: [], total: 0 }); },
 };
 
-const deps = { pipeline: mockPipeline, retrieval: mockRetrieval, storage: mockStorage };
+const deps = {
+  pipeline: mockPipeline,
+  retrieval: mockRetrieval,
+  storage: mockStorage,
+  query: { search: () => Promise.resolve([]), invalidateNamespace: () => {} },
+};
 const opts = { host: '127.0.0.1', port: 0, maxBodyBytes: 2 * 1024 * 1024, retrievalBudgetMs: 500 };
 
 // ── Helpers ─────────────────────────────────────────────────────────────

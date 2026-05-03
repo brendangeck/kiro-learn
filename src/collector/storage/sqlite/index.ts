@@ -49,6 +49,8 @@ import type {
   StorageBackend,
 } from '../../../types/index.js';
 
+import { decodeEmbeddingBlob, encodeEmbeddingBlob } from '../../embedding/blob.js';
+
 import { createFts5Sanitizer, escapeLikePattern } from './fts5.js';
 import { MIGRATIONS, runMigrations } from './migrations/index.js';
 import {
@@ -217,38 +219,48 @@ export function openSqliteStorage(opts: SqliteStorageOptions): StorageBackend {
     tx();
   };
 
-  const searchMemoryRecords = async (params: SearchParams): Promise<MemoryRecord[]> => {
+  const searchMemoryRecordsLexical = async (
+    params: SearchParams,
+  ): Promise<Array<{ record: MemoryRecord; rank: number }>> => {
     assertOpen();
     const { namespace, query, limit } = params;
 
     // Short-circuit: if the sanitizer returns '' (empty/whitespace-only input),
-    // skip both MATCH and LIKE and return immediately. Requirement 2.3, 13.3.
+    // skip both MATCH and LIKE and return immediately. Mirrors the existing
+    // behaviour of `searchMemoryRecords` (Requirements 2.3, 13.3).
     const match = sanitize(query);
     if (match === '') return [];
 
-    let rows: MemoryRecordRow[];
     try {
-      // Primary path: FTS5 MATCH with the tokenized OR-of-phrases expression
-      // produced by the handle-bound sanitizer. Namespace isolation rides on
-      // `mr.namespace LIKE ? || '%'` in the prepared statement.
-      rows = stmts.selectMemoryRecordsFtsMatch.all(
-        match,
-        namespace,
-        limit,
-      );
+      // Primary path: ranked FTS5 MATCH with the tokenized OR-of-phrases
+      // expression produced by the handle-bound sanitizer. The SQL
+      // `ROW_NUMBER() OVER (ORDER BY fts.rank)` produces a stable
+      // 1-based integer rank suitable for RRF fusion (`1 / (k + rank)`).
+      // Namespace isolation rides on `mr.namespace LIKE ? || '%'`.
+      const rows = stmts.selectMemoryRecordsFtsMatchRanked.all(match, namespace, limit);
+      return rows.map((row) => ({ record: rowToMemoryRecord(row), rank: row.rank }));
     } catch {
       // Fallback path: FTS5 rejected the query (or some other SQLite
       // error bubbled out of the MATCH pipeline). The contract is
       // "availability over rank quality" — we'd rather return
       // creation-date-ordered substring hits than fail the enrichment
-      // request over a query-format issue. The LIKE fallback is fed from
-      // the original unsanitised query string (Requirement 8.3).
+      // request over a query-format issue. The LIKE fallback is fed
+      // from the original unsanitised query string (Requirement 8.3).
+      // No rank is available from the underlying statement, so we
+      // synthesise a 1-based position rank to preserve the tuple shape
+      // the fusion layer expects.
       const escaped = escapeLikePattern(query);
       const pattern = `%${escaped}%`;
-      rows = stmts.selectMemoryRecordsLike.all(namespace, pattern, pattern, limit);
+      const rows = stmts.selectMemoryRecordsLike.all(namespace, pattern, pattern, limit);
+      return rows.map((row, idx) => ({ record: rowToMemoryRecord(row), rank: idx + 1 }));
     }
+  };
 
-    return rows.map(rowToMemoryRecord);
+  const searchMemoryRecords = async (params: SearchParams): Promise<MemoryRecord[]> => {
+    // Thin wrapper: reuse the ranked lexical path and unwrap the tuples.
+    // The existing external contract (records, in rank order) is unchanged.
+    const ranked = await searchMemoryRecordsLexical(params);
+    return ranked.map(({ record }) => record);
   };
 
   /**
@@ -277,6 +289,14 @@ export function openSqliteStorage(opts: SqliteStorageOptions): StorageBackend {
       const eventKindRows = stmts.selectEventKindCountsScoped.all(namespace);
       const conceptsRow = stmts.selectDistinctConceptsScoped.get(namespace);
 
+      // Embedding coverage for the scoped namespace. SUM over 0 rows is
+      // NULL in SQLite, so coerce to 0. Per Requirement 14.4, the SQLite
+      // backend always computes these — they are emitted as concrete
+      // numbers (never `undefined`) under `exactOptionalPropertyTypes`.
+      const embRow = stmts.selectEmbeddingStatsScoped.get(namespace);
+      const embeddingsPresent = embRow?.present ?? 0;
+      const embeddingsMissing = embRow?.missing ?? 0;
+
       return {
         total_events: totalEvents,
         total_memories: totalMemories,
@@ -284,6 +304,8 @@ export function openSqliteStorage(opts: SqliteStorageOptions): StorageBackend {
         total_concepts: conceptsRow?.total_concepts ?? 0,
         observation_types: countByLabelToRecord(observationTypeRows),
         event_kinds: countByLabelToRecord(eventKindRows),
+        embeddings_present: embeddingsPresent,
+        embeddings_missing: embeddingsMissing,
       };
     }
 
@@ -297,6 +319,12 @@ export function openSqliteStorage(opts: SqliteStorageOptions): StorageBackend {
     const eventKindRows = stmts.selectEventKindCounts.all();
     const conceptsRow = stmts.selectDistinctConcepts.get();
 
+    // Global embedding coverage. Same NULL→0 coercion as the scoped
+    // branch above.
+    const embRow = stmts.selectEmbeddingStatsGlobal.get();
+    const embeddingsPresent = embRow?.present ?? 0;
+    const embeddingsMissing = embRow?.missing ?? 0;
+
     return {
       total_events: totalEvents,
       total_memories: totalMemories,
@@ -304,6 +332,8 @@ export function openSqliteStorage(opts: SqliteStorageOptions): StorageBackend {
       total_concepts: conceptsRow?.total_concepts ?? 0,
       observation_types: countByLabelToRecord(observationTypeRows),
       event_kinds: countByLabelToRecord(eventKindRows),
+      embeddings_present: embeddingsPresent,
+      embeddings_missing: embeddingsMissing,
     };
   };
 
@@ -369,6 +399,88 @@ export function openSqliteStorage(opts: SqliteStorageOptions): StorageBackend {
     db.close();
   };
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // Embedding surface.
+  //
+  // Implements the new `StorageBackend` methods added by the
+  // local-embeddings-and-hybrid-search spec. BLOB encode/decode lives in the
+  // pure `src/collector/embedding/blob.ts` module; this backend only
+  // consumes it. Length-mismatch errors thrown by `decodeEmbeddingBlob`
+  // are caught below and re-thrown annotated with the offending
+  // `record_id` (Req 15.3).
+  // ─────────────────────────────────────────────────────────────────────────
+
+  const putEmbedding = async (
+    recordId: string,
+    embedding: Float32Array,
+  ): Promise<void> => {
+    assertOpen();
+    // `encodeEmbeddingBlob` throws on length mismatch; that is a caller bug
+    // (vector model produced the wrong dimension) and we let it propagate.
+    const blob = encodeEmbeddingBlob(embedding);
+    // UPDATE by primary key. `RunResult.changes === 0` when `recordId`
+    // does not exist — design § No-op error paths: treat as silent no-op.
+    //
+    // @see Requirements 3.3, 4.1, 4.2, 8.6, 19.2
+    stmts.updateMemoryRecordEmbedding.run(blob, recordId);
+  };
+
+  const getEmbedding = async (recordId: string): Promise<Float32Array | null> => {
+    assertOpen();
+    const row = stmts.selectMemoryRecordEmbedding.get(recordId);
+    if (row === undefined) return null;
+    if (row.embedding === null) return null;
+    try {
+      return decodeEmbeddingBlob(row.embedding);
+    } catch (err) {
+      const origMsg = err instanceof Error ? err.message : String(err);
+      // Requirement 15.3: surface the offending record_id to aid
+      // identification of the bad row.
+      throw new Error(
+        `embedding blob for record ${recordId} is corrupt: ${origMsg}`,
+      );
+    }
+  };
+
+  const listEmbeddings = async (
+    namespace: string,
+  ): Promise<Array<{ record_id: string; embedding: Float32Array; created_at: string }>> => {
+    assertOpen();
+    const rows = stmts.selectEmbeddingsByNamespace.all(namespace);
+    const out: Array<{ record_id: string; embedding: Float32Array; created_at: string }> = [];
+    for (const row of rows) {
+      try {
+        const embedding = decodeEmbeddingBlob(row.embedding);
+        out.push({
+          record_id: row.record_id,
+          embedding,
+          created_at: row.created_at,
+        });
+      } catch (err) {
+        // Design § Corrupt BLOB on read: `listEmbeddings` logs and skips
+        // the row so one bad BLOB does not poison the whole index build.
+        // `console.warn` matches existing project convention.
+        const origMsg = err instanceof Error ? err.message : String(err);
+        console.warn(
+          `sqlite storage: skipping corrupt embedding for record ${row.record_id} in namespace ${namespace}: ${origMsg}`,
+        );
+      }
+    }
+    return out;
+  };
+
+  const listRecordsWithoutEmbedding = async (
+    namespace: string | null,
+    limit: number,
+  ): Promise<MemoryRecord[]> => {
+    assertOpen();
+    // Single statement handles both global and scoped back-fill via
+    // `(? IS NULL OR namespace = ?)`; the namespace value is bound
+    // twice. `null` → global backlog; string → scoped.
+    const rows = stmts.selectMemoryRecordsWithoutEmbedding.all(namespace, namespace, limit);
+    return rows.map(rowToMemoryRecord);
+  };
+
   return {
     putEvent,
     getEventById,
@@ -379,6 +491,11 @@ export function openSqliteStorage(opts: SqliteStorageOptions): StorageBackend {
     listProjects,
     listMemoryRecords,
     listEvents,
+    putEmbedding,
+    getEmbedding,
+    listEmbeddings,
+    listRecordsWithoutEmbedding,
+    searchMemoryRecordsLexical,
   };
 }
 

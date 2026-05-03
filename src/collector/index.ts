@@ -16,8 +16,12 @@ import { join } from 'node:path';
 
 import * as fs from 'node:fs';
 
+import { createBackfillWorker } from './backfill/index.js';
+import type { BackfillWorker } from './backfill/index.js';
 import { createBufferStore, createBufferWatcher, createExtractionWorker, createCompactionWorker } from './buffer/index.js';
 import type { BufferStore, BufferWatcher, ExtractionWorker, CompactionWorker } from './buffer/index.js';
+import { createOnnxEmbedder } from './embedding/index.js';
+import type { Embedder } from './embedding/index.js';
 import { openSqliteStorage } from './storage/sqlite/index.js';
 import { createPipeline } from './pipeline/index.js';
 import { createQueryLayer } from './query/index.js';
@@ -96,6 +100,56 @@ export interface CollectorConfig {
   compactionMaxModelRetries?: number;
   /** Consecutive model failures before deterministic eviction fallback. Default `3`. @see Requirements 11.2 */
   compactionMaxConsecutiveModelFailures?: number;
+
+  // ── Embedding configuration ────────────────────────────────────────────
+
+  /**
+   * Whether local embedding + hybrid search is enabled. When `false`, the
+   * daemon never constructs the ONNX embedder, extractions write records
+   * with NULL embeddings, and `QueryLayer.search` operates in lexical-only
+   * mode for the lifetime of the process.
+   *
+   * Default `true`. @see Requirements 2.1, 12.1, 12.5
+   */
+  embeddingEnabled?: boolean;
+
+  /**
+   * Directory where `@huggingface/transformers` caches model weights. A
+   * leading `~/` is expanded to the user's home directory. When omitted,
+   * the `OnnxEmbedder` falls back to the `KIRO_LEARN_MODEL_DIR`
+   * environment variable and finally to `~/.kiro-learn/models/`.
+   *
+   * Default `undefined` (resolved at embedder-construction time via env
+   * var / default cascade). @see Requirements 1.5, 1.6, 12.3
+   */
+  modelCacheDir?: string;
+
+  /**
+   * Per-call timeout for a single `embedder.embed(input)` invocation, in
+   * milliseconds. Default `2_000`. @see Requirements 10.3, 12.2
+   */
+  embeddingTimeoutMs?: number;
+
+  /**
+   * Reciprocal-rank-fusion constant `k` used by the hybrid query layer.
+   * Larger values flatten the weight the top-ranked items receive from
+   * each source. Default `60`. @see Requirements 5.3, 12.1
+   */
+  rrfK?: number;
+
+  /**
+   * Multiplier applied to the caller-supplied `limit` when fetching
+   * candidates from each ranked source before RRF fusion. A value of `4`
+   * means a request for `limit=10` pulls 40 lexical and 40 vector
+   * candidates into the fusion step. Default `4`. @see Requirements 5.3, 12.1
+   */
+  hybridFetchDepthMultiplier?: number;
+
+  /**
+   * How many `memory_records` the backfill worker fetches per iteration
+   * of its idle-priority loop. Default `32`. @see Requirements 8.5, 12.4
+   */
+  backfillBatchSize?: number;
 }
 
 /**
@@ -131,6 +185,16 @@ export const DEFAULT_COLLECTOR_CONFIG: CollectorConfig = {
   compactionModelTimeoutMs: 120_000,
   compactionMaxModelRetries: 2,
   compactionMaxConsecutiveModelFailures: 3,
+
+  // Embedding defaults
+  embeddingEnabled: true,
+  // `modelCacheDir` is intentionally omitted — OnnxEmbedder falls back to
+  // the `KIRO_LEARN_MODEL_DIR` env var and then to `~/.kiro-learn/models/`
+  // when the field is not provided.
+  embeddingTimeoutMs: 2_000,
+  rrfK: 60,
+  hybridFetchDepthMultiplier: 4,
+  backfillBatchSize: 32,
 };
 
 // ── Handle ──────────────────────────────────────────────────────────────
@@ -191,6 +255,58 @@ export async function startCollector(
     let bufferWatcher: BufferWatcher | undefined;
     let extractionWorker: ExtractionWorker | undefined;
     let compactionWorker: CompactionWorker | undefined;
+    let backfillWorker: BackfillWorker | null = null;
+
+    // 2a. Resolve embedder. When `embeddingEnabled === false` (Req 12.5),
+    //     we skip model construction entirely and the daemon operates in
+    //     lexical-only mode for the lifetime of the process. Otherwise we
+    //     construct the ONNX embedder, await its `ready()` before binding
+    //     the HTTP listener (design § `createOnnxEmbedder` returns
+    //     immediately), and on load failure keep the handle so
+    //     `isReady()` returns `false` forever — the ExtractionWorker and
+    //     QueryLayer both treat that as degraded mode and fall back to
+    //     their NULL-embedder code paths.
+    //     @see Requirements 2.1, 2.2, 2.4, 2.5, 12.1, 12.2, 12.3, 12.5
+    let embedder: (Embedder & { dispose?: () => void }) | null = null;
+    if (cfg.embeddingEnabled !== false) {
+      // Pass `modelCacheDir` only when the caller set it explicitly.
+      // `OnnxEmbedder` already handles the env-var + default cascade
+      // internally, so omitting the field preserves that precedence.
+      const embedderConfig: {
+        modelCacheDir?: string;
+        perCallTimeoutMs: number;
+      } = {
+        perCallTimeoutMs: cfg.embeddingTimeoutMs ?? 2_000,
+      };
+      if (cfg.modelCacheDir !== undefined) {
+        embedderConfig.modelCacheDir = cfg.modelCacheDir;
+      }
+      embedder = createOnnxEmbedder(embedderConfig);
+      try {
+        await embedder.ready();
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        process.stderr.write(
+          `[kiro-learn] embedder failed to load; running in degraded lexical-only mode: ${message}\n`,
+        );
+        // Keep the embedder handle — `isReady()` will continue to return
+        // `false` and downstream consumers (ExtractionWorker, QueryLayer)
+        // will short-circuit to their NULL-embedder paths.
+      }
+    }
+
+    // 2b. Create query layer up-front so the extraction and backfill
+    //     workers can invalidate its per-namespace vector index cache
+    //     after every successful embed write.
+    //     @see Requirement 7.5
+    const queryLayer = createQueryLayer({
+      storage,
+      embedder,
+      config: {
+        rrfK: cfg.rrfK ?? 60,
+        fetchDepthMultiplier: cfg.hybridFetchDepthMultiplier ?? 4,
+      },
+    });
 
     // 3. If buffer mode is enabled, instantiate buffer components
     if (bufferEnabled) {
@@ -210,6 +326,10 @@ export async function startCollector(
         bufferStore,
         watcher: bufferWatcher,
         storage,
+        embedder,
+        onNamespaceChanged: (ns: string) => {
+          queryLayer.invalidateNamespace(ns);
+        },
         config: {
           concurrency: cfg.bufferExtractionConcurrency ?? 2,
           timeoutMs: cfg.bufferExtractionTimeoutMs ?? 60_000,
@@ -327,8 +447,35 @@ export async function startCollector(
       }
     }
 
-    // 6. Create query layer, injecting StorageBackend
-    const queryLayer = createQueryLayer(storage);
+    // 6. Query layer was created in step 2b (so extraction worker can
+    //    invoke `invalidateNamespace` via its `onNamespaceChanged`
+    //    callback). Nothing to do here.
+
+    // 6b. Start the backfill worker when the embedder loaded
+    //     successfully. `embedder.isReady() === false` covers both the
+    //     feature-flag-off case (embedder is null; guarded above) and
+    //     the degraded-mode case (load failed). Either way we leave the
+    //     NULL-embedding records in place until a future daemon start
+    //     recovers the embedder.
+    //
+    //     The worker is wired to `queryLayer.invalidateNamespace` so
+    //     that hybrid searches immediately see the newly embedded
+    //     records without waiting for the next cache miss (design §
+    //     Cache invalidation protocol).
+    //     @see Requirements 2.1, 2.5, 8.4, 8.5, 12.4, 13.6
+    if (embedder !== null && embedder.isReady()) {
+      backfillWorker = createBackfillWorker({
+        storage,
+        embedder,
+        onNamespaceChanged: (ns: string) => {
+          queryLayer.invalidateNamespace(ns);
+        },
+        config: {
+          batchSize: cfg.backfillBatchSize ?? 32,
+        },
+      });
+      backfillWorker.start();
+    }
 
     // 7. Create retrieval assembler, injecting query layer
     const retrieval = createRetrievalAssembler({
@@ -336,9 +483,9 @@ export async function startCollector(
       resultLimit: cfg.resultLimit,
     });
 
-    // 8. Start HTTP receiver, injecting pipeline and retrieval
+    // 8. Start HTTP receiver, injecting pipeline, retrieval, and query layer
     const receiver = await startReceiver(
-      { pipeline, retrieval, storage },
+      { pipeline, retrieval, storage, query: queryLayer },
       {
         host: cfg.host,
         port: cfg.port,
@@ -351,6 +498,16 @@ export async function startCollector(
     return {
       async close(): Promise<void> {
         await receiver.close();
+
+        // Stop the backfill worker before draining the remaining
+        // components so it stops issuing `putEmbedding` writes against
+        // a closing storage handle. Bounded by a 5 s timeout — the
+        // worker's state machine guarantees at most one batch of
+        // embedder calls remains in flight when `stop()` returns.
+        // @see Requirements 2.5, 13.6
+        if (backfillWorker !== null) {
+          await backfillWorker.stop(5_000);
+        }
 
         if (bufferEnabled && extractionWorker !== undefined && bufferWatcher !== undefined) {
           // Buffer mode shutdown: drain extraction worker, drain compaction worker,
@@ -367,6 +524,13 @@ export async function startCollector(
         } else {
           // Legacy mode shutdown: drain per-event extraction stage
           await pipeline.extraction.drain(DRAIN_TIMEOUT_MS);
+        }
+
+        // Release the ONNX session last, after all consumers have
+        // finished draining. `dispose` is optional on the Embedder
+        // surface — only the ONNX implementation exposes it.
+        if (embedder !== null && typeof embedder.dispose === 'function') {
+          embedder.dispose();
         }
 
         await storage.close();

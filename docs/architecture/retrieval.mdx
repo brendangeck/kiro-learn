@@ -29,7 +29,7 @@ sequenceDiagram
     Collector->>Retrieval: assemble(event, budget)
     Retrieval->>Retrieval: extract query from prompt body
     Retrieval->>Query: search(namespace, query, limit)
-    Query->>Database: full-text search
+    Query->>Database: hybrid: FTS5 + vector cosine
     Database-->>Query: matching records
     Query-->>Retrieval: records
     Retrieval->>Retrieval: format as context string
@@ -54,9 +54,9 @@ If the extracted query is empty — for example, a text body with no content —
 
 ## How search works
 
-The query layer is a thin seam over the [database](/architecture/database). It forwards a namespace, a query string, and a limit to the storage backend and returns whatever comes back. No ranking, no reshuffling, no filtering beyond what storage does. The seam exists so later versions can layer hybrid retrieval (lexical plus vector plus recency) without rewriting the collector.
+The query layer sits between retrieval and the [database](/architecture/database). It runs two rankings in parallel — FTS5 lexical search and vector cosine similarity — and fuses them with Reciprocal Rank Fusion into a single ordered list. When the embedder is off, unavailable, or fails for a given query, the fused path collapses cleanly to lexical-only, so search always returns whatever FTS5 would have returned.
 
-Storage handles the actual search in two stages: a primary full-text path and a substring fallback.
+Storage handles the lexical stage in two substages: a primary full-text path and a substring fallback.
 
 ### Primary path: full-text search
 
@@ -93,6 +93,86 @@ flowchart TD
 If FTS5 refuses the sanitized query for any reason, the storage layer catches the error and runs a `LIKE '%query%'` search against the original user string instead. LIKE is slower and does no ranking — results come back ordered by creation date — but it always works, and it treats the query as a literal substring (the escape clause neutralizes `%` and `_` so a prompt containing those characters still means what it says).
 
 The tradeoff is explicit: **availability over ranking quality**. A search that returns weaker results is better than one that errors out, because a failed search shows up to the agent as "no context at all" and that is worse than substring hits.
+
+## Hybrid search
+
+Lexical search matches the words the user typed. Semantic search matches the ideas they meant. Each catches cases the other misses — a prompt like "how do we handle stale auth tokens" lexically hits records that say "auth token" or "stale", but vector similarity also surfaces a record titled "refreshing expired credentials" that shares no keywords. kiro-learn runs both and fuses them.
+
+### The two rankings
+
+Every memory record has a dense vector alongside its FTS5 index row. The vectors are 384-dimensional `Float32Array`s produced by the [all-MiniLM-L6-v2](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2) sentence-transformer model, running locally on CPU via [`@huggingface/transformers`](https://huggingface.co/docs/transformers.js) and ONNX Runtime — no network call per embed. The model loads once at daemon startup from `~/.kiro-learn/models/` and is reused by every write and every query. See the [database page](/architecture/database#embeddings) for how vectors are stored.
+
+At query time, both rankings run over the same namespace:
+
+- **Lexical.** The sanitized FTS5 query described above, but the storage layer returns the top `limit × C` records along with each record's 1-based BM25 rank.
+- **Vector.** The query string is embedded with the same model that embedded the records, then cosine similarity is computed against every non-null embedding in the namespace. The top `limit × C` records become the vector ranking.
+
+`C` defaults to 4. The multiplier exists because RRF only fuses what you give it — a record that ranks 1st by cosine but 41st lexically would never enter the pool at `limit = 10` with `C = 1`, so the fused result would lose recall compared to an oracle. Fetching `C × limit` from each side gives fusion enough candidates that the final top-`limit` is stable. `C` is exposed as `CollectorConfig.hybridFetchDepthMultiplier`.
+
+Vector similarity is computed in process, not in SQL. The per-namespace index is an in-memory array of pre-normalised `Float32Array`s, loaded lazily and cached for the life of the collector; a cosine call collapses to a dot product. No `sqlite-vec`, no HNSW, no ANN index — brute force is fine up to the spec's scale target of 50 000 records per namespace, and keeping the math in JS keeps the storage layer free of vector-specific SQL.
+
+### Reciprocal Rank Fusion
+
+The two rankings produce different score scales — FTS5 emits BM25 values, cosine emits `[-1, 1]` — so fusing them by raw score would require calibration that does not exist. [Reciprocal Rank Fusion](https://plg.uwaterloo.ca/~gvcormac/cormacksigir09-rrf.pdf) sidesteps the problem by fusing by rank instead:
+
+```text
+score(d) = Σᵢ 1 / (k + rankᵢ(d))
+```
+
+Each record's fused score sums one term per ranking it appears in. `k = 60` is the constant recommended in the RRF paper and it is the kiro-learn default. A record absent from a ranking contributes zero to that sum — so a record that only the vector side surfaced still gets a non-zero fused score, and vice versa.
+
+After fusion, records are ordered by `(fused_score DESC, created_at DESC, record_id ASC)`. The tertiary sort on `record_id` makes the output deterministic across runs, which matters for tests and for not surprising the user when the same prompt returns a different order on a re-run.
+
+### Sequence
+
+```mermaid
+sequenceDiagram
+    participant QL as QueryLayer
+    participant Storage
+    participant Embedder
+    participant Cache as Namespace vector cache
+
+    QL->>Storage: searchMemoryRecordsLexical(ns, query, limit × C)
+    Storage-->>QL: [{record, rank}] (FTS5-ranked)
+
+    alt tokenized query is empty
+        QL-->>QL: return []
+    else embedder off / not ready / embed(query) fails
+        QL-->>QL: return lexical top-limit
+    else full hybrid path
+        QL->>Embedder: embed(query)
+        Embedder-->>QL: Float32Array(384)
+        QL->>Cache: getOrLoad(ns)
+        alt cache miss
+            Cache->>Storage: listEmbeddings(ns)
+            Storage-->>Cache: [{record_id, embedding}]
+        end
+        Cache-->>QL: normalized index
+        QL->>QL: cosine rank top limit × C
+        QL->>QL: rrfFuse(lex, vec, k = 60, limit × 2)
+        QL-->>QL: sort by fused_score, created_at, record_id
+        QL-->>QL: return top-limit
+    end
+```
+
+### Lexical-only fallback
+
+The search never degrades below the FTS5 baseline. Four situations short-circuit the vector path and return lexical-only results:
+
+| Situation | What triggers it |
+|-----------|------------------|
+| Feature flag off | `CollectorConfig.embeddingEnabled` is `false`. Model is never loaded. |
+| Embedder unavailable | `embedder.isReady()` returns `false` — model-load failure on daemon start, or the embedder was never constructed. |
+| Query-embed failure | `embedder.embed(query)` rejects (timeout, internal error). One warning is logged with the error. |
+| Namespace has no embeddings | All records in the namespace have a `NULL` embedding — typically on a fresh install before the backfill worker has caught up. Cosine ranking returns an empty list; fusion collapses to the lexical side only. |
+
+In every case the function returns whatever the lexical path produced, truncated to `limit`. A record with a `NULL` embedding is not filtered out of results — it just cannot contribute to the vector ranking. The same record still participates in FTS5 matching normally.
+
+The fallback is how the embedder's degraded-mode state is made invisible to the agent. Retrieval keeps working; quality may be lower until the model is restored, but the agent never sees an error or an empty result caused by the vector side alone. This is verified by Property 8 in the spec — for any corpus and any query, hybrid search with a dead embedder returns exactly the same ordered list as pure FTS5.
+
+### Writes keep the cache in sync
+
+The per-namespace vector index is a pure read-through cache. After every successful `putEmbedding` — whether from the extraction worker on a fresh record or the [backfill worker](/architecture/collector#backfill-worker) catching up on pre-existing records — the query layer's `invalidateNamespace(ns)` is called. The next search in that namespace reloads the index from storage. Invalidation is explicit rather than event-driven so the storage layer stays free of cache concerns.
 
 ## Latency budget
 
@@ -165,7 +245,11 @@ From the developer's perspective, retrieval is invisible. The prompt goes in, th
 
 **Availability over ranking.** The LIKE fallback exists so every reasonable query eventually produces results, even when the FTS5 sanitizer misses an edge case. Worse rankings are a better failure mode than no rankings at all.
 
-**Budget enforced at assembly, not at storage.** The 500 ms budget wraps the entire search, including whatever the storage backend does internally. If a future storage backend — vector search, remote KB — is slower than FTS5, the budget still applies. Storage does not need to know about it.
+**Never degrade below FTS5.** Hybrid search only ever adds signal — it cannot remove records that FTS5 would have surfaced. When the embedder is off, degraded, or fails on a specific query, the code path collapses to exactly the lexical ranking. This is a hard contract, pinned by a property test that compares hybrid-with-dead-embedder against pure-FTS5 for arbitrary corpora and queries.
+
+**RRF over score calibration.** FTS5's BM25 and cosine similarity live on incompatible scales. Rather than tune a weighting function that depends on corpus statistics, kiro-learn fuses by rank using [Reciprocal Rank Fusion](https://plg.uwaterloo.ca/~gvcormac/cormacksigir09-rrf.pdf) with `k = 60`. The algorithm has no knobs that need tuning as the corpus grows.
+
+**Budget enforced at assembly, not at storage.** The 500 ms budget wraps the entire search — lexical, vector, fusion, tie-break, everything. If a future storage backend is slower than the current brute-force cosine, the budget still applies. Storage does not need to know about it.
 
 **Formatting is fixed.** The context format is not configurable. Every agent sees the same structure: a header, a list of records, summaries, facts. Keeping the format fixed means the model has one consistent shape to parse across every turn, and the project does not accumulate formatting flags the way a template engine would.
 
@@ -175,7 +259,7 @@ From the developer's perspective, retrieval is invisible. The prompt goes in, th
 
 <CardGroup cols={2}>
   <Card title="Database" href="/architecture/database">
-    The FTS5 index that backs the primary search path
+    The FTS5 index and embedding column that back hybrid search
   </Card>
   <Card title="Viewer" href="/architecture/viewer">
     Where retrieved records surface in the dashboard

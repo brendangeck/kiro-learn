@@ -66,7 +66,12 @@ let baseUrl: string;
 
 beforeAll(async () => {
   handle = await startReceiver(
-    { pipeline: mockPipeline, retrieval: mockRetrieval, storage: mockStorage },
+    {
+      pipeline: mockPipeline,
+      retrieval: mockRetrieval,
+      storage: mockStorage,
+      query: { search: () => Promise.resolve([]), invalidateNamespace: () => {} },
+    },
     { host: '127.0.0.1', port: 0, maxBodyBytes: 2 * 1024 * 1024, retrievalBudgetMs: 500 },
   );
   const addr = handle.server.address();
