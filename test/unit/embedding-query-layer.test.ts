@@ -46,7 +46,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createQueryLayer } from '../../src/collector/query/index.js';
 import type { Embedder } from '../../src/collector/embedding/index.js';
 import { openSqliteStorage } from '../../src/collector/storage/sqlite/index.js';
-import type { MemoryRecord, StorageBackend } from '../../src/types/index.js';
+import type { StorageBackend } from '../../src/types/index.js';
 
 import { makeValidRecord } from '../helpers/fixtures.js';
 
