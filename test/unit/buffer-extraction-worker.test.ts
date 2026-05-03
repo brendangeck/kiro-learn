@@ -202,6 +202,7 @@ describe('ExtractionWorker', () => {
       bufferStore,
       watcher,
       storage,
+      embedder: null,
       config: { concurrency: 2, timeoutMs: 30_000, maxRetries: 3 },
     });
 
@@ -254,6 +255,7 @@ describe('ExtractionWorker', () => {
       bufferStore,
       watcher,
       storage,
+      embedder: null,
       config: { concurrency: 2, timeoutMs: 30_000, maxRetries: 3 },
     });
 
@@ -300,6 +302,7 @@ describe('ExtractionWorker', () => {
       bufferStore,
       watcher,
       storage,
+      embedder: null,
       config: { concurrency: 2, timeoutMs: 30_000, maxRetries: 3 },
     });
 
@@ -344,6 +347,7 @@ describe('ExtractionWorker', () => {
       bufferStore,
       watcher,
       storage,
+      embedder: null,
       config: { concurrency: 2, timeoutMs: 30_000, maxRetries: 3 },
     });
 
@@ -399,6 +403,7 @@ describe('ExtractionWorker', () => {
       bufferStore,
       watcher,
       storage,
+      embedder: null,
       config: { concurrency: 2, timeoutMs: 30_000, maxRetries: 3 },
     });
 
@@ -472,6 +477,7 @@ describe('ExtractionWorker', () => {
       bufferStore,
       watcher,
       storage,
+      embedder: null,
       config: { concurrency: 2, timeoutMs: 30_000, maxRetries: 1 },
     });
 
@@ -548,6 +554,7 @@ describe('ExtractionWorker', () => {
       bufferStore,
       watcher,
       storage,
+      embedder: null,
       config: { concurrency: 2, timeoutMs: 30_000, maxRetries: 1 },
     });
 
@@ -605,6 +612,7 @@ describe('ExtractionWorker', () => {
       bufferStore,
       watcher,
       storage,
+      embedder: null,
       config: { concurrency: 2, timeoutMs: 30_000, maxRetries: 3 },
     });
 
@@ -658,6 +666,7 @@ describe('ExtractionWorker', () => {
       bufferStore,
       watcher,
       storage,
+      embedder: null,
       config: { concurrency: 2, timeoutMs: 30_000, maxRetries: 3 },
     });
 

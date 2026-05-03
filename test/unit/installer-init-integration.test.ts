@@ -50,7 +50,7 @@ vi.mock('node:os', async (importOriginal) => {
 // Mock child_process so execSync/spawn/execFileSync don't actually run
 // external commands.
 // - checkKiroCli calls execSync('kiro-cli --version')
-// - installDeps calls execSync('npm install --production')
+// - installDeps calls execSync('npm install --omit=dev')
 // - setDefaultAgent calls execSync('kiro-cli agent set-default kiro-learn')
 // - startDaemon calls spawn(process.execPath, [...])
 // - writeKiroLearnAgent → runSeedCommand calls

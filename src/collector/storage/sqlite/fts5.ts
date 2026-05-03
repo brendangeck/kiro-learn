@@ -27,7 +27,14 @@
  * @module
  */
 
+import { tokenizeForQuery } from '../../query/tokenize.js';
 import type { Statements } from './statements.js';
+
+// Re-export so existing callers (including property tests) that
+// import `tokenizeForQuery` from this module keep working. The
+// canonical definition lives under `src/collector/query/` so the
+// `QueryLayer` can consult it without importing sqlite-side code.
+export { tokenizeForQuery };
 
 /**
  * Tokenize a user query into deduplicated terms, cap at `termCap`, and build
@@ -58,6 +65,9 @@ import type { Statements } from './statements.js';
  * @see Requirements 1.1–1.6, 2.1, 2.2, 10.1, 10.2
  */
 export function sanitizeForFts5(query: string, termCap: number = 32): string {
+  if (!Number.isFinite(termCap) || !Number.isInteger(termCap) || termCap < 1) {
+    throw new Error(`sanitizeForFts5: termCap must be a positive integer, got ${String(termCap)}`);
+  }
   const tokens = tokenizeForQuery(query);
   if (tokens.length === 0) return '';
   const retained = tokens.slice(0, termCap);
@@ -83,29 +93,6 @@ export function sanitizeForFts5(query: string, termCap: number = 32): string {
  */
 export function escapeLikePattern(query: string): string {
   return query.replace(/[\\%_]/g, (ch) => `\\${ch}`);
-}
-
-/**
- * Split a raw user query on Unicode whitespace, discard empty tokens, and
- * deduplicate preserving first-occurrence order.
- *
- * The output is suitable as input to {@link buildFts5OrQuery} or the
- * IDF-based term ranker. Casing and non-whitespace content are unchanged —
- * normalisation (case folding, stemming, diacritic removal) is the FTS5
- * tokenizer's responsibility at index/query time, not this module's.
- *
- * @see Requirements 1.1, 1.2, 1.3, 7.2, 7.3, 11.1
- */
-export function tokenizeForQuery(query: string): readonly string[] {
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const raw of query.split(/\s+/u)) {
-    if (raw === '') continue;
-    if (seen.has(raw)) continue;
-    seen.add(raw);
-    out.push(raw);
-  }
-  return out;
 }
 
 /**
@@ -181,6 +168,9 @@ export function createFts5Sanitizer(
   opts?: { termCap?: number },
 ): (query: string) => string {
   const K = opts?.termCap ?? 32;
+  if (!Number.isFinite(K) || !Number.isInteger(K) || K < 1) {
+    throw new Error(`createFts5Sanitizer: termCap must be a positive integer, got ${String(K)}`);
+  }
   const ranker = createTermRanker(stmts);
 
   return (query: string): string => {

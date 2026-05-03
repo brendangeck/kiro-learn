@@ -129,6 +129,63 @@ export interface MemoryRecordRow {
 }
 
 /**
+ * {@link MemoryRecordRow} with an additional 1-based `rank` column
+ * produced by `ROW_NUMBER() OVER (ORDER BY fts.rank, record_id)`.
+ *
+ * Surfaced only by {@link Statements.selectMemoryRecordsFtsMatchRanked}
+ * for the hybrid-search RRF fusion path, where callers need the lexical
+ * rank alongside the row without a separate round trip. The FTS5
+ * `rank` column itself is a floating-point score; exposing
+ * `ROW_NUMBER()` means callers get a stable, integer 1-based position
+ * suitable for `1 / (k + rank)` fusion without any client-side
+ * recomputation. `record_id` breaks ties deterministically so the
+ * integer rank is stable across executions when multiple rows share
+ * the same BM25 score.
+ *
+ * The existing {@link MemoryRecordRow} shape is deliberately unchanged —
+ * the ranked surface is a strict superset consumed by a different
+ * read path.
+ *
+ * @see Requirements 4.7, 5.1
+ */
+export interface MemoryRecordRowWithRank extends MemoryRecordRow {
+  rank: number;
+}
+
+/**
+ * Row shape returned by
+ * {@link Statements.selectEmbeddingsByNamespace}. Only records with a
+ * non-NULL `embedding` are returned, so `embedding` is typed as a
+ * non-nullable `Buffer`.
+ *
+ * Ordered by `created_at DESC` at the SQL level so callers (the
+ * per-namespace vector-index cache) can apply recency-based caps
+ * without re-sorting.
+ *
+ * @see Requirements 4.7, 5.1, 8.6
+ */
+export interface EmbeddingByNamespaceRow {
+  record_id: string;
+  embedding: Buffer;
+  created_at: string;
+}
+
+/**
+ * Row shape returned by
+ * {@link Statements.selectEmbeddingStatsGlobal} /
+ * {@link Statements.selectEmbeddingStatsScoped}. A single row with two
+ * conditional-count columns — one statement, one round trip — populating
+ * the additive `embeddings_present` / `embeddings_missing` fields on
+ * `StatsResult`.
+ *
+ * @see Requirements 14.4
+ */
+export interface EmbeddingStatsRow {
+  present: number;
+  missing: number;
+}
+
+/**
  * Positional parameters bound to {@link Statements.insertEvent}, in SQL
  * order. Matches the column list in migration 0001's `events` table
  * plus migration 0003's `project_path` column.
@@ -585,6 +642,114 @@ export interface Statements {
    * @see Requirements 4.2, 9.3
    */
   prepareSelectFts5VocabDocFreq: (arity: number) => Statement<string[], { term: string; doc: number }>;
+
+  // -----------------------------------------------------------------------
+  // Embedding + hybrid-search statements (local-embeddings-and-hybrid-search)
+  // -----------------------------------------------------------------------
+
+  /**
+   * Write (or overwrite) the embedding blob on an existing memory record.
+   *
+   * Parameters:
+   * 1. `embedding` — the Float32Array-encoded vector as a raw byte `Buffer`
+   *    (`new Uint8Array(f32.buffer, f32.byteOffset, f32.byteLength)`), which
+   *    `better-sqlite3` stores as a SQLite `BLOB`.
+   * 2. `record_id` — the memory record to update.
+   *
+   * If no row matches `record_id`, `RunResult.changes` is `0` and the
+   * backend treats that as a no-op. The embedding column on
+   * `memory_records` is nullable (migration 0005) so there is no need
+   * for an `INSERT` variant — the row is created by
+   * `insertMemoryRecord` and the embedding is back-filled later.
+   *
+   * @see Requirements 4.7, 8.6
+   */
+  updateMemoryRecordEmbedding: Statement<[embedding: Buffer, recordId: string]>;
+
+  /**
+   * Fetch the embedding blob for a single memory record. `embedding`
+   * is `null` when the record has not been embedded yet; the backend
+   * decodes non-null values back into a `Float32Array`.
+   *
+   * @see Requirements 4.7, 8.6
+   */
+  selectMemoryRecordEmbedding: Statement<[recordId: string], { embedding: Buffer | null }>;
+
+  /**
+   * Every embedded memory record for an exact namespace, newest first.
+   * Only rows with a non-NULL `embedding` are returned — used by the
+   * per-namespace vector-index cache at load time.
+   *
+   * Exact namespace match (not prefix) per design: callers of
+   * `listEmbeddings` scope by a specific `/actor/<id>/project/<id>/`
+   * namespace, not a prefix.
+   *
+   * @see Requirements 4.7, 5.1, 8.6
+   */
+  selectEmbeddingsByNamespace: Statement<[namespace: string], EmbeddingByNamespaceRow>;
+
+  /**
+   * Memory records that still need an embedding, oldest first so
+   * back-fill walks the backlog in insertion order.
+   *
+   * A single statement handles both global (no filter) and
+   * namespace-scoped back-fill by using
+   * `(? IS NULL OR namespace = ?)` — the namespace parameter is bound
+   * twice, once for the `IS NULL` test and once for the equality test.
+   * Passing `[null, null, limit]` returns the global backlog; passing
+   * `[ns, ns, limit]` returns the namespace-scoped backlog. This
+   * avoids duplicating the SELECT column list for the two shapes.
+   *
+   * Column projection matches {@link MemoryRecordRow} so the existing
+   * `rowToMemoryRecord` decoder works unchanged — the `embedding`
+   * column is deliberately absent from the SELECT list (it is a
+   * storage-internal detail).
+   *
+   * @see Requirements 4.7, 8.6
+   */
+  selectMemoryRecordsWithoutEmbedding: Statement<
+    [namespaceOrNull: string | null, namespaceOrNull2: string | null, limit: number],
+    MemoryRecordRow
+  >;
+
+  /**
+   * FTS5-MATCH variant of {@link selectMemoryRecordsFtsMatch} that also
+   * returns a 1-based lexical rank via
+   * `ROW_NUMBER() OVER (ORDER BY fts.rank, record_id)`. Same
+   * namespace-prefix filter (`LIKE ? || '%'`) and same parameter tuple —
+   * callers that want rank switch statement, not query shape.
+   *
+   * The integer rank is suitable for direct use in RRF fusion
+   * (`1 / (k + rank)`) without client-side recomputation. `record_id`
+   * is included as a deterministic tie-breaker so BM25 ties produce a
+   * stable row ordering across executions.
+   *
+   * @see Requirements 4.7, 5.1, 16.2
+   */
+  selectMemoryRecordsFtsMatchRanked: Statement<
+    SelectMemoryRecordsFtsMatchParams,
+    MemoryRecordRowWithRank
+  >;
+
+  /**
+   * Global embedding-coverage stats: how many memory records have a
+   * non-NULL `embedding` (`present`) versus NULL (`missing`). One row,
+   * one statement, one round trip — the backend surfaces these on
+   * `StatsResult.embeddings_present` / `embeddings_missing`.
+   *
+   * @see Requirements 14.4
+   */
+  selectEmbeddingStatsGlobal: Statement<[], EmbeddingStatsRow>;
+
+  /**
+   * Namespace-scoped embedding-coverage stats. Exact namespace match
+   * (not prefix) to align with the scoped stats surface.
+   *
+   * Parameters: `[namespace]`.
+   *
+   * @see Requirements 14.4
+   */
+  selectEmbeddingStatsScoped: Statement<[namespace: string], EmbeddingStatsRow>;
 }
 
 /**
@@ -942,6 +1107,125 @@ export function prepareStatements(db: Database): Statements {
     return stmt;
   };
 
+  // -----------------------------------------------------------------------
+  // Embedding + hybrid-search statements (local-embeddings-and-hybrid-search)
+  // -----------------------------------------------------------------------
+
+  // Back-fill / overwrite the embedding blob for a specific record. The
+  // first bound value is the raw Float32Array bytes (wrapped as Buffer);
+  // `better-sqlite3` writes it as a SQLite BLOB. No-op when record_id
+  // misses, surfaced via RunResult.changes === 0.
+  //
+  // @see Requirements 4.7, 8.6, 12.1
+  const updateMemoryRecordEmbedding = db.prepare<[embedding: Buffer, recordId: string]>(
+    `UPDATE memory_records SET embedding = ? WHERE record_id = ?`,
+  );
+
+  // Point lookup of a single embedding. Returned as `{ embedding: Buffer | null }`
+  // so the backend can distinguish "not embedded yet" (null) from
+  // "embedded" (Buffer) without a second round trip.
+  //
+  // @see Requirements 4.7, 8.6
+  const selectMemoryRecordEmbedding = db.prepare<
+    [recordId: string],
+    { embedding: Buffer | null }
+  >(`SELECT embedding FROM memory_records WHERE record_id = ?`);
+
+  // Bulk-fetch every embedded record for an exact namespace, newest first
+  // — the per-namespace vector-index cache consumes this at load time.
+  // Only rows with a non-NULL embedding are returned, so the row shape
+  // treats `embedding` as non-nullable.
+  //
+  // Exact namespace equality (not prefix): `listEmbeddings` is scoped to
+  // a specific `/actor/<id>/project/<id>/` namespace per design.
+  //
+  // @see Requirements 4.7, 5.1, 8.6
+  const selectEmbeddingsByNamespace = db.prepare<[namespace: string], EmbeddingByNamespaceRow>(
+    `SELECT record_id, embedding, created_at
+     FROM memory_records
+     WHERE namespace = ? AND embedding IS NOT NULL
+     ORDER BY created_at DESC`,
+  );
+
+  // Back-fill walker. One statement handles both global and namespace-
+  // scoped back-fill via `(? IS NULL OR namespace = ?)` — the namespace
+  // parameter is bound twice so a single prepared statement serves both
+  // shapes. Call with `[null, null, limit]` for the global backlog or
+  // `[ns, ns, limit]` for a namespace-scoped backlog. Oldest first so
+  // the embedder drains the backlog in insertion order.
+  //
+  // Column projection matches MemoryRecordRow exactly so rowToMemoryRecord
+  // stays unchanged — the embedding column is deliberately omitted (it
+  // is a storage-internal detail).
+  //
+  // @see Requirements 4.7, 8.6, 12.1
+  const selectMemoryRecordsWithoutEmbedding = db.prepare<
+    [namespaceOrNull: string | null, namespaceOrNull2: string | null, limit: number],
+    MemoryRecordRow
+  >(
+    `SELECT
+       record_id, namespace, strategy, title, summary,
+       facts_json, source_event_ids_json, created_at,
+       concepts_json, files_touched_json, observation_type
+     FROM memory_records
+     WHERE embedding IS NULL
+       AND (? IS NULL OR namespace = ?)
+     ORDER BY created_at ASC
+     LIMIT ?`,
+  );
+
+  // FTS5-MATCH variant that projects a 1-based lexical rank alongside the
+  // record columns. Same shape as selectMemoryRecordsFtsMatch (same
+  // namespace-prefix LIKE, same MATCH form, same parameter tuple), plus
+  // `ROW_NUMBER() OVER (ORDER BY fts.rank, mr.record_id) AS rank` for a
+  // stable integer rank suitable for RRF fusion (`1 / (k + rank)`).
+  // `mr.record_id` is included as a deterministic tie-breaker so BM25
+  // ties produce a stable row ordering across executions — without it
+  // RRF fusion can flip its output for identical inputs on tied scores.
+  //
+  // @see Requirements 4.7, 5.1, 8.3, 8.4, 12.1, 12.2, 16.2
+  const selectMemoryRecordsFtsMatchRanked = db.prepare<
+    SelectMemoryRecordsFtsMatchParams,
+    MemoryRecordRowWithRank
+  >(
+    `SELECT
+       mr.record_id, mr.namespace, mr.strategy, mr.title, mr.summary,
+       mr.facts_json, mr.source_event_ids_json, mr.created_at,
+       mr.concepts_json, mr.files_touched_json, mr.observation_type,
+       ROW_NUMBER() OVER (ORDER BY fts.rank, mr.record_id) AS rank
+     FROM memory_records_fts fts
+     JOIN memory_records mr ON mr.record_id = fts.record_id
+     WHERE memory_records_fts MATCH ?
+       AND mr.namespace LIKE ? || '%'
+     ORDER BY fts.rank, mr.record_id
+     LIMIT ?`,
+  );
+
+  // Global embedding-coverage stats. Conditional aggregates in a single
+  // row / single round trip — SUM(CASE WHEN ...) is portable and keeps
+  // the backend's stats call at O(1) statements regardless of the
+  // present/missing split.
+  //
+  // @see Requirements 14.4
+  const selectEmbeddingStatsGlobal = db.prepare<[], EmbeddingStatsRow>(
+    `SELECT
+       SUM(CASE WHEN embedding IS NOT NULL THEN 1 ELSE 0 END) AS present,
+       SUM(CASE WHEN embedding IS NULL THEN 1 ELSE 0 END) AS missing
+     FROM memory_records`,
+  );
+
+  // Namespace-scoped embedding-coverage stats. Exact namespace equality
+  // (not prefix) to match the scoped stats surface (selectStatsScoped).
+  //
+  // @see Requirements 14.4
+  const selectEmbeddingStatsScoped = db.prepare<[namespace: string], EmbeddingStatsRow>(
+    `SELECT
+       SUM(CASE WHEN embedding IS NOT NULL THEN 1 ELSE 0 END) AS present,
+       SUM(CASE WHEN embedding IS NULL THEN 1 ELSE 0 END) AS missing
+     FROM memory_records
+     WHERE namespace = ?`,
+  );
+
   return {
     insertEvent,
     selectEventById,
@@ -968,5 +1252,12 @@ export function prepareStatements(db: Database): Statements {
     selectEventCountAll,
     selectFts5DocCount,
     prepareSelectFts5VocabDocFreq,
+    updateMemoryRecordEmbedding,
+    selectMemoryRecordEmbedding,
+    selectEmbeddingsByNamespace,
+    selectMemoryRecordsWithoutEmbedding,
+    selectMemoryRecordsFtsMatchRanked,
+    selectEmbeddingStatsGlobal,
+    selectEmbeddingStatsScoped,
   };
 }

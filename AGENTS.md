@@ -126,7 +126,7 @@ New diagrams use `mermaid` blocks matching the existing style — `flowchart LR`
 
 ## How to extend the system
 
-**Add a schema field.** Update `src/types/schemas.ts`. Add a migration under `src/collector/storage/sqlite/migrations/` with a monotonic numeric prefix (current highest is `0004`). Update `test/helpers/arbitrary.ts` fast-check generators. Update `docs/concepts/event-types.mdx`.
+**Add a schema field.** Update `src/types/schemas.ts`. Add a migration under `src/collector/storage/sqlite/migrations/` with a monotonic numeric prefix (current highest is `0005`). Update `test/helpers/arbitrary.ts` fast-check generators. Update `docs/concepts/event-types.mdx`.
 
 **Add an MCP tool.** Handler in `src/mcp/tools.ts`, registered in `src/mcp/index.ts`. Must talk to the collector over HTTP — no imports from `src/collector/`, `src/shim/`, or `src/installer/`. The namespace-derivation algorithm in `src/mcp/namespace.ts` is a deliberate duplication of the shim's algorithm and must stay in sync.
 
@@ -148,7 +148,7 @@ Progress toward the north star:
 - [x] Viewer UI — Cloudscape dashboard with cosmos.gl memory graph, event tail, metrics
 - [x] FTS5 tokenized retrieval — OR-of-phrases with IDF term ranking
 - [x] Public docs site at https://kiro-learn.mintlify.app
-- [ ] Hybrid search with local embeddings — Titan Text Embeddings V2 + `sqlite-vec`, reranked with FTS5 + recency
+- [x] Hybrid search with local embeddings — MiniLM-L6-v2 (local ONNX) + BLOB + RRF (Reciprocal Rank Fusion)
 - [ ] Remote knowledge-base sync — Aurora + pgvector or Bedrock AgentCore Memory as a drop-in `StorageBackend`
 - [ ] Team-level shared memory — namespace-scoped access control on a shared KB
 - [ ] Enhanced privacy — configurable redaction policies beyond `<private>` tags, PII detection, audit logging

@@ -433,6 +433,7 @@ export function writePackageJson(): void {
     type: 'module',
     dependencies: {
       '@agentclientprotocol/sdk': '0.20.0',
+      '@huggingface/transformers': '4.2.0',
       '@modelcontextprotocol/sdk': '1.12.1',
       'better-sqlite3': '12.0.0',
       ulidx: '2.4.1',
@@ -469,9 +470,33 @@ export function installDeps(): void {
   writeFileSync(npmrcPath, 'registry=https://registry.npmjs.org/\n');
 
   try {
-    execSync('npm install --production', {
+    // We run postinstall scripts because two of our native deps need them:
+    //
+    // - `better-sqlite3` downloads a prebuilt `.node` binding via its
+    //   `install` script (not present in the npm tarball). Without it, the
+    //   collector dies at `new Database(...)` with a "Could not locate the
+    //   bindings file" error.
+    // - `onnxruntime-node` ships prebuilts in the tarball and needs nothing,
+    //   but is harmless to leave enabled.
+    //
+    // The reason `--ignore-scripts` used to be set is `sharp`, a transitive
+    // dep of `@huggingface/transformers`. sharp does image decoding (which
+    // we never use — feature extraction on text only) and historically its
+    // postinstall could trigger a node-gyp source build on hosts without
+    // libvips. sharp@0.34+ solves this by resolving a platform-specific
+    // prebuilt via optional deps (`@img/sharp-<os>-<arch>`); when that
+    // optional dep is available for the host, no source build happens.
+    //
+    // `SHARP_IGNORE_GLOBAL_LIBVIPS=1` forces sharp to prefer its bundled
+    // prebuilt over any system libvips, which keeps behaviour deterministic
+    // across hosts. On platforms where no `@img/sharp-*` package matches
+    // (exotic archs, musl in some configs, `npm --no-optional`), the
+    // install will fail loudly here rather than silently leaving the
+    // collector unable to start — a much better failure mode.
+    execSync('npm install --omit=dev', {
       cwd: INSTALL_DIR,
       stdio: ['ignore', 'ignore', 'pipe'],
+      env: { ...process.env, SHARP_IGNORE_GLOBAL_LIBVIPS: '1' },
     });
   } catch (err: unknown) {
     const stderr =

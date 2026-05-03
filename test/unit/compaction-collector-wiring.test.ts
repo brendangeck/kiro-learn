@@ -225,6 +225,7 @@ describe('Collector compaction wiring', () => {
       bufferDir,
       compactionEnabled: true,
       port: 0,
+      embeddingEnabled: false,
     });
 
     // createCompactionWorker should have been called
@@ -255,6 +256,7 @@ describe('Collector compaction wiring', () => {
       bufferDir,
       // compactionEnabled defaults to false
       port: 0,
+      embeddingEnabled: false,
     });
 
     // createCompactionWorker should NOT have been called
@@ -291,6 +293,7 @@ describe('Collector compaction wiring', () => {
       bufferDir,
       compactionEnabled: true,
       port: 0,
+      embeddingEnabled: false,
     });
 
     // Track call order
@@ -351,6 +354,7 @@ describe('Collector compaction wiring', () => {
       bufferDir,
       bufferIdleMs: 60_000, // long idle to prevent extraction during test
       port: 0,
+      embeddingEnabled: false,
     });
 
     // Orphaned temp files should have been removed
@@ -391,6 +395,7 @@ describe('Collector compaction wiring', () => {
       compactionEnabled: true,
       bufferIdleMs: 60_000, // long idle to prevent extraction during test
       port: 0,
+      embeddingEnabled: false,
     });
 
     // The watcher's notifyAppend should have been called with the project's size

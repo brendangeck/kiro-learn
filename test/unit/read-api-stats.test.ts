@@ -58,7 +58,12 @@ beforeAll(async () => {
   storage = openSqliteStorage({ dbPath });
 
   handle = await startReceiver(
-    { pipeline: mockPipeline, retrieval: mockRetrieval, storage },
+    {
+      pipeline: mockPipeline,
+      retrieval: mockRetrieval,
+      storage,
+      query: { search: () => Promise.resolve([]), invalidateNamespace: () => {} },
+    },
     { host: '127.0.0.1', port: 0, maxBodyBytes: 2 * 1024 * 1024, retrievalBudgetMs: 500 },
   );
   const addr = handle.server.address();
@@ -276,7 +281,12 @@ describe('GET /v1/stats — empty database', () => {
     emptyStorage = openSqliteStorage({ dbPath });
 
     emptyHandle = await startReceiver(
-      { pipeline: mockPipeline, retrieval: mockRetrieval, storage: emptyStorage },
+      {
+        pipeline: mockPipeline,
+        retrieval: mockRetrieval,
+        storage: emptyStorage,
+        query: { search: () => Promise.resolve([]), invalidateNamespace: () => {} },
+      },
       { host: '127.0.0.1', port: 0, maxBodyBytes: 2 * 1024 * 1024, retrievalBudgetMs: 500 },
     );
     const addr = emptyHandle.server.address();

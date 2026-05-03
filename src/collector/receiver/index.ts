@@ -24,6 +24,7 @@ import { resolveAsset, serveAsset } from './static-handler.js';
 import { NAMESPACE_RE, parseEvent, parseMemoryRecord } from '../../types/index.js';
 import type { EventIngestResponse, StorageBackend } from '../../types/index.js';
 import type { Pipeline } from '../pipeline/index.js';
+import type { QueryLayer } from '../query/index.js';
 import type { RetrievalAssembler } from '../retrieval/index.js';
 
 // ── Version resolution ───────────────────────────────────────────────────
@@ -62,6 +63,18 @@ export interface ReceiverDeps {
   pipeline: Pipeline;
   retrieval: RetrievalAssembler;
   storage: StorageBackend;
+  /**
+   * Search layer used by `GET /v1/memories/search`. This is the
+   * hybrid (lexical + vector + RRF) path when an embedder is
+   * present and gracefully degrades to lexical-only when the
+   * embedder is absent, not ready, or fails. Wiring the receiver
+   * through this layer rather than straight to
+   * `storage.searchMemoryRecords` is what makes the HTTP surface
+   * benefit from the embedding pipeline built in the
+   * local-embeddings-and-hybrid-search spec — the HTTP contract
+   * stays identical, clients see no algorithm details.
+   */
+  query: QueryLayer;
 }
 
 /**
@@ -189,7 +202,7 @@ export function startReceiver(
   deps: ReceiverDeps,
   opts: ReceiverOptions,
 ): Promise<ReceiverHandle> {
-  const { pipeline, retrieval, storage } = deps;
+  const { pipeline, retrieval, storage, query } = deps;
   const { maxBodyBytes, retrievalBudgetMs } = opts;
 
   // ── Static-asset root (computed once at startup) ────────────────
@@ -455,8 +468,8 @@ export function startReceiver(
         return;
       }
 
-      const query = url.searchParams.get('query');
-      if (query === null || query === '') {
+      const queryString = url.searchParams.get('query');
+      if (queryString === null || queryString === '') {
         jsonResponse(res, 400, { error: 'query parameter is required' });
         return;
       }
@@ -474,7 +487,7 @@ export function startReceiver(
       }
 
       try {
-        const results = await storage.searchMemoryRecords({ namespace: ns, query, limit });
+        const results = await query.search(ns, queryString, limit);
         jsonResponse(res, 200, results);
       } catch {
         jsonResponse(res, 500, { error: 'internal error' });

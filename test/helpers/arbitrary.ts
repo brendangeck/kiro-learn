@@ -18,6 +18,7 @@ import { OBSERVATION_TYPES } from '../../src/types/schemas.js';
 import type { KiroMemEvent, MemoryRecord } from '../../src/types/schemas.js';
 import type { StatsResult, ProjectInfo } from '../../src/types/index.js';
 import type { BufferEntry } from '../../src/collector/buffer/types.js';
+import type { Ranked } from '../../src/collector/embedding/rrf.js';
 
 /** Crockford base32 alphabet used in ULIDs (no I, L, O, U). */
 const ULID_ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
@@ -1475,5 +1476,144 @@ export function compactionResponseArb(): fc.Arbitrary<string> {
       entries
         .map((content) => `<compacted_entry>${content}</compacted_entry>`)
         .join('\n'),
+    );
+}
+
+// ── Embedding generators (local-embeddings-and-hybrid-search Task 12.1) ─
+
+/**
+ * Arbitrary {@link Float32Array} of a caller-supplied fixed length.
+ *
+ * Used by the BLOB round-trip property test (design § Property 1) and any
+ * future test that needs to exercise the embedding codec across the full
+ * IEEE-754 single-precision value space — including the awkward corners
+ * the codec must preserve bit-for-bit: `NaN`, `+Infinity`, `-Infinity`,
+ * `+0`, `-0`, and subnormals.
+ *
+ * Implementation:
+ *
+ * - `fc.float({ noNaN: false, noDefaultInfinity: false })` generates
+ *   every representable `float32` value, including NaN patterns and
+ *   ±Infinity. fast-check's `fc.float` already yields `float32`-precise
+ *   values (values that survive a `Math.fround` round-trip), so
+ *   `Float32Array.from(arr)` is lossless.
+ * - `Float32Array.from(arr)` copies the `number[]` into a new typed
+ *   array of exact length `len`. No aliasing with the generator-owned
+ *   array.
+ *
+ * The returned `Float32Array` is a fresh heap allocation on every draw
+ * so shrinks and retries cannot observe mutation from prior runs.
+ *
+ * @param len - Exact length of the produced array. Typically `384`
+ *   (the embedder's dimensionality) but the helper is generic so
+ *   downstream codec tests can exercise off-dimension inputs too.
+ * @returns A fast-check arbitrary yielding `Float32Array` values of
+ *   length exactly `len`.
+ *
+ * @see .kiro/specs/local-embeddings-and-hybrid-search/design.md
+ *      § Property 1 — BLOB round-trip preserves every bit
+ * @see .kiro/specs/local-embeddings-and-hybrid-search/tasks.md
+ *      § Task 12.1 — test helpers for embedding properties
+ */
+export function arbitraryFloat32Array(len: number): fc.Arbitrary<Float32Array> {
+  return fc
+    .array(fc.float({ noNaN: false, noDefaultInfinity: false }), {
+      minLength: len,
+      maxLength: len,
+    })
+    .map((arr) => Float32Array.from(arr));
+}
+
+/**
+ * Arbitrary ranked list over a caller-supplied id pool.
+ *
+ * Used by the RRF fusion property test (design § Property 6) to produce
+ * the {@link Ranked} shape that `rrfFuse` consumes. A ranked list is a
+ * randomly shuffled subset of the input `ids` with contiguous 1-based
+ * ranks (`rank === 1` is the top). The empty list is a valid draw —
+ * exercised directly by the lexical-only and vector-only fallback
+ * clauses — and the full permutation is also reachable, which the
+ * agreement-preservation clause relies on.
+ *
+ * Implementation uses `fc.shuffledSubarray(ids)` so every draw is a
+ * duplicate-free ordering of some subset of the pool. The mapping step
+ * then stamps 1-based ranks in the shuffled order.
+ *
+ * The return type is explicitly `Ranked[]` (imported as a type from the
+ * RRF module) so the generator composes directly with the fusion
+ * function under test without an ad-hoc local interface.
+ *
+ * @param ids - Id pool. Typically a small alphabet like
+ *   `['a', 'b', 'c', 'd', 'e', 'f', 'g']` — small pools make shrinks
+ *   readable and exercise heavy overlap between the two ranked lists
+ *   the fusion consumes.
+ * @returns A fast-check arbitrary yielding `Ranked[]` values whose
+ *   `record_id`s are a duplicate-free subset of `ids` in a random
+ *   order, with contiguous 1-based ranks.
+ *
+ * @see .kiro/specs/local-embeddings-and-hybrid-search/design.md
+ *      § Property 6 — RRF fusion satisfies its algebraic contract
+ * @see .kiro/specs/local-embeddings-and-hybrid-search/tasks.md
+ *      § Task 12.1 — test helpers for embedding properties
+ */
+export function arbitraryRankedList(
+  ids: readonly string[],
+): fc.Arbitrary<Ranked[]> {
+  return fc
+    .shuffledSubarray(ids as string[])
+    .map((subset) =>
+      subset.map((id, i) => ({ record_id: id, rank: i + 1 })),
+    );
+}
+
+/**
+ * Arbitrary mixed-embedding corpus for a single namespace.
+ *
+ * Yields an array of `{record, embedding}` pairs where every record's
+ * `namespace` field is forced to the caller-supplied namespace (so the
+ * corpus is hermetic for namespace-scoped tests) and the embedding is
+ * either a `Float32Array(384)` or `null` — the latter modelling the
+ * pre-spec / pre-backfill / failed-embed rows that still need to be
+ * searchable via the FTS5 lexical path (Req 8.1).
+ *
+ * The generator draws 1–10 pairs per run; that is wide enough to
+ * exercise the lexical ranking across multiple records and short
+ * enough that each `fc.asyncProperty` iteration that seeds a real
+ * in-memory SQLite backend stays well under a second. The embedding
+ * is drawn from {@link arbitraryFloat32Array} without restriction to
+ * finite values — cosine handles zero-norm and non-finite inputs
+ * gracefully (`NaN`/∞ simply pollute the similarity downstream, which
+ * is itself observable behaviour the degrade-to-lexical property is
+ * meant to tolerate), and Property 8 is about the fallback branches
+ * that never consult the vectors at all.
+ *
+ * @param namespace - The namespace every produced record will carry.
+ *   Must match the project's namespace regex (`/actor/.../project/.../`);
+ *   callers typically pass a fixed string for hermetic tests.
+ *
+ * @see .kiro/specs/local-embeddings-and-hybrid-search/design.md
+ *      § Property 8 — Hybrid degrades cleanly to lexical
+ * @see .kiro/specs/local-embeddings-and-hybrid-search/tasks.md
+ *      § Task 12.1 — test helpers for embedding properties
+ */
+export function arbitraryMixedCorpus(
+  namespace: string,
+): fc.Arbitrary<Array<{ record: MemoryRecord; embedding: Float32Array | null }>> {
+  return fc
+    .array(
+      fc.tuple(
+        arbitraryMemoryRecord(),
+        fc.option(arbitraryFloat32Array(384), { nil: null }),
+      ),
+      { minLength: 1, maxLength: 10 },
+    )
+    .map((pairs) =>
+      pairs.map(([record, embedding]) => ({
+        // Overwrite the namespace so the corpus is hermetic —
+        // every record lives in the caller's namespace regardless
+        // of what `arbitraryMemoryRecord` drew.
+        record: { ...record, namespace },
+        embedding,
+      })),
     );
 }

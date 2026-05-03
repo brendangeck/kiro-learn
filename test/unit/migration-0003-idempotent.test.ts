@@ -18,7 +18,7 @@ import {
  * This is an example-level counterpart to the property-based idempotency
  * check in `migrations.idempotency.property.test.ts` (which covers
  * arbitrary prefixes of `MIGRATIONS`). Here we pin the full canonical
- * migration list (currently 4 migrations, head version 4) once — so that
+ * migration list (currently 5 migrations, head version 5) once — so that
  * a regression surfaces from a named, file-scoped test even if
  * fast-check's universe is ever narrowed.
  *
@@ -71,7 +71,7 @@ describe('migration idempotent re-apply — full MIGRATIONS list', () => {
   });
 
   it('leaves sqlite_master and _migrations byte-identical on a second invocation (Requirement 8.6)', () => {
-    // First invocation: bring the DB up to the current head (version 4).
+    // First invocation: bring the DB up to the current head (version 5).
     runMigrations(db, MIGRATIONS);
 
     const schemaAfterFirst = db
@@ -86,15 +86,16 @@ describe('migration idempotent re-apply — full MIGRATIONS list', () => {
       .all();
 
     // Sanity-check the precondition: the first run must have recorded all
-    // four migrations. Without this, the "no-op on second invocation"
+    // five migrations. Without this, the "no-op on second invocation"
     // check below would hold vacuously on, say, a broken runner that
     // silently skipped migrations.
-    expect(migrationsAfterFirst.map((r) => r.version)).toEqual([1, 2, 3, 4]);
+    expect(migrationsAfterFirst.map((r) => r.version)).toEqual([1, 2, 3, 4, 5]);
     expect(migrationsAfterFirst.map((r) => r.name)).toEqual([
       '0001_init',
       '0002_xml_extraction_fields',
       '0003_project_path',
       '0004_session_summary_type',
+      '0005_memory_record_embedding',
     ]);
 
     // Second invocation: must be a complete no-op. Not throwing is part

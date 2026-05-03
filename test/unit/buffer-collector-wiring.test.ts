@@ -107,6 +107,9 @@ describe('Collector buffer wiring', () => {
       bufferEnabled: true,
       bufferDir,
       port: 0, // port 0 is handled by mock receiver
+      // Disable the ONNX embedder so this test stays focused on buffer
+      // wiring and avoids loading the real model via `createOnnxEmbedder`.
+      embeddingEnabled: false,
     });
 
     // The buffer directory should have been created (BufferStore creates
@@ -139,6 +142,7 @@ describe('Collector buffer wiring', () => {
       storagePath: path.join(tmpDir, 'test.db'),
       bufferEnabled: false,
       port: 0,
+      embeddingEnabled: false,
     });
 
     expect(handle).toBeDefined();
@@ -176,6 +180,7 @@ describe('Collector buffer wiring', () => {
       bufferEnabled: true,
       bufferDir,
       port: 0,
+      embeddingEnabled: false,
     });
 
     // Close should not throw
@@ -227,6 +232,7 @@ describe('Collector buffer wiring', () => {
       bufferDir,
       bufferIdleMs: 60_000, // long idle to prevent extraction during test
       port: 0,
+      embeddingEnabled: false,
     });
 
     // The collector should have started successfully despite existing buffers

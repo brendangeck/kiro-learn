@@ -17,6 +17,7 @@ import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { openSqliteStorage } from '../../src/collector/storage/sqlite/index.js';
+import { createQueryLayer } from '../../src/collector/query/index.js';
 import { startReceiver } from '../../src/collector/receiver/index.js';
 import type { ReceiverHandle } from '../../src/collector/receiver/index.js';
 import type { StorageBackend, KiroMemEvent, EventIngestResponse } from '../../src/types/index.js';
@@ -75,7 +76,15 @@ beforeAll(async () => {
   storage = openSqliteStorage({ dbPath });
 
   handle = await startReceiver(
-    { pipeline: mockPipeline, retrieval: mockRetrieval, storage },
+    {
+      pipeline: mockPipeline,
+      retrieval: mockRetrieval,
+      storage,
+      // Real QueryLayer with `embedder: null` routes search through
+      // the lexical-only branch of the hybrid pipeline, matching the
+      // behaviour this test suite's FTS5-ordering assertions expect.
+      query: createQueryLayer({ storage, embedder: null }),
+    },
     { host: '127.0.0.1', port: 0, maxBodyBytes: 2 * 1024 * 1024, retrievalBudgetMs: 500 },
   );
   const addr = handle.server.address();

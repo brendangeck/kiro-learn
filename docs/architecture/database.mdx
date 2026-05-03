@@ -46,6 +46,8 @@ These almost always agree, but the split exists so future versions can support [
 
 Each row is one memory record: a title, a summary, a list of facts, a list of concepts, a list of files touched, an observation type, and the IDs of the source events that produced it. The `source_event_ids` field links every memory back to the raw events it came from, so you can always trace a memory to its provenance.
 
+Alongside that content, each record carries an optional `embedding` column — a dense vector of the record, stored as a `BLOB`. It is `NULL` on fresh rows until the embedder fills it in, and is never exposed on the wire. The [Embeddings](#embeddings) section below covers the encoding.
+
 The primary key is `record_id` (`mr_` + ULID). Unlike events, memory records are never supposed to collide — a duplicate record ID is an upstream bug, so the database rejects the insert loudly instead of silently ignoring it.
 
 ### `STRICT` tables
@@ -94,6 +96,45 @@ The combination means a search for "migrations" hits memories that mention "migr
 
 [Retrieval](/architecture/retrieval#fallback-path-substring-search) builds a sanitized FTS5 query by tokenizing the prompt and emitting an `OR` of quoted phrases. If FTS5 rejects the query anyway — its grammar has corners that are hard to fully account for — the storage layer catches the error and falls back to a `LIKE '%query%'` search against the original string. The LIKE path is slower and unranked (results come back by creation date), but it always works. The explicit tradeoff is **availability over ranking quality**: a worse-ordered result set is better than an error.
 
+## Embeddings
+
+FTS5 catches records that share the user's words. [Hybrid retrieval](/architecture/retrieval#hybrid-search) also needs to catch records that share the user's *meaning* — different words, same idea. For that, every memory record gets a dense semantic vector stored alongside its content.
+
+### The `embedding` column
+
+The vector lives directly on the memory record. Migration `0005_memory_record_embedding` adds a single column:
+
+```sql
+ALTER TABLE memory_records ADD COLUMN embedding BLOB DEFAULT NULL;
+```
+
+That is the whole schema change. No new tables, no new indexes, no FTS5 changes. The column is nullable and defaults to `NULL`, which is the truthful state for a record whose vector has not yet been computed — either because it predates this migration or because the embedder was busy when it was written. Readers that need the vector must handle `NULL` explicitly; hybrid search treats it as "no vector contribution" and falls through to the lexical ranking for that record.
+
+Storing the vector inline on the row (rather than in a sidecar table) means the record and its embedding live or die together. A record delete takes the vector with it. There is no second table to keep consistent.
+
+### BLOB encoding
+
+The vector is a 384-dimensional `Float32Array` produced by the [all-MiniLM-L6-v2](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2) sentence-transformer model. It is encoded as exactly **1,536 bytes** — 384 float32 values × 4 bytes each — written in **little-endian IEEE-754** order.
+
+```text
+byte 0–3    : f32 component 0   (little-endian)
+byte 4–7    : f32 component 1
+...
+byte 1532–1535 : f32 component 383
+```
+
+The encoder and decoder go through `DataView.setFloat32(offset, value, /* littleEndian */ true)` and `DataView.getFloat32(offset, true)` explicitly rather than relying on the host's byte order. Node runs little-endian on every supported platform today, but making it explicit in code means the format survives a platform we have not tested on, and it makes the invariant unambiguous: the BLOB is portable bytes, not a host-dependent memory dump.
+
+The round-trip preserves every IEEE-754 bit pattern — NaN, ±Infinity, ±0, subnormals all survive — which a property test verifies by comparing the underlying `Uint32Array` views after a re-decode. The decoder also validates length: a BLOB that is not exactly 1,536 bytes raises an error annotated with the offending `record_id`, so a corrupted row is visible at the record level rather than silently returning bogus similarity scores.
+
+No `sqlite-vec`, no virtual table, no ANN index. Cosine similarity is computed in JavaScript over the in-memory per-namespace vector index; SQLite's job is to durably store the bytes, nothing more. See the [retrieval page](/architecture/retrieval#the-two-rankings) for how the math runs at query time.
+
+### Migration is additive
+
+`ALTER TABLE … ADD COLUMN` on SQLite is an O(1) metadata operation when the column is nullable with a `NULL` default. Migration `0005_memory_record_embedding` does not rewrite a single existing row — every pre-existing record ends up with `embedding = NULL` and keeps its `rowid`, its content, and every other column byte-identical. The FTS5 companion table is not touched.
+
+Populating the embeddings on existing records is a separate, asynchronous concern handled by the backfill worker, which scans for `embedding IS NULL` and fills rows in batches between ingestions. The migration does not wait for that to complete — the daemon is usable the moment the schema is current, and hybrid search falls back to lexical-only for any record whose vector has not arrived yet.
+
 ## Migrations
 
 The schema evolves over time. New features need new columns, new indexes, or new constraints. Rather than handwriting upgrade scripts, kiro-learn uses a small migration runner that applies code-embedded DDL in order and tracks what has been applied.
@@ -121,7 +162,7 @@ Rules the runner enforces:
 
 ### The migration history
 
-The schema has evolved through four migrations so far:
+The schema has evolved through five migrations so far:
 
 | Version | Name | What it does |
 |---------|------|--------------|
@@ -129,8 +170,9 @@ The schema has evolved through four migrations so far:
 | 0002 | `xml_extraction_fields` | Adds `concepts_json`, `files_touched_json`, and `observation_type` columns to `memory_records` for the XML extraction pipeline |
 | 0003 | `project_path` | Adds a nullable `project_path` column to `events` plus a compound index on `(namespace, project_path)` for project listing |
 | 0004 | `session_summary_type` | Widens the `observation_type` CHECK constraint to include `'session_summary'` (needed because SQLite has no `ALTER CONSTRAINT`, so the table is rebuilt) |
+| 0005 | `memory_record_embedding` | Adds a nullable `embedding BLOB` column to `memory_records` for local semantic vectors. Additive — no existing row is rewritten. |
 
-New migrations appear at the end of the list. The four existing ones are frozen.
+New migrations appear at the end of the list. The five existing ones are frozen.
 
 ## Privacy
 
@@ -196,7 +238,7 @@ This is the primary defense against SQL injection. It also happens to be faster:
 
 **`STRICT` tables everywhere.** SQLite's default laxity about types is convenient for scripting and hostile for a persistence layer. Opting in to `STRICT` catches type errors at the boundary instead of letting them propagate.
 
-**FTS5 over building lexical search by hand.** FTS5 is production-tested, maintained by the SQLite project, and handles tokenization, stemming, and ranking in one extension. Rebuilding any of that would be wasted effort. A later version that wants semantic search can layer vector similarity alongside FTS5 scores — [Bedrock Knowledge Bases](https://docs.aws.amazon.com/bedrock/latest/userguide/knowledge-base.html) uses the same hybrid shape, so the algorithm will be portable.
+**FTS5 over building lexical search by hand.** FTS5 is production-tested, maintained by the SQLite project, and handles tokenization, stemming, and ranking in one extension. Rebuilding any of that would be wasted effort. Semantic search is layered on top as an independent ranking ([hybrid retrieval](/architecture/retrieval#hybrid-search)) rather than replacing FTS5 — [Bedrock Knowledge Bases](https://docs.aws.amazon.com/bedrock/latest/userguide/knowledge-base.html) uses the same hybrid shape, so the algorithm is portable.
 
 **Migrations are code, not files.** Each migration's DDL is a string constant inside a TypeScript module, compiled into the package. There is nothing to read from disk at runtime and nothing extra to ship. The compiled `dist/` directory is self-contained.
 
@@ -215,6 +257,8 @@ This is the primary defense against SQL injection. It also happens to be faster:
 - `src/collector/storage/sqlite/migrations/0002_xml_extraction_fields.ts` — extraction fields
 - `src/collector/storage/sqlite/migrations/0003_project_path.ts` — project path column
 - `src/collector/storage/sqlite/migrations/0004_session_summary_type.ts` — widened observation type constraint
+- `src/collector/storage/sqlite/migrations/0005_memory_record_embedding.ts` — embedding BLOB column
+- `src/collector/embedding/blob.ts` — Float32Array ↔ 1,536-byte BLOB encode/decode
 
 ## Related pages
 
@@ -223,7 +267,7 @@ This is the primary defense against SQL injection. It also happens to be faster:
     The dashboard that reads from the database via the read API
   </Card>
   <Card title="Retrieval" href="/architecture/retrieval">
-    How memory records are searched via FTS5
+    How memory records are searched via hybrid FTS5 + vector
   </Card>
   <Card title="Extraction" href="/architecture/extraction">
     How memory records are produced and inserted
