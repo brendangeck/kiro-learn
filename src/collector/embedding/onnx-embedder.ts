@@ -308,6 +308,37 @@ export function createOnnxEmbedder(
   let extractor: FeatureExtractionPipeline | null = null;
   let loadError: Error | null = null;
 
+  // Serialisation gate for concurrent `embed()` calls.
+  //
+  // The `@huggingface/transformers` pipeline is a single ONNX
+  // Runtime session; the library does not document concurrency
+  // semantics for parallel `pipeline(...)` invocations, and ONNX
+  // Runtime's Node binding is generally single-session
+  // single-threaded. The collector has multiple concurrent
+  // callers of this Embedder: ExtractionWorker (`concurrency: 2`
+  // by default, so up to 2 simultaneous batches × N records
+  // each), BackfillWorker (sequential but running in parallel
+  // with ExtractionWorker), and QueryLayer.search (one call per
+  // hybrid query, racing against the 500 ms retrieval budget).
+  //
+  // Rather than rely on an unverified "the library serialises
+  // internally" claim, we serialise explicitly by chaining every
+  // embed call onto `tail`. Each call awaits the previous one and
+  // then runs its own pipeline invocation before releasing the
+  // next waiter. The chain is initialised to `Promise.resolve()`
+  // so the very first call runs immediately.
+  //
+  // Trade-off: hybrid-search query embeds now wait behind any
+  // in-flight extraction embed. The 500 ms retrieval budget in
+  // `RetrievalAssembler.assemble` already covers this worst case —
+  // if a query embed is queued behind a slow extraction embed and
+  // the total exceeds the budget, retrieval returns empty and the
+  // agent proceeds without context. The alternative (unserialised
+  // concurrent inference on a shared session) risks crashes or
+  // subtly corrupted vectors that would not surface until long
+  // after the fact, which is strictly worse than a missed budget.
+  let tail: Promise<unknown> = Promise.resolve();
+
   async function load(): Promise<void> {
     try {
       // Route all model downloads / cache reads through the
@@ -467,7 +498,9 @@ export function createOnnxEmbedder(
     // caller never called `ready()` explicitly, this triggers the
     // single memoised load. If the load previously failed, the
     // awaited promise rejects and we short-circuit with that same
-    // error.
+    // error. `ready()` is memoised, so serialising around it is
+    // harmless — we hit the gate only for the actual pipeline
+    // call below.
     await ready();
 
     // Belt-and-braces: after `ready()` resolves we should be in
@@ -478,6 +511,7 @@ export function createOnnxEmbedder(
     if (!isReadyFlag || extractor === null) {
       throw loadError ?? new Error('embedder not ready');
     }
+    const pipeline = extractor;
 
     // Truncate on the JS side. The tokenizer will further truncate
     // to its native sequence length (~256 WordPiece tokens for
@@ -485,8 +519,18 @@ export function createOnnxEmbedder(
     // allocation for pathological inputs.
     const safeInput = input.length > maxInputChars ? input.slice(0, maxInputChars) : input;
 
-    const call = extractor(safeInput, { pooling: 'mean', normalize: false });
-    const output = await withTimeout(call, perCallTimeoutMs);
+    // Serialisation gate. Chain this call onto `tail` so the
+    // pipeline sees one invocation at a time regardless of how
+    // many callers race. Using `.catch(() => undefined)` on the
+    // chained promise means a prior rejection does not poison
+    // the chain for subsequent callers — each call sees a clean
+    // slate. We still re-throw our own errors to our own caller.
+    const run = tail.then(async () => {
+      const call = pipeline(safeInput, { pooling: 'mean', normalize: false });
+      return withTimeout(call, perCallTimeoutMs);
+    });
+    tail = run.catch(() => undefined);
+    const output = await run;
 
     // The feature-extraction pipeline returns a Tensor with
     // `.data` as a TypedArray of length `1 * dim`. Copy into a

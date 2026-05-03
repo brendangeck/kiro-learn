@@ -445,7 +445,7 @@ BackfillWorker.run():
 
 The loop is resumable (Req 19.3, Req 8.6): because every iteration re-queries for `embedding IS NULL`, a crash mid-batch leaves the already-embedded rows intact and picks up from the next unembedded row on restart. A `BackfillWorker` re-run on a fully-embedded corpus returns on the first iteration (empty batch), satisfying idempotence (Req 19.1) and no-redundant-work (Req 19.2).
 
-The BackfillWorker shares the singleton `Embedder` instance with the ExtractionWorker (Req 2.4). Concurrent calls to `embedder.embed` are safe — the underlying `@huggingface/transformers` pipeline serialises internally, so the worker does not need its own lock. The 1-second idle gap between batches keeps backfill from monopolising CPU under active ingestion load.
+The BackfillWorker shares the singleton `Embedder` instance with the ExtractionWorker (Req 2.4). Concurrent `embed` calls from ExtractionWorker, BackfillWorker, and QueryLayer.search are serialised explicitly inside `OnnxEmbedder` by a promise-chain gate (`tail`): every call awaits the previous one before invoking the pipeline, so the underlying ONNX Runtime session sees exactly one inference in flight at a time regardless of caller concurrency. Retrieval's 500 ms budget in `RetrievalAssembler.assemble` covers the worst case where a query embed is queued behind an in-flight extraction embed. The 1-second idle gap between backfill batches keeps backfill from monopolising the gate under active ingestion load.
 
 ### Storage backend — modified
 
@@ -685,28 +685,28 @@ async search(namespace, query, limit): Promise<MemoryRecord[]> {
   );
 
   // 8. Join back to full MemoryRecord; apply final tie-break.
+  //    `byId` is seeded from BOTH the lexical results (authoritative,
+  //    reflect the latest putMemoryRecord) AND the cached vector
+  //    index's `{record_id, vec_normalised, record}` triples, so
+  //    vector-only hits are preserved without a second DB round trip.
   const byId = new Map<string, MemoryRecord>();
   for (const r of lexRankedRaw) byId.set(r.record.record_id, r.record);
+  for (const entry of index.entries) {
+    if (!byId.has(entry.record_id)) byId.set(entry.record_id, entry.record);
+  }
   const fusedWithRecords = fused.flatMap(f => {
     const rec = byId.get(f.record_id);
-    return rec ? [{ ...f, record: rec }] : [];     // drop records not in lex set
+    return rec ? [{ ...f, record: rec }] : [];
+    // A fused id missing from both maps would require a race with a
+    // record deletion (not a supported flow in v1). Silently dropped.
   });
-  // Some fused ids may not be in the lex set — resolve them via a direct
-  // lookup if needed, or simply drop them (lex miss + vec hit is still
-  // valuable, so we fetch the missing records by id here).
-  // See implementation note below.
 
   fusedWithRecords.sort(finalTieBreak);          // (fused_score DESC, created_at DESC, record_id ASC)
   return fusedWithRecords.slice(0, limit).map(x => x.record);
 }
 ```
 
-Implementation note on the lex/vec disjoint-set case: a record that appears in the vector top-N but not the lexical top-`fetchDepth` is a legitimate semantic-only hit and must not be dropped. To resolve the missing `MemoryRecord` payloads, the `QueryLayer` either:
-
-- keeps a lightweight per-namespace `Map<record_id, MemoryRecord>` derived from the same `listEmbeddings` call when available (we pay for this memory for the cache lifetime, which is acceptable at ≤ 50k records × ~1 KB average ≈ 50 MB worst case), OR
-- issues a batched `getMemoryRecordsByIds` call to storage for the missing ids.
-
-We choose the first option — the cached index stores `{record_id, vec_normalised, record}` triples derived from a single `listEmbeddings`-plus-metadata call (see "Vector index cache shape" below). This avoids the per-search round trip at the cost of one extra metadata column in the bulk load.
+Implementation note on the lex/vec disjoint-set case: a record that appears in the vector top-N but not the lexical top-`fetchDepth` is a legitimate semantic-only hit and must not be dropped. The pseudocode above resolves those records by also seeding `byId` from `index.entries`, which is the per-namespace `NamespaceVectorCache` snapshot built from a single `listEmbeddings` + `listMemoryRecords` call (see "Vector index cache shape" below). An alternative — issuing a batched `getMemoryRecordsByIds` call to storage for the missing ids — would cost one round trip per hybrid search; the cache-backed path avoids that by paying the metadata cost once per cache epoch.
 
 #### Vector index cache shape
 
@@ -735,6 +735,8 @@ Cache invalidation protocol (Req 7.5):
 - Every successful `putMemoryRecord` or `putEmbedding` in `ExtractionWorker`, and every successful `putEmbedding` in `BackfillWorker`, bumps the epoch for that namespace and triggers `invalidate(ns)`.
 - Because the write path and the read path both run inside the same daemon process, this is in-memory coordination — no DB-level locks are needed.
 - The first `search` after an invalidation pays the rebuild cost (one `listEmbeddings(ns)` + one `listMemoryRecords({namespace: ns})` for the metadata). Subsequent searches hit the cache.
+
+**Single-daemon-per-install invariant.** The epoch-based in-memory coordination described above is valid only when exactly one collector process attaches to a given SQLite DB at a time. The installer (`src/installer/index.ts`) enforces this with a `collector.pid` file under `~/.kiro-learn/`: `startDaemon` writes the child PID on spawn, `getDaemonPid` probes liveness with `process.kill(pid, 0)` and cleans up stale files, and `stopDaemon` removes the PID file on shutdown. A second daemon cannot be started against the same install without first stopping the first. If this invariant is ever relaxed — e.g. a future multi-daemon deployment sharing a SQL backend — the in-memory epoch scheme does not propagate across processes, so caches in the sibling daemon would go stale until restart or explicit invalidation; the mitigation at that point would be a DB-backed epoch/version table or a centralised invalidation channel, implemented around this `invalidate(ns)` contract. That work is out of scope for this spec; the single-daemon assumption is the contract readers and implementers should rely on today.
 
 Invalidation is wired with an explicit callback that `startCollector` threads through dependency injection. `ExtractionWorker` and `BackfillWorker` each accept an optional `onNamespaceChanged: (namespace: string) => void` in their deps and invoke it after every successful `putMemoryRecord` / `putEmbedding`. The collector wires both workers to the same target:
 
