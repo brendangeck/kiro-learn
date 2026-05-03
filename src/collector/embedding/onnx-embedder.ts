@@ -491,18 +491,25 @@ export function createOnnxEmbedder(
     // The feature-extraction pipeline returns a Tensor with
     // `.data` as a TypedArray of length `1 * dim`. Copy into a
     // fresh Float32Array of the expected length so the caller
-    // never sees the pipeline's internal buffer. Tolerate both a
-    // Float32Array view (the common case) and a generic
-    // ArrayLike<number> (defensive against future library
+    // never sees the pipeline's internal buffer. Fail fast if the
+    // pipeline emits a buffer of the wrong length — silently
+    // truncating or zero-padding would mask a real model /
+    // pipeline misconfiguration and produce subtly broken vectors
+    // downstream (cosine scores against a mixed-length corpus, or
+    // zero-filled tail bytes that drag similarity toward zero).
+    // Tolerate both a Float32Array view (the common case) and a
+    // generic ArrayLike<number> (defensive against future library
     // changes).
     const data = output.data;
+    if (data.length !== EMBEDDING_DIMS) {
+      throw new Error(
+        `embedder produced vector of length ${String(data.length)}; expected ${String(EMBEDDING_DIMS)}`,
+      );
+    }
     const out = new Float32Array(EMBEDDING_DIMS);
     if (data instanceof Float32Array) {
-      // Typical fast path. Copy exactly `EMBEDDING_DIMS` elements
-      // in case the pipeline emitted a longer buffer for any
-      // reason (padding, batch > 1, …).
-      const n = Math.min(EMBEDDING_DIMS, data.length);
-      for (let i = 0; i < n; i += 1) {
+      // Typical fast path. Copy exactly `EMBEDDING_DIMS` elements.
+      for (let i = 0; i < EMBEDDING_DIMS; i += 1) {
         // `noUncheckedIndexedAccess` widens `data[i]` to
         // `number | undefined`; the loop bound guarantees the
         // index is in range, so the cast is safe.
@@ -510,8 +517,7 @@ export function createOnnxEmbedder(
       }
     } else {
       // Fallback: generic ArrayLike<number>. Same copy shape.
-      const n = Math.min(EMBEDDING_DIMS, data.length);
-      for (let i = 0; i < n; i += 1) {
+      for (let i = 0; i < EMBEDDING_DIMS; i += 1) {
         out[i] = data[i] as number;
       }
     }

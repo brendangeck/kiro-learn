@@ -65,6 +65,9 @@ export { tokenizeForQuery };
  * @see Requirements 1.1–1.6, 2.1, 2.2, 10.1, 10.2
  */
 export function sanitizeForFts5(query: string, termCap: number = 32): string {
+  if (!Number.isFinite(termCap) || !Number.isInteger(termCap) || termCap < 1) {
+    throw new Error(`sanitizeForFts5: termCap must be a positive integer, got ${String(termCap)}`);
+  }
   const tokens = tokenizeForQuery(query);
   if (tokens.length === 0) return '';
   const retained = tokens.slice(0, termCap);
@@ -165,6 +168,9 @@ export function createFts5Sanitizer(
   opts?: { termCap?: number },
 ): (query: string) => string {
   const K = opts?.termCap ?? 32;
+  if (!Number.isFinite(K) || !Number.isInteger(K) || K < 1) {
+    throw new Error(`createFts5Sanitizer: termCap must be a positive integer, got ${String(K)}`);
+  }
   const ranker = createTermRanker(stmts);
 
   return (query: string): string => {

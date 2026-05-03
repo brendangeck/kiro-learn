@@ -359,8 +359,20 @@ export function createExtractionWorker(deps: ExtractionWorkerDeps): ExtractionWo
         // after the record write (before the embed attempt) because
         // the record is already visible to FTS5 and ID lookups even
         // if the embed step later fails in degraded mode.
+        //
+        // The callback is guarded: a throw from the consumer (a
+        // misbehaving cache, for example) must not abort the
+        // extraction mid-flight, which would prevent buffer-clear
+        // and leave the batch re-processable on restart.
         // @see Requirement 7.5
-        onNamespaceChanged?.(namespace);
+        try {
+          onNamespaceChanged?.(namespace);
+        } catch (err: unknown) {
+          const message = err instanceof Error ? err.message : String(err);
+          process.stderr.write(
+            `[kiro-learn] onNamespaceChanged callback threw after putMemoryRecord for ${record.record_id}: ${message}\n`,
+          );
+        }
 
         // Embed on write: compute the vector and persist it alongside
         // the record. Failures are logged but do NOT re-throw — the
@@ -374,9 +386,17 @@ export function createExtractionWorker(deps: ExtractionWorkerDeps): ExtractionWo
               await storage.putEmbedding(record.record_id, vec);
               // Embedding succeeded — invalidate again so the cache
               // drops any entry built between the record write and
-              // this embed write.
+              // this embed write. Guarded for the same reason as
+              // the post-putMemoryRecord invocation above.
               // @see Requirement 7.5
-              onNamespaceChanged?.(namespace);
+              try {
+                onNamespaceChanged?.(namespace);
+              } catch (cbErr: unknown) {
+                const message = cbErr instanceof Error ? cbErr.message : String(cbErr);
+                process.stderr.write(
+                  `[kiro-learn] onNamespaceChanged callback threw after putEmbedding for ${record.record_id}: ${message}\n`,
+                );
+              }
             } catch (err: unknown) {
               const message = err instanceof Error ? err.message : String(err);
               process.stderr.write(

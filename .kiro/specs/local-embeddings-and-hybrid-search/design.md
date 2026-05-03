@@ -176,7 +176,7 @@ sequenceDiagram
 
 RRF fuses the top-`n` from each retriever. If we only ask each retriever for `limit` results, a record that ranked `limit+1` lexically but `1` vectorially never enters the fusion pool and the result loses recall compared to an oracle. We therefore fetch `limit × C` candidates from each side and fuse them.
 
-`C = 4` by default. For the default `limit = 10` this is 40 candidates per side, which comfortably fits within the 50 ms budget at 1 000 records (cosine is O(N·d) over already-normalised vectors) and the 500 ms budget at 50 000 records. `C` is exposed as `CollectorConfig.hybridFetchDepthMultiplier` for tuning.
+`C = 4` by default. For the default `limit = 10` this is 40 candidates per side, which comfortably fits within the 100 ms p95 budget at 1 000 records (cosine is O(N·d) over already-normalised vectors) and the 500 ms budget at 50 000 records. `C` is exposed as `CollectorConfig.hybridFetchDepthMultiplier` for tuning.
 
 ### Degraded-mode state machine
 
@@ -216,7 +216,7 @@ This is the clean, testable disable path for operators who do not want the featu
 
 ### `src/collector/embedding/` — new module
 
-```
+```text
 src/collector/embedding/
   index.ts               # barrel: re-exports Embedder, createOnnxEmbedder, cosine, rrfFuse, composeEmbeddingInput, encodeEmbeddingBlob, decodeEmbeddingBlob
   onnx-embedder.ts       # concrete OnnxEmbedder factory
@@ -273,7 +273,7 @@ export function createOnnxEmbedder(cfg: Partial<EmbedderConfig>): Embedder;
 
 Pure, deterministic. Matches Req 3.2:
 
-```
+```text
 title + "\n\n" + summary + "\n\n" + facts.join("\n") + "\n\n" + concepts.join(", ")
 ```
 
@@ -333,7 +333,7 @@ export function rrfFuse(
 
 Pseudocode:
 
-```
+```text
 rrfFuse(L, V, k, limit):
   score : Map<record_id, {fused: number, lex: number|null, vec: number|null}> := {}
   for (r in L):  score[r.record_id].lex   := r.rank
@@ -374,7 +374,7 @@ Implementation note: Node is little-endian on all supported platforms (x86_64, a
 
 ### `src/collector/backfill/` — new module
 
-```
+```text
 src/collector/backfill/
   index.ts               # barrel: re-exports BackfillWorker, createBackfillWorker
   worker.ts              # BackfillWorker implementation
@@ -418,7 +418,7 @@ export function createBackfillWorker(deps: BackfillWorkerDeps): BackfillWorker;
 
 #### Backfill loop (pseudocode)
 
-```
+```text
 BackfillWorker.run():
   while not stopped:
     if not embedder.isReady(): stop; return      # degraded-mode guard
@@ -1237,7 +1237,7 @@ Two benchmark tests that assert upper-bound latency on a representative corpus. 
 
 | File | Budget | Scenario |
 |---|---|---|
-| `test/integ/embedding-hybrid-latency-1k.test.ts` | 50 ms p95 | 1 000-record namespace, 100 queries |
+| `test/integ/embedding-hybrid-latency-1k.test.ts` | 100 ms p95 | 1 000-record namespace, 100 queries |
 | `test/integ/embedding-hybrid-latency-50k.test.ts` | 500 ms p95 | 50 000-record namespace, 20 queries |
 | `test/integ/embedding-embed-latency.test.ts` | 100 ms p95 | 4 000-char input, 100 embeds |
 

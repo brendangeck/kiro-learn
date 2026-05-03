@@ -261,81 +261,98 @@ export function createQueryLayer(deps: QueryLayerDeps): QueryLayer {
         return lexRanked.slice(0, limit).map((r) => r.record);
       }
 
-      // Step 5: load/refresh the per-namespace vector index and
-      // score the corpus against `queryVec`. `getOrLoad` is
-      // race-safe against concurrent invalidations (see
-      // vector-cache.ts).
-      const index = await cache.getOrLoad(namespace);
-      const vecRanked = topKByCosine(queryVec, index, fetchDepth);
+      // Steps 5–8: vector index load, cosine ranking, RRF fusion,
+      // and final join + tie-break. Any failure inside this block
+      // (a storage error from the per-namespace index build, an
+      // internal RRF invariant, a cosine NaN that slipped through)
+      // must fall back to the lexical baseline rather than surface
+      // a 500 to the retrieval assembler. The design's
+      // never-degrade-below-FTS5 contract covers "vector stage
+      // fails" as a first-class case, not just embedder failure.
+      // @see Requirements 9.4, 16.3, 16.5
+      try {
+        // Step 5: load/refresh the per-namespace vector index and
+        // score the corpus against `queryVec`. `getOrLoad` is
+        // race-safe against concurrent invalidations (see
+        // vector-cache.ts).
+        const index = await cache.getOrLoad(namespace);
+        const vecRanked = topKByCosine(queryVec, index, fetchDepth);
 
-      // Step 6: adapt both rankings to the `Ranked` shape RRF
-      // expects. The cosine ranking is 0-indexed array order;
-      // we convert to 1-based rank by adding 1. The lexical
-      // ranking already carries a 1-based rank from the storage
-      // layer.
-      const lexRankedForFusion: Ranked[] = lexRanked.map((r) => ({
-        record_id: r.record.record_id,
-        rank: r.rank,
-      }));
-      const vecRankedForFusion: Ranked[] = vecRanked.map((hit, i) => ({
-        record_id: hit.record_id,
-        rank: i + 1,
-      }));
-      const fused = rrfFuse(
-        lexRankedForFusion,
-        vecRankedForFusion,
-        rrfK,
-        limit * 2,
-      );
+        // Step 6: adapt both rankings to the `Ranked` shape RRF
+        // expects. The cosine ranking is 0-indexed array order;
+        // we convert to 1-based rank by adding 1. The lexical
+        // ranking already carries a 1-based rank from the storage
+        // layer.
+        const lexRankedForFusion: Ranked[] = lexRanked.map((r) => ({
+          record_id: r.record.record_id,
+          rank: r.rank,
+        }));
+        const vecRankedForFusion: Ranked[] = vecRanked.map((hit, i) => ({
+          record_id: hit.record_id,
+          rank: i + 1,
+        }));
+        const fused = rrfFuse(
+          lexRankedForFusion,
+          vecRankedForFusion,
+          rrfK,
+          limit * 2,
+        );
 
-      // Step 7: join fused ids back to full `MemoryRecord`s. The
-      // lexical side is authoritative (its records came straight
-      // from storage and reflect the latest `putMemoryRecord`);
-      // the cache side provides any vector-only hits. Anything
-      // absent from both is dropped silently — that would
-      // require a race with a record deletion, which is not a
-      // supported flow in v1 but we guard defensively anyway.
-      const byId = new Map<string, MemoryRecord>();
-      for (const r of lexRanked) {
-        byId.set(r.record.record_id, r.record);
+        // Step 7: join fused ids back to full `MemoryRecord`s. The
+        // lexical side is authoritative (its records came straight
+        // from storage and reflect the latest `putMemoryRecord`);
+        // the cache side provides any vector-only hits. Anything
+        // absent from both is dropped silently — that would
+        // require a race with a record deletion, which is not a
+        // supported flow in v1 but we guard defensively anyway.
+        const byId = new Map<string, MemoryRecord>();
+        for (const r of lexRanked) {
+          byId.set(r.record.record_id, r.record);
+        }
+        for (const entry of index.entries) {
+          if (!byId.has(entry.record_id)) {
+            byId.set(entry.record_id, entry.record);
+          }
+        }
+
+        // Step 8: final tie-break. RRF's internal sort is
+        // `(fused_score DESC, record_id ASC)`; Req 5.8 demands the
+        // richer `(fused_score DESC, created_at DESC, record_id
+        // ASC)` ordering once we have the metadata joined. We sort
+        // the joined list explicitly here rather than trying to
+        // push `created_at` into RRF, because RRF is intentionally
+        // metadata-agnostic (it operates on ids and ranks only).
+        const joined = fused
+          .map((f) => {
+            const record = byId.get(f.record_id);
+            return record !== undefined ? { fused: f, record } : null;
+          })
+          .filter((x): x is { fused: (typeof fused)[number]; record: MemoryRecord } => x !== null);
+
+        joined.sort((a, b) => {
+          if (a.fused.fused_score !== b.fused.fused_score) {
+            return b.fused.fused_score - a.fused.fused_score;
+          }
+          // `created_at` is an ISO-8601 datetime string. Lexical
+          // comparison gives chronological order because every
+          // value carries a zero-padded, fixed-precision offset
+          // (enforced by the Zod schema).
+          if (a.record.created_at !== b.record.created_at) {
+            return a.record.created_at < b.record.created_at ? 1 : -1;
+          }
+          if (a.record.record_id < b.record.record_id) return -1;
+          if (a.record.record_id > b.record.record_id) return 1;
+          return 0;
+        });
+
+        return joined.slice(0, limit).map((x) => x.record);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        process.stderr.write(
+          `[kiro-learn] hybrid search falling back to lexical after vector stage failure: ${message}\n`,
+        );
+        return lexRanked.slice(0, limit).map((r) => r.record);
       }
-      for (const entry of index.entries) {
-        if (!byId.has(entry.record_id)) {
-          byId.set(entry.record_id, entry.record);
-        }
-      }
-
-      // Step 8: final tie-break. RRF's internal sort is
-      // `(fused_score DESC, record_id ASC)`; Req 5.8 demands the
-      // richer `(fused_score DESC, created_at DESC, record_id
-      // ASC)` ordering once we have the metadata joined. We sort
-      // the joined list explicitly here rather than trying to
-      // push `created_at` into RRF, because RRF is intentionally
-      // metadata-agnostic (it operates on ids and ranks only).
-      const joined = fused
-        .map((f) => {
-          const record = byId.get(f.record_id);
-          return record !== undefined ? { fused: f, record } : null;
-        })
-        .filter((x): x is { fused: (typeof fused)[number]; record: MemoryRecord } => x !== null);
-
-      joined.sort((a, b) => {
-        if (a.fused.fused_score !== b.fused.fused_score) {
-          return b.fused.fused_score - a.fused.fused_score;
-        }
-        // `created_at` is an ISO-8601 datetime string. Lexical
-        // comparison gives chronological order because every
-        // value carries a zero-padded, fixed-precision offset
-        // (enforced by the Zod schema).
-        if (a.record.created_at !== b.record.created_at) {
-          return a.record.created_at < b.record.created_at ? 1 : -1;
-        }
-        if (a.record.record_id < b.record.record_id) return -1;
-        if (a.record.record_id > b.record.record_id) return 1;
-        return 0;
-      });
-
-      return joined.slice(0, limit).map((x) => x.record);
     },
 
     invalidateNamespace(namespace: string): void {

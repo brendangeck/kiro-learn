@@ -362,10 +362,25 @@ export function createBackfillWorker(deps: BackfillWorkerDeps): BackfillWorker {
         // traffic always wins the CPU.
         await sleep(config.idleMs);
       }
+    } catch (err: unknown) {
+      // Any error thrown inside the loop body — e.g. a rejection
+      // from `storage.listRecordsWithoutEmbedding` or from `sleep`
+      // (which should not throw, but we guard anyway) — must not
+      // leak as an unhandled rejection on `loopPromise`. The
+      // worker is already idle-priority and opportunistic, so a
+      // storage error is not a hard failure mode: log it, record
+      // `lastError`, and let the `finally` block below drive the
+      // state transition back to `idle` / `stopped`.
+      const message = err instanceof Error ? err.message : String(err);
+      lastError = message;
+      process.stderr.write(
+        `[kiro-learn] backfill loop exited on error: ${message}\n`,
+      );
     } finally {
       // The loop has exited. If `stop()` was called, latch to
       // `stopped`; otherwise the backlog drained (or the
-      // embedder became not-ready) and we return to `idle`.
+      // embedder became not-ready or an error was caught above)
+      // and we return to `idle`.
       state = stopped ? 'stopped' : 'idle';
       loopPromise = null;
     }

@@ -130,7 +130,7 @@ export interface MemoryRecordRow {
 
 /**
  * {@link MemoryRecordRow} with an additional 1-based `rank` column
- * produced by `ROW_NUMBER() OVER (ORDER BY fts.rank)`.
+ * produced by `ROW_NUMBER() OVER (ORDER BY fts.rank, record_id)`.
  *
  * Surfaced only by {@link Statements.selectMemoryRecordsFtsMatchRanked}
  * for the hybrid-search RRF fusion path, where callers need the lexical
@@ -138,7 +138,9 @@ export interface MemoryRecordRow {
  * `rank` column itself is a floating-point score; exposing
  * `ROW_NUMBER()` means callers get a stable, integer 1-based position
  * suitable for `1 / (k + rank)` fusion without any client-side
- * recomputation.
+ * recomputation. `record_id` breaks ties deterministically so the
+ * integer rank is stable across executions when multiple rows share
+ * the same BM25 score.
  *
  * The existing {@link MemoryRecordRow} shape is deliberately unchanged —
  * the ranked surface is a strict superset consumed by a different
@@ -713,14 +715,16 @@ export interface Statements {
   /**
    * FTS5-MATCH variant of {@link selectMemoryRecordsFtsMatch} that also
    * returns a 1-based lexical rank via
-   * `ROW_NUMBER() OVER (ORDER BY fts.rank)`. Same namespace-prefix
-   * filter (`LIKE ? || '%'`) and same parameter tuple — callers that
-   * want rank switch statement, not query shape.
+   * `ROW_NUMBER() OVER (ORDER BY fts.rank, record_id)`. Same
+   * namespace-prefix filter (`LIKE ? || '%'`) and same parameter tuple —
+   * callers that want rank switch statement, not query shape.
    *
    * The integer rank is suitable for direct use in RRF fusion
-   * (`1 / (k + rank)`) without client-side recomputation.
+   * (`1 / (k + rank)`) without client-side recomputation. `record_id`
+   * is included as a deterministic tie-breaker so BM25 ties produce a
+   * stable row ordering across executions.
    *
-   * @see Requirements 4.7, 5.1
+   * @see Requirements 4.7, 5.1, 16.2
    */
   selectMemoryRecordsFtsMatchRanked: Statement<
     SelectMemoryRecordsFtsMatchParams,
@@ -1173,10 +1177,13 @@ export function prepareStatements(db: Database): Statements {
   // FTS5-MATCH variant that projects a 1-based lexical rank alongside the
   // record columns. Same shape as selectMemoryRecordsFtsMatch (same
   // namespace-prefix LIKE, same MATCH form, same parameter tuple), plus
-  // `ROW_NUMBER() OVER (ORDER BY fts.rank) AS rank` for a stable integer
-  // rank suitable for RRF fusion (`1 / (k + rank)`).
+  // `ROW_NUMBER() OVER (ORDER BY fts.rank, mr.record_id) AS rank` for a
+  // stable integer rank suitable for RRF fusion (`1 / (k + rank)`).
+  // `mr.record_id` is included as a deterministic tie-breaker so BM25
+  // ties produce a stable row ordering across executions — without it
+  // RRF fusion can flip its output for identical inputs on tied scores.
   //
-  // @see Requirements 4.7, 5.1, 8.3, 8.4, 12.1, 12.2
+  // @see Requirements 4.7, 5.1, 8.3, 8.4, 12.1, 12.2, 16.2
   const selectMemoryRecordsFtsMatchRanked = db.prepare<
     SelectMemoryRecordsFtsMatchParams,
     MemoryRecordRowWithRank
@@ -1185,12 +1192,12 @@ export function prepareStatements(db: Database): Statements {
        mr.record_id, mr.namespace, mr.strategy, mr.title, mr.summary,
        mr.facts_json, mr.source_event_ids_json, mr.created_at,
        mr.concepts_json, mr.files_touched_json, mr.observation_type,
-       ROW_NUMBER() OVER (ORDER BY fts.rank) AS rank
+       ROW_NUMBER() OVER (ORDER BY fts.rank, mr.record_id) AS rank
      FROM memory_records_fts fts
      JOIN memory_records mr ON mr.record_id = fts.record_id
      WHERE memory_records_fts MATCH ?
        AND mr.namespace LIKE ? || '%'
-     ORDER BY fts.rank
+     ORDER BY fts.rank, mr.record_id
      LIMIT ?`,
   );
 

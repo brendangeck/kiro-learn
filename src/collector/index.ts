@@ -497,43 +497,99 @@ export async function startCollector(
     // 9. Return handle with close method
     return {
       async close(): Promise<void> {
-        await receiver.close();
-
-        // Stop the backfill worker before draining the remaining
-        // components so it stops issuing `putEmbedding` writes against
-        // a closing storage handle. Bounded by a 5 s timeout — the
-        // worker's state machine guarantees at most one batch of
-        // embedder calls remains in flight when `stop()` returns.
-        // @see Requirements 2.5, 13.6
-        if (backfillWorker !== null) {
-          await backfillWorker.stop(5_000);
-        }
-
-        if (bufferEnabled && extractionWorker !== undefined && bufferWatcher !== undefined) {
-          // Buffer mode shutdown: drain extraction worker, drain compaction worker,
-          // close watcher, then close storage.
-          await extractionWorker.drain(DRAIN_TIMEOUT_MS);
-
-          // Drain compaction worker if it was instantiated.
-          // @see Requirement 12.2
-          if (compactionWorker !== undefined) {
-            await compactionWorker.drain(DRAIN_TIMEOUT_MS);
+        // Every step of shutdown runs inside a try so that
+        // `storage.close()` is guaranteed to run in `finally` even
+        // if an earlier drain / dispose throws. A leaked DB handle
+        // is worse than a lost error — the caller still sees the
+        // underlying exception via the rethrow at the end.
+        // Individual drains are themselves guarded so one failure
+        // does not short-circuit the others.
+        let firstErr: unknown = undefined;
+        const recordErr = (err: unknown, stage: string): void => {
+          const message = err instanceof Error ? err.message : String(err);
+          process.stderr.write(
+            `[kiro-learn] shutdown: ${stage} failed: ${message}\n`,
+          );
+          if (firstErr === undefined) firstErr = err;
+        };
+        try {
+          try {
+            await receiver.close();
+          } catch (err: unknown) {
+            recordErr(err, 'receiver.close');
           }
 
-          bufferWatcher.close();
-        } else {
-          // Legacy mode shutdown: drain per-event extraction stage
-          await pipeline.extraction.drain(DRAIN_TIMEOUT_MS);
-        }
+          // Stop the backfill worker before draining the remaining
+          // components so it stops issuing `putEmbedding` writes
+          // against a closing storage handle. Bounded by a 5 s
+          // timeout — the worker's state machine guarantees at
+          // most one batch of embedder calls remains in flight
+          // when `stop()` returns.
+          // @see Requirements 2.5, 13.6
+          if (backfillWorker !== null) {
+            try {
+              await backfillWorker.stop(5_000);
+            } catch (err: unknown) {
+              recordErr(err, 'backfillWorker.stop');
+            }
+          }
 
-        // Release the ONNX session last, after all consumers have
-        // finished draining. `dispose` is optional on the Embedder
-        // surface — only the ONNX implementation exposes it.
-        if (embedder !== null && typeof embedder.dispose === 'function') {
-          embedder.dispose();
-        }
+          if (bufferEnabled && extractionWorker !== undefined && bufferWatcher !== undefined) {
+            // Buffer mode shutdown: drain extraction worker, drain
+            // compaction worker, close watcher, then close storage.
+            try {
+              await extractionWorker.drain(DRAIN_TIMEOUT_MS);
+            } catch (err: unknown) {
+              recordErr(err, 'extractionWorker.drain');
+            }
 
-        await storage.close();
+            // Drain compaction worker if it was instantiated.
+            // @see Requirement 12.2
+            if (compactionWorker !== undefined) {
+              try {
+                await compactionWorker.drain(DRAIN_TIMEOUT_MS);
+              } catch (err: unknown) {
+                recordErr(err, 'compactionWorker.drain');
+              }
+            }
+
+            try {
+              bufferWatcher.close();
+            } catch (err: unknown) {
+              recordErr(err, 'bufferWatcher.close');
+            }
+          } else {
+            // Legacy mode shutdown: drain per-event extraction stage
+            try {
+              await pipeline.extraction.drain(DRAIN_TIMEOUT_MS);
+            } catch (err: unknown) {
+              recordErr(err, 'pipeline.extraction.drain');
+            }
+          }
+
+          // Release the ONNX session last, after all consumers have
+          // finished draining. `dispose` is optional on the Embedder
+          // surface — only the ONNX implementation exposes it.
+          if (embedder !== null && typeof embedder.dispose === 'function') {
+            try {
+              embedder.dispose();
+            } catch (err: unknown) {
+              recordErr(err, 'embedder.dispose');
+            }
+          }
+        } finally {
+          // Always close storage, even if an earlier step threw.
+          // Leaking the SQLite file handle across collector lifetimes
+          // causes WAL checkpoint issues on some platforms and is
+          // strictly worse than losing an in-flight drain.
+          await storage.close();
+        }
+        if (firstErr !== undefined) {
+          // Surface the first error so callers (e.g. tests)
+          // still observe shutdown failures. Subsequent errors
+          // have already been logged above.
+          throw firstErr;
+        }
       },
     };
   } catch (err) {

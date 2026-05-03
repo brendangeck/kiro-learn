@@ -85,6 +85,11 @@ export function composeEmbeddingInput(
   record: MemoryRecord,
   maxInputChars: number = DEFAULT_MAX_INPUT_CHARS,
 ): string {
+  if (!Number.isFinite(maxInputChars) || !Number.isInteger(maxInputChars) || maxInputChars < 0) {
+    throw new Error(
+      `composeEmbeddingInput: maxInputChars must be a non-negative integer, got ${String(maxInputChars)}`,
+    );
+  }
   const composed =
     record.title +
     '\n\n' +

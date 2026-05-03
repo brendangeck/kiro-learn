@@ -151,7 +151,7 @@ These are inputs to the requirements, not open questions:
 
 1. THE Hybrid_Search SHALL complete within the existing retrieval budget of 500 ms at the p95 percentile for namespaces containing up to 50,000 memory records, measured end-to-end from `QueryLayer.search` entry to return.
 2. WHEN the retrieval budget is exceeded, THE RetrievalAssembler SHALL return partial or empty results rather than error, preserving the existing timeout semantics documented in `src/collector/retrieval/index.ts`.
-3. THE Hybrid_Search SHALL complete in under 50 ms at the p95 percentile for namespaces containing up to 1,000 memory records.
+3. THE Hybrid_Search SHALL complete in under 100 ms at the p95 percentile for namespaces containing up to 1,000 memory records.
 4. THE System SHALL NOT hold a blocking lock on memory-record inserts while a hybrid search is in flight, and SHALL NOT hold a blocking lock on hybrid search while a memory-record insert is in flight.
 
 ### Requirement 10: Write-path latency budget

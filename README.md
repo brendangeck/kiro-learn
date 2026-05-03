@@ -1,5 +1,4 @@
-<h1 align="center">
-  <br>
+<p align="center">
   <a href="https://github.com/brendangeck/kiro-learn">
     <picture>
       <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/brendangeck/kiro-learn/main/docs/logo/dark.svg">
@@ -7,10 +6,11 @@
       <img src="https://raw.githubusercontent.com/brendangeck/kiro-learn/main/docs/logo/dark.svg" alt="kiro-learn" width="200">
     </picture>
   </a>
-  <br>
-</h1>
+</p>
 
-<h4 align="center">Continuous learning for <a href="https://kiro.dev">Kiro</a> agents.</h4>
+# kiro-learn
+
+> Continuous learning for [Kiro](https://kiro.dev) agents.
 
 <p align="center">
   <a href="https://www.npmjs.com/package/kiro-learn"><img src="https://img.shields.io/npm/v/kiro-learn" alt="npm version"></a>

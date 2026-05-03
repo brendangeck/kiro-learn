@@ -241,13 +241,20 @@ async function seedCorpus(
  * Convert a `Float32Array` to a `Buffer` that owns its backing
  * storage. Comparisons across snapshots use `Buffer.equals`, which
  * is byte-level and handles `NaN`/`±0` uniformly (bitwise
- * comparison, not `===`). Making the Buffer own its bytes prevents
- * aliasing bugs where two snapshots taken before and after a
- * mutation could share the same underlying ArrayBuffer and mask a
- * regression.
+ * comparison, not `===`). The returned Buffer must NOT alias the
+ * input's ArrayBuffer — the whole point of taking a snapshot is to
+ * freeze the bytes so a subsequent mutation to the Float32Array's
+ * buffer cannot retroactively change what a prior snapshot
+ * observed. `Buffer.from(arrayBuffer, offset, length)` would share
+ * storage; we use `Buffer.from(typedArray)` with a sliced copy of
+ * the underlying bytes so the Buffer is independent.
  */
 function toOwnedBuffer(view: Float32Array): Buffer {
-  return Buffer.from(view.buffer, view.byteOffset, view.byteLength);
+  // Copy the bytes in the typed-array's backing region into a
+  // fresh, independent Buffer. `Uint8Array.prototype.slice` always
+  // allocates a new ArrayBuffer, breaking aliasing.
+  const bytes = new Uint8Array(view.buffer, view.byteOffset, view.byteLength).slice();
+  return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
 }
 
 /**

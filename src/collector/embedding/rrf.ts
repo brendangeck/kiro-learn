@@ -120,13 +120,14 @@ export interface Fused {
  *   codebase never pass one, but guarding here keeps the function
  *   total.
  * - Both `L` and `V` empty returns the empty array.
- * - `k` is not validated. Callers pass the configured RRF constant
- *   (`CollectorConfig.rrfK`, default `60`). The design assumes
- *   `k > 0` so that `k + rank` is strictly positive for every
- *   1-based `rank`; passing `k <= -1` could produce a zero or
- *   negative denominator. The query layer enforces the positive
- *   default, and no path in the codebase threads a user-supplied
- *   `k` through unchecked.
+ * - `k` is validated at the top of the function: non-finite or
+ *   non-positive values throw with a descriptive error. The design
+ *   assumes `k > 0` so that `k + rank` is strictly positive for every
+ *   1-based `rank`; a bad `k` would silently corrupt `fused_score` by
+ *   producing a zero or negative denominator, so we fail fast instead.
+ *   Callers pass the configured RRF constant (`CollectorConfig.rrfK`,
+ *   default `60`); an invalid value here indicates a configuration
+ *   bug, not a runtime condition to tolerate.
  *
  * Complexity is `O(|L| + |V| + n log n)` where `n = |L ∪ V|`,
  * dominated by the final sort. For the scale target (`limit ≤ 10`,
@@ -134,8 +135,9 @@ export interface Fused {
  *
  * @param lexical - 1-based ranked list from the FTS5 retriever.
  * @param vector - 1-based ranked list from the cosine retriever.
- * @param k - RRF constant (design default `60`). Must satisfy
- *   `k + rank > 0` for every input `rank`; see note above.
+ * @param k - RRF constant (design default `60`). Must be a
+ *   positive finite number so that `k + rank > 0` for every 1-based
+ *   input `rank`. Invalid values throw.
  * @param limit - Maximum number of fused hits to return.
  * @returns Fused ranking, sorted and truncated to `limit`.
  *
@@ -148,6 +150,19 @@ export function rrfFuse(
   limit: number,
 ): readonly Fused[] {
   if (limit <= 0) return [];
+
+  // Guard against non-finite or non-positive `k`. The design
+  // assumes `k > 0` so that `k + rank` is strictly positive for
+  // every 1-based `rank`; a `k` of `NaN`, `-Infinity`, or a value
+  // ≤ -1 would produce `NaN` / negative / zero denominators and
+  // silently corrupt `fused_score`, breaking the ordering
+  // invariant (Req 18.6) without surfacing an error. Callers pass
+  // the configured RRF constant (default 60); a bad value here
+  // indicates a configuration bug, not a runtime condition to
+  // tolerate.
+  if (!Number.isFinite(k) || k <= 0) {
+    throw new Error(`rrfFuse: k must be a positive finite number, got ${String(k)}`);
+  }
 
   // Mutable accumulator shape. The fields are kept mutable here so
   // the two accumulation passes can update them in-place; the

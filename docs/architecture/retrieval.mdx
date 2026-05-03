@@ -245,7 +245,7 @@ From the developer's perspective, retrieval is invisible. The prompt goes in, th
 
 **Availability over ranking.** The LIKE fallback exists so every reasonable query eventually produces results, even when the FTS5 sanitizer misses an edge case. Worse rankings are a better failure mode than no rankings at all.
 
-**Never degrade below FTS5.** Hybrid search only ever adds signal — it cannot remove records that FTS5 would have surfaced. When the embedder is off, degraded, or fails on a specific query, the code path collapses to exactly the lexical ranking. This is a hard contract, pinned by a property test that compares hybrid-with-dead-embedder against pure-FTS5 for arbitrary corpora and queries.
+**Never degrade below FTS5.** This is a guarantee about the fallback path: when the embedder is off, degraded, or fails on a specific query, the code path collapses to exactly the lexical ranking — byte-identical to pure FTS5. In normal hybrid mode, vector scoring can reorder results and a vector-only hit in the top `limit` can displace a lower lexical hit, so hybrid is not a strict superset of FTS5's ordering. What it is is a hard contract that degraded-mode behaviour never falls below the FTS5 baseline, pinned by a property test that compares hybrid-with-dead-embedder against pure-FTS5 for arbitrary corpora and queries.
 
 **RRF over score calibration.** FTS5's BM25 and cosine similarity live on incompatible scales. Rather than tune a weighting function that depends on corpus statistics, kiro-learn fuses by rank using [Reciprocal Rank Fusion](https://plg.uwaterloo.ca/~gvcormac/cormacksigir09-rrf.pdf) with `k = 60`. The algorithm has no knobs that need tuning as the corpus grows.
 
