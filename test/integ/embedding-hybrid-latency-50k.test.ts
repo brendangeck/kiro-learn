@@ -68,7 +68,7 @@ import { performance } from 'node:perf_hooks';
 
 import Database from 'better-sqlite3';
 import { ulid } from 'ulidx';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { encodeEmbeddingBlob } from '../../src/collector/embedding/blob.js';
 import type { Embedder } from '../../src/collector/embedding/index.js';
@@ -188,7 +188,10 @@ try {
 const skipLargeBenchmark =
   (process.env['KIRO_LEARN_SKIP_LARGE_BENCHMARK'] ?? '') !== '';
 
-let embedder: Embedder | null = null;
+/** Loaded embedder plus the `dispose` handle `createOnnxEmbedder` returns. */
+type LoadedEmbedder = Embedder & { dispose: () => void };
+
+let embedder: LoadedEmbedder | null = null;
 let loadError: Error | null = null;
 
 beforeAll(async () => {
@@ -206,6 +209,15 @@ beforeAll(async () => {
     loadError = err instanceof Error ? err : new Error(String(err));
   }
 }, 60_000);
+
+// Release the ONNX pipeline on suite teardown so consecutive
+// integration tests do not accumulate `sharp` / `onnxruntime-node`
+// worker threads. See the 1k latency test for the full rationale.
+afterAll(() => {
+  if (embedder === null) return;
+  embedder.dispose();
+  embedder = null;
+});
 
 // ── Bulk seeding via a raw `better-sqlite3` handle ──────────────────────
 

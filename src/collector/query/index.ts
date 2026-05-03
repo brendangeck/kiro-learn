@@ -196,9 +196,30 @@ const DEFAULT_FETCH_DEPTH_MULTIPLIER = 4;
 export function createQueryLayer(deps: QueryLayerDeps): QueryLayer {
   const { storage, embedder, config } = deps;
 
-  const rrfK = config?.rrfK ?? DEFAULT_RRF_K;
+  // Normalise `rrfK`: must be a positive finite number. An invalid
+  // value here would silently corrupt fused scores via a zero or
+  // negative denominator in `rrfFuse`; `rrfFuse` itself throws on
+  // bad `k`, so callers would see a crashing search rather than a
+  // subtle ranking bug. Fall back to the default when the config
+  // field is absent or invalid.
+  const cfgRrfK = config?.rrfK;
+  const rrfK =
+    typeof cfgRrfK === 'number' && Number.isFinite(cfgRrfK) && cfgRrfK > 0
+      ? cfgRrfK
+      : DEFAULT_RRF_K;
+
+  // Normalise `fetchDepthMultiplier`: must be a positive integer.
+  // This value multiplies the caller's `limit` to form the
+  // `fetchDepth` passed to `searchMemoryRecordsLexical` as its SQL
+  // `LIMIT`; a zero, negative, or non-finite multiplier would break
+  // the lexical path for every search on this layer. Coerce any
+  // valid positive finite number to its floor (so `3.7` → `3`) and
+  // clamp the minimum to `1`; fall back to the default otherwise.
+  const cfgMult = config?.fetchDepthMultiplier;
   const fetchDepthMultiplier =
-    config?.fetchDepthMultiplier ?? DEFAULT_FETCH_DEPTH_MULTIPLIER;
+    typeof cfgMult === 'number' && Number.isFinite(cfgMult) && cfgMult > 0
+      ? Math.max(1, Math.floor(cfgMult))
+      : DEFAULT_FETCH_DEPTH_MULTIPLIER;
 
   // Per-`QueryLayer` vector index cache. Lifetime equals this
   // factory's returned object. The cache is intentionally

@@ -29,14 +29,18 @@ sequenceDiagram
     Collector->>Retrieval: assemble(event, budget)
     Retrieval->>Retrieval: extract query from prompt body
     Retrieval->>Query: search(namespace, query, limit)
-    Query->>Database: hybrid: FTS5 + vector cosine
-    Database-->>Query: matching records
+    Query->>Database: FTS5 lexical match
+    Database-->>Query: ranked records
+    Query->>Query: embed(query) + cosine scoring against namespace vector cache
+    Query->>Query: RRF-fuse lexical + vector rankings
     Query-->>Retrieval: records
     Retrieval->>Retrieval: format as context string
     Retrieval-->>Collector: { context, record_ids, latency_ms }
     Collector-->>Shim: response with retrieval
     Shim->>Shim: write context to stdout
 ```
+
+The vector stage reads its data from the database exactly once per namespace via `listEmbeddings`, then keeps a normalized, in-process cache. Subsequent searches in the same namespace skip the database for the vector side and score directly against the cache; cache misses and invalidations are covered in "How search works" below.
 
 The rest of this page walks the stages in order: pulling a query out of the prompt, running the search, falling back when the search is unhappy, honoring the latency budget, and formatting the records into context.
 
@@ -54,7 +58,7 @@ If the extracted query is empty — for example, a text body with no content —
 
 ## How search works
 
-The query layer sits between retrieval and the [database](/architecture/database). It runs two rankings in parallel — FTS5 lexical search and vector cosine similarity — and fuses them with Reciprocal Rank Fusion into a single ordered list. When the embedder is off, unavailable, or fails for a given query, the fused path collapses cleanly to lexical-only, so search always returns whatever FTS5 would have returned.
+The query layer sits between retrieval and the [database](/architecture/database). It runs the FTS5 lexical stage first, against the database; then, if the embedder is available, it embeds the query and scores the corpus in-process against a per-namespace vector cache; finally it fuses the two rankings with Reciprocal Rank Fusion into a single ordered list. When the embedder is off, unavailable, or fails for a given query, the vector stage is skipped and search returns whatever FTS5 would have returned.
 
 Storage handles the lexical stage in two substages: a primary full-text path and a substring fallback.
 

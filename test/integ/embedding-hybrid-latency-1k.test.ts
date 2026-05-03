@@ -52,7 +52,7 @@ import { join } from 'node:path';
 import { performance } from 'node:perf_hooks';
 
 import { ulid } from 'ulidx';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import type { Embedder } from '../../src/collector/embedding/index.js';
 import { createOnnxEmbedder } from '../../src/collector/embedding/index.js';
@@ -161,7 +161,14 @@ try {
 
 // ── Embedder load (gated) ───────────────────────────────────────────────
 
-let embedder: Embedder | null = null;
+/**
+ * The loaded embedder plus the `dispose` handle that
+ * {@link createOnnxEmbedder} returns. Typed as the intersection so
+ * the {@link afterAll} teardown can call `dispose()` without a cast.
+ */
+type LoadedEmbedder = Embedder & { dispose: () => void };
+
+let embedder: LoadedEmbedder | null = null;
 let loadError: Error | null = null;
 
 beforeAll(async () => {
@@ -177,6 +184,20 @@ beforeAll(async () => {
     loadError = err instanceof Error ? err : new Error(String(err));
   }
 }, 60_000);
+
+// Release the ONNX pipeline on suite teardown. `createOnnxEmbedder`
+// attaches `sharp` + `onnxruntime-node` native handles on load; not
+// disposing them leaks worker threads across consecutive integration
+// tests and can slow down `npm run test:integ` or, on some
+// platforms, trip Vitest's "Worker terminated" watchdog. The dispose
+// method is a pure reference-drop — no await, no I/O — so the
+// teardown is cheap and safe even when the load failed (`embedder`
+// is still `null` in that case and we short-circuit).
+afterAll(() => {
+  if (embedder === null) return;
+  embedder.dispose();
+  embedder = null;
+});
 
 // ── Seeding ─────────────────────────────────────────────────────────────
 

@@ -53,7 +53,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { performance } from 'node:perf_hooks';
 
-import { beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import type { Embedder } from '../../src/collector/embedding/index.js';
 import { createOnnxEmbedder } from '../../src/collector/embedding/index.js';
@@ -122,7 +122,10 @@ try {
 
 // ── Embedder load (gated) ───────────────────────────────────────────────
 
-let embedder: Embedder | null = null;
+/** Loaded embedder plus the `dispose` handle `createOnnxEmbedder` returns. */
+type LoadedEmbedder = Embedder & { dispose: () => void };
+
+let embedder: LoadedEmbedder | null = null;
 let loadError: Error | null = null;
 
 beforeAll(async () => {
@@ -138,6 +141,15 @@ beforeAll(async () => {
     loadError = err instanceof Error ? err : new Error(String(err));
   }
 }, 60_000);
+
+// Release the ONNX pipeline on suite teardown so consecutive
+// integration tests do not accumulate `sharp` / `onnxruntime-node`
+// worker threads. See the 1k latency test for the full rationale.
+afterAll(() => {
+  if (embedder === null) return;
+  embedder.dispose();
+  embedder = null;
+});
 
 // ── Test ────────────────────────────────────────────────────────────────
 

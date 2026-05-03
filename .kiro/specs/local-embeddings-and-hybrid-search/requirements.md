@@ -72,7 +72,7 @@ These are inputs to the requirements, not open questions:
 
 1. WHEN the ExtractionWorker produces a `MemoryRecord`, THE System SHALL compute an embedding for that record before invoking `storage.putMemoryRecord`.
 2. THE System SHALL derive the Embedder input string from the record's `title`, `summary`, `facts`, and `concepts` fields, combined in a deterministic order defined in the design.
-3. WHEN the embedding computation succeeds, THE Embedding_Store SHALL persist the vector on the same SQLite row as the memory record, atomically with the record insert.
+3. WHEN the embedding computation succeeds, THE Embedding_Store SHALL persist the vector on the same SQLite row as the memory record. The write is performed as two sequential `putMemoryRecord` + `putEmbedding` calls, not a single transaction (see design § Sequence: embedding on write); a reader that catches the sub-millisecond gap observes the record without its embedding and falls back to lexical-only for that record per Requirement 8.1, which is indistinguishable from normal degraded-mode behaviour.
 4. IF the embedding computation fails for a record, THEN THE System SHALL store the memory record without an embedding and log a warning.
 5. IF the embedding computation fails for a record, THEN THE System SHALL NOT block, drop, or delay the record insert.
 6. THE System SHALL NOT compute embeddings for raw events, buffer entries, or concept strings.

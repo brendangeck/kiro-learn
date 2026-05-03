@@ -293,7 +293,22 @@ export function createBackfillWorker(deps: BackfillWorkerDeps): BackfillWorker {
       const input = composeEmbeddingInput(record);
       const vec = await embedder.embed(input);
       await storage.putEmbedding(record.record_id, vec);
-      onNamespaceChanged?.(record.namespace);
+      // The write succeeded. Past this point, the record is
+      // embedded and the loop should count this iteration as a
+      // success even if the advisory cache-invalidation hook
+      // throws — otherwise a misbehaving cache consumer would
+      // count a successful embed as a failure, update
+      // `lastError`, and pressure the circuit breaker toward a
+      // pause that has nothing to do with the embedder or
+      // storage.
+      try {
+        onNamespaceChanged?.(record.namespace);
+      } catch (cbErr: unknown) {
+        const message = cbErr instanceof Error ? cbErr.message : String(cbErr);
+        process.stderr.write(
+          `[kiro-learn] onNamespaceChanged callback threw after putEmbedding for ${record.record_id}: ${message}\n`,
+        );
+      }
       lastError = null;
       processed += 1;
       return true;
