@@ -1,3 +1,9 @@
+## [0.19.0](https://github.com/brendangeck/kiro-learn/compare/v0.18.0...v0.19.0) (2026-05-04)
+
+### Features
+
+* write-time node reconciliation engine ([#34](https://github.com/brendangeck/kiro-learn/issues/34)) ([79be477](https://github.com/brendangeck/kiro-learn/commit/79be47713950c0582f9d18b9a26f7315f54ce0f3))
+
 ## [0.18.0](https://github.com/brendangeck/kiro-learn/compare/v0.17.0...v0.18.0) (2026-05-03)
 
 ### Features
