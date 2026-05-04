@@ -15,7 +15,7 @@
  * @see Requirements 18.1, 18.2
  */
 export interface BufferWatcherConfig {
-  /** Idle period before extraction fires (ms). Default 5000. */
+  /** Idle period before extraction fires (ms). Default 30_000. */
   idleMs: number;
   /** Buffer byte-size threshold for extraction trigger. Default 256 KiB. */
   extractionSizeThreshold: number;
@@ -108,7 +108,7 @@ export interface BufferWatcher {
 }
 
 const DEFAULT_CONFIG: BufferWatcherConfig = {
-  idleMs: 5_000,
+  idleMs: 30_000,
   extractionSizeThreshold: 262_144,
   bufferMaxBytes: 4_194_304,
   maxConsecutiveFailures: 3,

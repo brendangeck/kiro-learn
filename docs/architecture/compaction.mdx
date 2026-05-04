@@ -128,7 +128,7 @@ Extraction and compaction address different problems:
 
 | Property | Extraction | Compaction |
 |----------|------------|------------|
-| Fires when | 256 KiB accumulated or 5s idle | 1 MiB accumulated |
+| Fires when | 256 KiB accumulated or 30s idle | 1 MiB accumulated |
 | Input | Raw buffered events | Buffer entries (possibly including prior summaries) |
 | Output | Memory records in the database | Summary entries back in the buffer |
 | Clears buffer | Yes, on success | No — replaces in-place |

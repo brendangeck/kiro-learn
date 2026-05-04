@@ -1,52 +1,60 @@
 ---
 title: "Extraction"
-description: "The ACP client, XML framing, batch extraction, and the circuit breaker that keeps extraction from wedging."
+description: "The Extraction Stage of the Ingestion Pipeline — the ACP client, XML framing, batch compression, and the circuit breaker that keeps extraction from wedging. Emits in-memory Candidate Memories, not stored rows."
 ---
 
-Extraction is the process that turns raw events into structured memory records. It takes a batch of [buffered events](/concepts/event-buffer), frames them as XML, sends them to an LLM via the [Agent Client Protocol (ACP)](https://agentclientprotocol.com), and parses the response back into memory records that get stored in the [database](/architecture/database).
+<Note>
+  Extraction is the first stage of the two-stage [Ingestion Pipeline](/architecture/ingestion). Its output is a list of in-memory **Candidate Memories** — nothing is written to storage here. The second stage ([Reconciliation](/architecture/ingestion#reconciliation-stage)) clusters candidates against each other and against existing records, then commits merged summaries or standalone records depending on what a judge model decides.
+</Note>
 
-Extraction is always asynchronous — it never blocks event ingestion. The shim gets a fast HTTP response from the [Collector](/architecture/collector), and extraction happens in the background when the [buffer watcher](/architecture/collector#buffer-watcher) fires a trigger.
+The Extraction Stage turns raw events into `CandidateMemory` values. It takes a batch of [buffered events](/concepts/event-buffer), frames them as XML, sends them to the `kiro-learn-compressor` LLM via the [Agent Client Protocol (ACP)](https://agentclientprotocol.com), parses the response back into structured fields, attaches a pre-computed embedding to each candidate, and hands the list off to the Reconciliation Stage.
+
+Extraction is always asynchronous — it never blocks event ingestion. The shim gets a fast HTTP response from the [Collector](/architecture/collector), and the pipeline runs in the background when the [buffer watcher](/architecture/collector#buffer-watcher) fires an ingestion trigger.
 
 ## How it works
 
 ```mermaid
 sequenceDiagram
     participant Buffer
-    participant Worker as Extraction worker
+    participant Stage as Extraction Stage
     participant ACP as ACP client
     participant CLI as kiro-cli acp
     participant Bedrock as Amazon Bedrock
-    participant DB as Database
+    participant Embedder
+    participant Recon as Reconciliation Stage
 
-    Buffer->>Worker: trigger (size or idle threshold)
-    Worker->>Buffer: read snapshot
-    Worker->>Worker: frame entries as XML
-    Worker->>ACP: create session
+    Buffer->>Stage: ingestion trigger (size or idle threshold)
+    Stage->>Buffer: read snapshot
+    Stage->>Stage: frame entries as XML
+    Stage->>ACP: create session
     ACP->>CLI: spawn kiro-cli acp --agent kiro-learn-compressor
-    ACP-->>Worker: session ready
-    Worker->>ACP: send batch prompt
+    ACP-->>Stage: session ready
+    Stage->>ACP: send batch prompt
     ACP->>CLI: JSON-RPC prompt
     CLI->>Bedrock: invoke model
     Bedrock-->>CLI: streaming response
     CLI-->>ACP: agent_message_chunk notifications
-    ACP-->>Worker: full response text
-    Worker->>Worker: parse <memory_record> XML
-    Worker->>DB: store memory records
-    Worker->>Buffer: clear on success
+    ACP-->>Stage: full response text
+    Stage->>Stage: parse <memory_record> XML
+    Stage->>Embedder: embed(input) per candidate
+    Embedder-->>Stage: Float32Array (or null on failure)
+    Stage-->>Recon: CandidateMemory[] (in-memory)
 ```
 
-## The extraction worker
+## The Extraction Stage
 
-The extraction worker is the orchestrator. When the buffer watcher fires an extraction trigger for a project, the worker:
+The Extraction Stage is the orchestrator for the compressor call. When the buffer watcher fires an ingestion trigger for a project, the stage:
 
 1. **Reads a buffer snapshot** — a point-in-time copy of all buffered entries for that project.
 2. **Frames the batch as XML** — each entry becomes a `<tool_observation>` element.
 3. **Sends the XML to the compressor agent** via ACP.
 4. **Parses the response** — extracts `<memory_record>` blocks from the LLM output.
-5. **Stores memory records** in the database with generated IDs and metadata.
-6. **Clears the buffer** on success — entries that were successfully extracted are removed.
+5. **Computes an embedding** for each candidate using the local ONNX embedder — the same model and input composition the write path uses today.
+6. **Returns an in-memory `CandidateMemory[]`** to the Reconciliation Stage.
 
-If any step fails, the buffer is left intact. Events are never lost — they remain in the database regardless of extraction outcome, and the buffer retains them for a future retry.
+The stage never calls `storage.putMemoryRecord` or `storage.putEmbedding`. Candidates live in memory until the [Reconciliation Stage](/architecture/ingestion#reconciliation-stage) commits them — either as summary records (merge path) or as standalone rows (keep-separate path). This invariant is pinned by a property test.
+
+If any step fails, the pipeline leaves the buffer intact. Events are never lost — they remain in the database regardless of extraction outcome, and the buffer retains them for a future retry.
 
 ## ACP client
 
@@ -154,7 +162,7 @@ The timeout is raced against both the prompt completion and a "child failed" sen
 
 ### Buffer preservation on failure
 
-When extraction fails (after all retries), the [buffer](/concepts/event-buffer) is not cleared. The events remain buffered and will be retried on the next extraction trigger. Combined with the buffer watcher's [circuit breaker](/architecture/collector#circuit-breaker) (3 consecutive failures disables extraction for that project), this prevents both data loss and infinite retry loops.
+When extraction fails (after all retries), the [buffer](/concepts/event-buffer) is not cleared. The events remain buffered and will be retried on the next ingestion trigger. Combined with the buffer watcher's [circuit breaker](/architecture/collector#circuit-breaker) (3 consecutive failures disables extraction for that project), this prevents both data loss and infinite retry loops.
 
 ```mermaid
 flowchart TD
@@ -163,18 +171,17 @@ flowchart TD
     Frame --> Send["Send to compressor"]
     Send --> Check{Response type?}
     Check -->|"Valid XML"| Parse["Parse memory records"]
-    Check -->|"Skip signal"| Done["Clear buffer, done"]
+    Check -->|"Skip signal"| Done["Hand empty list to reconciliation, clear buffer"]
     Check -->|"Garbage"| Retry{Retries left?}
     Retry -->|Yes| Send
     Retry -->|No| Fail["Fail — buffer preserved"]
-    Parse --> Store["Store records"]
-    Store --> Clear["Clear buffer"]
-    Clear --> Done
+    Parse --> Embed["Embed each candidate"]
+    Embed --> Hand["Hand CandidateMemory[] to reconciliation"]
 ```
 
-## What a memory record contains
+## What a Candidate Memory contains
 
-After extraction, each memory record is enriched with pipeline-managed fields before storage:
+After extraction, each `CandidateMemory` carries the same fields a committed `MemoryRecord` has, plus a transient embedding vector:
 
 | Field | Source |
 |-------|--------|
@@ -187,10 +194,15 @@ After extraction, each memory record is enriched with pipeline-managed fields be
 | `concepts` | From the compressor's `<concept>` elements |
 | `files_touched` | From the compressor's `<file>` elements |
 | `observation_type` | From the compressor's `type` attribute |
+| `embedding` | 384-dim `Float32Array` from the ONNX embedder, or `null` on embed failure |
 
-The `source_event_ids` array links every memory record back to the raw events that produced it. This provides full traceability — you can always find which events contributed to a given memory.
+The `source_event_ids` array links every candidate back to the raw events that produced it. This provides full traceability — you can always find which events contributed to a memory, even after reconciliation merges it into a summary record.
 
-Once stored, memory records become searchable via the [Retrieval](/architecture/retrieval) system's FTS5 full-text index.
+`embedding` is the only candidate-specific field; it does not appear on the persisted `MemoryRecord` Zod schema because it is computed on the write path. The Reconciliation Stage uses it for intra-batch clustering and neighbor lookup before committing.
+
+`created_at` is **not** on the candidate — it is stamped by `toMemoryRecord(candidate)` at commit time. This keeps extraction-time and commit-time cleanly separated: a candidate that sits in memory through a long reconciliation run gets the `created_at` of when it actually became a record, not when extraction parsed it.
+
+Once committed, memory records become searchable via the [Retrieval](/architecture/retrieval) system's hybrid FTS5 + vector index.
 
 ## Key design decisions
 
@@ -204,9 +216,14 @@ Once stored, memory records become searchable via the [Retrieval](/architecture/
 
 **No direct Bedrock dependency.** The extraction pipeline talks to `kiro-cli acp`, not to [Amazon Bedrock](https://docs.aws.amazon.com/bedrock/latest/userguide/what-is-bedrock.html) directly. This keeps credentials, model selection, and API versioning as `kiro-cli`'s responsibility. kiro-learn doesn't need AWS SDK dependencies for extraction.
 
+**Extraction never writes.** The stage returns `CandidateMemory[]` and exits. Persistence happens one stage later, in reconciliation. Keeping extraction side-effect-free is what makes the buffer-clear discipline work: a crash between extraction and reconciliation leaves the buffer intact, and the events are safely available for retry.
+
 ## Related pages
 
 <CardGroup cols={2}>
+  <Card title="Ingestion" href="/architecture/ingestion">
+    The end-to-end pipeline — extraction is stage one
+  </Card>
   <Card title="Compaction" href="/architecture/compaction">
     What happens when buffers grow too large
   </Card>

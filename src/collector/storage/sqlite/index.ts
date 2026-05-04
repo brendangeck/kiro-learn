@@ -47,6 +47,7 @@ import type {
   SearchParams,
   StatsResult,
   StorageBackend,
+  StorageTransaction,
 } from '../../../types/index.js';
 
 import { decodeEmbeddingBlob, encodeEmbeddingBlob } from '../../embedding/blob.js';
@@ -481,6 +482,141 @@ export function openSqliteStorage(opts: SqliteStorageOptions): StorageBackend {
     return rows.map(rowToMemoryRecord);
   };
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // Reconciliation surface — deleteMemoryRecord + withTransaction.
+  //
+  // Both methods wrap `db.transaction(...)` from `better-sqlite3`, which
+  // runs its callback synchronously inside BEGIN/COMMIT and rolls back
+  // automatically on any thrown error. The synchronous callback is the
+  // whole point: attempting to `await` inside the body would yield to
+  // the microtask queue and defeat the transaction boundary, so we
+  // reject any `fn` that returns a Promise.
+  //
+  // The delete cascade is driven by three prepared statements in a
+  // fixed order: FTS5 row → embedding column (nulled) → primary row.
+  // See the comment on the statements in `statements.ts` for why each
+  // step is needed and why the order matters.
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Apply the three-step delete cascade for a single record id inside
+   * whatever transaction is currently active on `db`. Call sites MUST
+   * wrap this in a `db.transaction(...)` body; it does not open one
+   * itself.
+   *
+   * Order mirrors the "child rows deleted before parent" invariant:
+   * FTS5 companion first, embedding column nulled next, primary row
+   * last. Each step is a zero-row no-op on a miss, so the cascade is
+   * idempotent on unknown ids (Requirement 9.5).
+   */
+  const deleteOneRecordInTxn = (id: string): void => {
+    stmts.deleteMemoryRecordFtsById.run(id);
+    stmts.deleteEmbeddingByRecordId.run(id);
+    stmts.deleteMemoryRecordById.run(id);
+  };
+
+  const deleteMemoryRecord = async (recordIds: readonly string[]): Promise<void> => {
+    assertOpen();
+    // Zero-length input is a trivially valid no-op — don't even open a
+    // transaction. Keeps the path identical to the "every id misses"
+    // case in terms of observable effect.
+    if (recordIds.length === 0) return;
+
+    // `db.transaction(fn)` returns a wrapper; invoking it runs `fn`
+    // inside BEGIN/COMMIT and rolls back on any thrown error. Looping
+    // inside the wrapper keeps the whole batch atomic — either every
+    // listed id's cascade lands or none do.
+    //
+    // @see Requirements 9.1, 9.2, 9.3, 9.4, 9.5, 8.1
+    const tx = db.transaction((ids: readonly string[]) => {
+      for (const id of ids) {
+        deleteOneRecordInTxn(id);
+      }
+    });
+    tx(recordIds);
+  };
+
+  const withTransaction = async <T>(
+    fn: (tx: StorageTransaction) => Promise<T> | T,
+  ): Promise<T> => {
+    assertOpen();
+
+    // Build the synchronous handle once per call. All three methods
+    // delegate to the same prepared statements as the async backend
+    // surface, but they return `void` — callers must not `await` them.
+    //
+    // `better-sqlite3` transactions are synchronous; attempting to
+    // yield to the microtask queue inside the body would silently
+    // escape the BEGIN/COMMIT and defeat atomicity. We guard against
+    // that below by rejecting any `fn` that returns a Promise.
+    const txHandle: StorageTransaction = {
+      putMemoryRecord: (record: MemoryRecord): void => {
+        const factsText = record.facts.join(' ');
+        stmts.insertMemoryRecord.run(
+          record.record_id,
+          record.namespace,
+          record.strategy,
+          record.title,
+          record.summary,
+          JSON.stringify(record.facts),
+          JSON.stringify(record.source_event_ids),
+          record.created_at,
+          JSON.stringify(record.concepts),
+          JSON.stringify(record.files_touched),
+          record.observation_type,
+        );
+        stmts.insertMemoryRecordFts.run(
+          record.record_id,
+          record.namespace,
+          record.title,
+          record.summary,
+          factsText,
+        );
+      },
+      putEmbedding: (recordId: string, embedding: Float32Array): void => {
+        // Same contract as the async `putEmbedding`: encode to BLOB,
+        // UPDATE by PK, silent no-op on a miss.
+        const blob = encodeEmbeddingBlob(embedding);
+        stmts.updateMemoryRecordEmbedding.run(blob, recordId);
+      },
+      deleteMemoryRecord: (recordIds: readonly string[]): void => {
+        for (const id of recordIds) {
+          deleteOneRecordInTxn(id);
+        }
+      },
+    };
+
+    // The transaction body is synchronous. We capture `fn`'s return
+    // value in an outer binding and read it after `tx()` commits; if
+    // the value is a Promise, the body throws and `better-sqlite3`
+    // rolls back. Rejecting async bodies inside the transaction body
+    // rather than after commit means a misuse never accidentally
+    // half-commits.
+    let result: T;
+    const tx = db.transaction(() => {
+      const returned = fn(txHandle);
+      // `fn` may legitimately be declared `async` while still returning
+      // a synchronous value shape; the check below guards against any
+      // actual Promise leaking through, regardless of declaration.
+      if (
+        returned !== null &&
+        typeof returned === 'object' &&
+        'then' in (returned as object) &&
+        typeof (returned as { then?: unknown }).then === 'function'
+      ) {
+        throw new Error(
+          'withTransaction: callback returned a Promise; ' +
+            'better-sqlite3 transactions are synchronous and cannot be awaited inside the body',
+        );
+      }
+      result = returned as T;
+    });
+    tx();
+    // `result` is definitely assigned on a successful commit; TypeScript
+    // cannot prove it because the assignment happens inside a callback.
+    return result!;
+  };
+
   return {
     putEvent,
     getEventById,
@@ -496,6 +632,8 @@ export function openSqliteStorage(opts: SqliteStorageOptions): StorageBackend {
     listEmbeddings,
     listRecordsWithoutEmbedding,
     searchMemoryRecordsLexical,
+    deleteMemoryRecord,
+    withTransaction,
   };
 }
 

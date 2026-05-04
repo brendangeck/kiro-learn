@@ -244,12 +244,17 @@ describe.skipIf(!canRun)(
       baseUrl = `http://127.0.0.1:${String(port)}`;
 
       // Start collector with buffer mode enabled and a short idle timer.
+      // Idle timer is the validated minimum (5 s) introduced by the
+      // reconciliation-engine spec; anything lower fails
+      // `validateCollectorConfig` on startup. 5 s is still short
+      // enough that the test completes in well under the 180 s
+      // timeout below.
       collector = await startCollector({
         port,
         host: '127.0.0.1',
         storagePath: join(tmpDir, 'test.db'),
         bufferEnabled: true,
-        bufferIdleMs: 500,
+        bufferIdleMs: 5_000,
         bufferDir,
         bufferExtractionTimeoutMs: 90_000,
       });
@@ -326,5 +331,200 @@ describe.skipIf(!canRun)(
       await new Promise((resolve) => setTimeout(resolve, 1_000));
       expect(existsSync(bufferFile)).toBe(false);
     }, 180_000);
+  },
+);
+
+// ── Rollback-safety case: reconciliationEnabled: false ─────────────────
+//
+// Task 18.1 — when the reconciliation feature flag is off, the
+// IngestionPipeline's direct-commit fallback must produce the same
+// byte-for-byte write sequence as the pre-reconciliation
+// ExtractionWorker did: every Candidate Memory becomes a standalone
+// `memory_record` with `strategy === 'llm-summary'`, no Summary
+// Records, no deletions, and the buffer is cleared after a successful
+// run. Property 4 in the unit suite pins the write-sequence equality
+// at the call level; this integ run pins the observable end-state:
+// every record that lands in storage looks the same as before the
+// feature existed.
+//
+// Validates: Requirements 1.6, 13.2.
+
+describe.skipIf(!canRun)(
+  'Buffer extraction pipeline — reconciliationEnabled: false rollback behaviour',
+  () => {
+    let tmpDir: string;
+    let bufferDir: string;
+    let collector: CollectorHandle | null = null;
+    let baseUrl: string;
+
+    // Isolated compressor-agent backup/restore so this block does not
+    // interfere with the primary block's beforeAll if they run in
+    // sequence within the same vitest process.
+    const compressorPath = join(homedir(), '.kiro', 'agents', 'kiro-learn-compressor.json');
+    let originalCompressor: string | null = null;
+
+    // Distinct project id + namespace so there is no collision with
+    // the first suite's buffer directory or DB rows.
+    const namespace = '/actor/integ-buffer-test/project/bufferflagoff1/';
+
+    const events: KiroMemEvent[] = [
+      {
+        event_id: '01JF9AA000000000000000F0F1',
+        session_id: 'sess-buffer-integ-flagoff-1',
+        actor_id: 'integ-buffer-test',
+        namespace,
+        schema_version: 1,
+        kind: 'tool_use',
+        body: {
+          type: 'json',
+          data: {
+            tool_name: 'fs_read',
+            tool_input: { path: 'src/collector/ingestion/index.ts' },
+            tool_response: {
+              success: true,
+              result:
+                'IngestionPipeline wires extractCandidates + reconcile; when the feature flag is off every candidate goes direct-commit without invoking the judge.',
+            },
+          },
+        },
+        valid_time: '2026-05-02T10:00:00Z',
+        source: {
+          surface: 'kiro-cli',
+          version: '0.1.0',
+          client_id: 'integ-buffer-flagoff-client',
+        },
+      },
+      {
+        event_id: '01JF9AA000000000000000F0F2',
+        session_id: 'sess-buffer-integ-flagoff-1',
+        actor_id: 'integ-buffer-test',
+        namespace,
+        schema_version: 1,
+        kind: 'prompt',
+        body: {
+          type: 'text',
+          content:
+            'Confirm that with reconciliationEnabled: false the pipeline behaves byte-for-byte like the pre-reconciliation extraction worker — every candidate becomes its own memory_record.',
+        },
+        valid_time: '2026-05-02T10:01:00Z',
+        source: {
+          surface: 'kiro-cli',
+          version: '0.1.0',
+          client_id: 'integ-buffer-flagoff-client',
+        },
+      },
+    ];
+
+    beforeAll(async () => {
+      if (existsSync(compressorPath)) {
+        originalCompressor = readFileSync(compressorPath, 'utf8');
+      }
+      const globalAgentsDir = join(homedir(), '.kiro', 'agents');
+      mkdirSync(globalAgentsDir, { recursive: true });
+      writeCompressorAgent(globalAgentsDir);
+
+      tmpDir = mkdtempSync(join(tmpdir(), 'kiro-learn-integ-buffer-flagoff-'));
+      bufferDir = join(tmpDir, 'buffers');
+
+      const port = await findFreePort();
+      baseUrl = `http://127.0.0.1:${String(port)}`;
+
+      // Explicit feature flag OFF. Everything else mirrors the
+      // primary suite — same idle timer, same timeouts — so the
+      // only variable being probed is the rollback path. The 5 s
+      // idle is the validated minimum introduced by the
+      // reconciliation-engine spec (Task 13.4) —
+      // `validateCollectorConfig` rejects values below 5_000.
+      collector = await startCollector({
+        port,
+        host: '127.0.0.1',
+        storagePath: join(tmpDir, 'test.db'),
+        bufferEnabled: true,
+        bufferIdleMs: 5_000,
+        bufferDir,
+        bufferExtractionTimeoutMs: 90_000,
+        reconciliationEnabled: false,
+      });
+    });
+
+    afterAll(async () => {
+      if (collector !== null) {
+        await collector.close();
+      }
+      if (tmpDir !== undefined) {
+        rmSync(tmpDir, { recursive: true, force: true });
+      }
+      if (originalCompressor !== null) {
+        writeFileSync(compressorPath, originalCompressor);
+      } else if (existsSync(compressorPath)) {
+        rmSync(compressorPath);
+      }
+    });
+
+    it(
+      'posts events with reconciliationEnabled: false and emits standalone memory_records (no summary, strategy llm-summary)',
+      async () => {
+        for (const event of events) {
+          const result = await postEvent(baseUrl, event);
+          expect(result.stored).toBe(true);
+          expect(result.event_id).toBe(event.event_id);
+        }
+
+        // Wait for the idle timer → direct-commit fallback.
+        const memories = await pollForMemories(baseUrl, namespace, 120_000, 2_000);
+        expect(memories.length).toBeGreaterThan(0);
+
+        // The old-behaviour invariants are all about what the
+        // records look like:
+        //
+        // - `strategy === 'llm-summary'` — no Summary Records
+        //   (those carry `'llm-reconciled'`).
+        // - `namespace` matches the batch.
+        // - `source_event_ids` cite only the posted events.
+        // - Fields are schema-valid (ULID id, title/summary caps,
+        //   known observation type).
+        const postedEventIds = new Set(events.map((e) => e.event_id));
+        for (const memory of memories) {
+          expect(memory.namespace).toBe(namespace);
+
+          expect(memory.strategy).toBe('llm-summary');
+
+          expect(memory.source_event_ids.length).toBeGreaterThan(0);
+          for (const sourceId of memory.source_event_ids) {
+            expect(postedEventIds.has(sourceId)).toBe(true);
+          }
+
+          expect(memory.record_id).toMatch(/^mr_[0-9A-HJKMNP-TV-Z]{26}$/);
+          expect(memory.title.length).toBeGreaterThan(0);
+          expect(memory.title.length).toBeLessThanOrEqual(200);
+          expect(memory.summary.length).toBeGreaterThan(0);
+          expect(memory.summary.length).toBeLessThanOrEqual(4000);
+          expect([
+            'tool_use',
+            'decision',
+            'error',
+            'discovery',
+            'pattern',
+          ]).toContain(memory.observation_type);
+        }
+
+        // No Summary Records leaked in under the flag-off path —
+        // there is no LLM-reconciled strategy anywhere in the
+        // returned set. This is the load-bearing rollback
+        // assertion: the direct-commit fallback never produces a
+        // merged-summary row.
+        const reconciledCount = memories.filter(
+          (m) => m.strategy === 'llm-reconciled',
+        ).length;
+        expect(reconciledCount).toBe(0);
+
+        // Buffer cleared after the run, matching pre-reconciliation
+        // extraction-worker semantics.
+        const bufferFile = join(bufferDir, 'bufferflagoff1', 'buffer.ndjson');
+        await new Promise((resolve) => setTimeout(resolve, 1_000));
+        expect(existsSync(bufferFile)).toBe(false);
+      },
+      180_000,
+    );
   },
 );

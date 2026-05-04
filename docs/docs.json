@@ -37,6 +37,7 @@
               "architecture/kiro-ide-shim",
               "architecture/collector",
               "architecture/extraction",
+              "architecture/ingestion",
               "architecture/compaction",
               "architecture/summarization",
               "architecture/retrieval",

@@ -15,7 +15,12 @@
 import fc from 'fast-check';
 
 import { OBSERVATION_TYPES } from '../../src/types/schemas.js';
-import type { KiroMemEvent, MemoryRecord } from '../../src/types/schemas.js';
+import type {
+  KiroMemEvent,
+  MemoryRecord,
+  CandidateMemory,
+  JudgeResponse,
+} from '../../src/types/schemas.js';
 import type { StatsResult, ProjectInfo } from '../../src/types/index.js';
 import type { BufferEntry } from '../../src/collector/buffer/types.js';
 import type { Ranked } from '../../src/collector/embedding/rrf.js';
@@ -1616,4 +1621,131 @@ export function arbitraryMixedCorpus(
         embedding,
       })),
     );
+}
+// ── Reconciliation-engine generators (reconciliation-engine Task 1.3) ──
+
+/**
+ * Arbitrary 384-dimensional `Float32Array` drawn from the finite range
+ * `[-1.0, 1.0]` — matching the output distribution of the MiniLM-L6-v2
+ * ONNX embedder after L2 normalisation. No NaN, no infinity.
+ *
+ * This helper is scoped to the reconciliation generators below; tests
+ * that need wider / weirder embeddings keep using
+ * {@link arbitraryFloat32Array}. Keeping the candidate embeddings
+ * well-behaved means property tests that compute cosine similarity on
+ * the generated vectors (clustering, neighbor lookup) get meaningful
+ * values instead of a stream of `NaN`.
+ */
+function arbitraryCandidateEmbedding(): fc.Arbitrary<Float32Array> {
+  return fc
+    .array(
+      fc.float({ min: -1, max: 1, noNaN: true, noDefaultInfinity: true }),
+      { minLength: 384, maxLength: 384 },
+    )
+    .map((arr) => Float32Array.from(arr));
+}
+
+/**
+ * Arbitrary valid `CandidateMemory` — the in-memory output shape of the
+ * Extraction Stage of the Ingestion Pipeline.
+ *
+ * Mirrors every field of {@link arbitraryMemoryRecord} EXCEPT
+ * `created_at` (Candidate Memories do not carry a commit timestamp —
+ * that's stamped by `toMemoryRecord(...)` at commit time). Adds the
+ * transient `embedding` field as `Float32Array(384) | null`, mixing
+ * both shapes so reconciliation property tests exercise the null-
+ * embedding singleton path (Requirement 3.4) and the populated-
+ * embedding clustering path (Requirement 4.1) alike.
+ *
+ * @see .kiro/specs/reconciliation-engine/requirements.md § 3.2, 3.4, 3.5
+ * @see .kiro/specs/reconciliation-engine/design.md § Data Models — Wire schema additions
+ */
+export function arbitraryCandidateMemory(): fc.Arbitrary<CandidateMemory> {
+  return fc.record({
+    record_id: recordIdArb(),
+    namespace: namespaceArb(),
+    strategy: strategyArb(),
+    title: fc.string({ minLength: 1, maxLength: 200 }).filter((s) => s.length > 0),
+    summary: fc.string({ minLength: 1, maxLength: 4000 }).filter((s) => s.length > 0),
+    facts: fc.array(
+      fc.string({ minLength: 1, maxLength: 500 }).filter((s) => s.length > 0),
+      { minLength: 0, maxLength: 10 },
+    ),
+    source_event_ids: fc.array(ulidArb(), { minLength: 1, maxLength: 5 }),
+    concepts: fc.array(
+      fc.string({ minLength: 1, maxLength: 100 }).filter((s) => s.length > 0),
+      { minLength: 0, maxLength: 10 },
+    ),
+    files_touched: fc.array(
+      fc.string({ minLength: 1, maxLength: 500 }).filter((s) => s.length > 0),
+      { minLength: 0, maxLength: 10 },
+    ),
+    observation_type: fc.constantFrom(...OBSERVATION_TYPES),
+    embedding: fc.oneof(
+      fc.constant(null),
+      arbitraryCandidateEmbedding(),
+    ),
+  });
+}
+
+/**
+ * Arbitrary `{kind: 'merge', ...}` judge response — the shape the
+ * `kiro-learn-reconciler` agent emits when collapsing a Candidate
+ * Cluster and (optionally) some Neighbor Pool members into a single
+ * Summary Record.
+ *
+ * Every required field is drawn from the same bounds the
+ * {@link JudgeMergeResponseSchema} enforces. The optional
+ * `observation_type` is generated via `fc.option` and only attached
+ * when defined, matching the `exactOptionalPropertyTypes` convention
+ * (no `undefined` values for optional keys).
+ */
+function arbitraryJudgeMergeResponse(): fc.Arbitrary<JudgeResponse> {
+  return fc
+    .record({
+      kind: fc.constant('merge' as const),
+      merged_record_ids: fc.array(recordIdArb(), { minLength: 1, maxLength: 8 }),
+      title: fc.string({ minLength: 1, maxLength: 200 }).filter((s) => s.length > 0),
+      summary: fc.string({ minLength: 1, maxLength: 4000 }).filter((s) => s.length > 0),
+      facts: fc.array(
+        fc.string({ minLength: 1, maxLength: 500 }).filter((s) => s.length > 0),
+        { minLength: 0, maxLength: 10 },
+      ),
+      concepts: fc.array(
+        fc.string({ minLength: 1, maxLength: 100 }).filter((s) => s.length > 0),
+        { minLength: 0, maxLength: 10 },
+      ),
+      files_touched: fc.array(
+        fc.string({ minLength: 1, maxLength: 500 }).filter((s) => s.length > 0),
+        { minLength: 0, maxLength: 10 },
+      ),
+    })
+    .chain((base) =>
+      // Attach `observation_type` only when defined so the final object
+      // satisfies `exactOptionalPropertyTypes` (no `key: undefined`).
+      fc
+        .option(fc.constantFrom(...OBSERVATION_TYPES), { nil: undefined })
+        .map((ot) => (ot === undefined ? base : { ...base, observation_type: ot })),
+    );
+}
+
+/** Arbitrary `{kind: 'keep_separate'}` judge response — a bare signal. */
+function arbitraryJudgeKeepSeparateResponse(): fc.Arbitrary<JudgeResponse> {
+  return fc.constant({ kind: 'keep_separate' as const });
+}
+
+/**
+ * Arbitrary valid {@link JudgeResponse} — a discriminated union on
+ * `kind`. Yields both `{kind: 'merge', ...}` and `{kind: 'keep_separate'}`
+ * variants via `fc.oneof` so downstream property tests cover both
+ * branches of the reconciler's commit dispatch.
+ *
+ * @see .kiro/specs/reconciliation-engine/requirements.md § 6.3, 6.4, 6.5
+ * @see .kiro/specs/reconciliation-engine/design.md § Data Models — Wire schema additions
+ */
+export function arbitraryJudgeResponse(): fc.Arbitrary<JudgeResponse> {
+  return fc.oneof(
+    arbitraryJudgeMergeResponse(),
+    arbitraryJudgeKeepSeparateResponse(),
+  );
 }

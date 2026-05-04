@@ -47,7 +47,8 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createQueryLayer } from '../../src/collector/query/index.js';
-import { createExtractionWorker } from '../../src/collector/buffer/extraction.js';
+import { createIngestionPipeline } from '../../src/collector/ingestion/index.js';
+import { createReconciliationCircuitBreaker } from '../../src/collector/ingestion/circuit-breaker.js';
 import { createBufferStore } from '../../src/collector/buffer/store.js';
 import { createBufferWatcher } from '../../src/collector/buffer/watcher.js';
 import { openSqliteStorage } from '../../src/collector/storage/sqlite/index.js';
@@ -183,7 +184,7 @@ describe('End-to-end feature-flag-off', () => {
      */
     const { pipeline } = await import('@huggingface/transformers');
 
-    // The ExtractionWorker and QueryLayer both take `embedder:
+    // The IngestionPipeline and QueryLayer both take `embedder:
     // null` in the flag-off path. Exercise both without ever
     // constructing `createOnnxEmbedder`.
     const bufferStore = createBufferStore(bufferDir);
@@ -195,17 +196,31 @@ describe('End-to-end feature-flag-off', () => {
       compactionSizeThreshold: 1_048_576,
     });
 
-    const worker = createExtractionWorker({
+    const queryLayer = createQueryLayer({ storage, embedder: null });
+    const circuitBreaker = createReconciliationCircuitBreaker();
+
+    const pipelineHandle = createIngestionPipeline({
       bufferStore,
       watcher,
       storage,
       embedder: null,
-      config: { concurrency: 1, timeoutMs: 60_000, maxRetries: 3 },
+      query: queryLayer,
+      circuitBreaker,
+      config: {
+        reconciliationEnabled: false,
+        intraBatchSimilarityThreshold: 0.85,
+        neighborSimilarityThreshold: 0.8,
+        neighborPoolMaxSize: 10,
+        judgeModelTimeoutMs: 30_000,
+        extractionConcurrency: 1,
+        extractionTimeoutMs: 60_000,
+        extractionMaxRetries: 3,
+        debug: false,
+      },
     });
-    const queryLayer = createQueryLayer({ storage, embedder: null });
 
     await bufferStore.append(PROJECT_ID, makeBufferEntry());
-    await worker.extract(PROJECT_ID);
+    await pipelineHandle.run(PROJECT_ID);
     await queryLayer.search(NAMESPACE, 'typescript', 10);
 
     expect(pipeline).not.toHaveBeenCalled();
@@ -213,7 +228,7 @@ describe('End-to-end feature-flag-off', () => {
     watcher.close();
   });
 
-  it('ExtractionWorker stores records with NULL embedding and emits no embed-related warnings', async () => {
+  it('IngestionPipeline stores records with NULL embedding and emits no embed-related warnings', async () => {
     /**
      * **Validates: Requirements 12.4, 14.2**
      *
@@ -235,18 +250,33 @@ describe('End-to-end feature-flag-off', () => {
 
     const putEmbeddingSpy = vi.spyOn(storage, 'putEmbedding');
 
-    const worker = createExtractionWorker({
+    const queryLayer = createQueryLayer({ storage, embedder: null });
+    const circuitBreaker = createReconciliationCircuitBreaker();
+
+    const pipelineHandle = createIngestionPipeline({
       bufferStore,
       watcher,
       storage,
       embedder: null,
-      config: { concurrency: 1, timeoutMs: 60_000, maxRetries: 3 },
+      query: queryLayer,
+      circuitBreaker,
+      config: {
+        reconciliationEnabled: false,
+        intraBatchSimilarityThreshold: 0.85,
+        neighborSimilarityThreshold: 0.8,
+        neighborPoolMaxSize: 10,
+        judgeModelTimeoutMs: 30_000,
+        extractionConcurrency: 1,
+        extractionTimeoutMs: 60_000,
+        extractionMaxRetries: 3,
+        debug: false,
+      },
     });
 
     await bufferStore.append(PROJECT_ID, makeBufferEntry());
-    const result = await worker.extract(PROJECT_ID);
+    const result = await pipelineHandle.run(PROJECT_ID);
 
-    expect(result.memoriesCreated).toBe(1);
+    expect(result.directCommittedRecords).toBe(1);
 
     // Record stored, no embedding.
     const { items } = await storage.listMemoryRecords({

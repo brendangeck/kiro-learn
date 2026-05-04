@@ -179,6 +179,10 @@ The fallback is how the embedder's degraded-mode state is made invisible to the 
 
 The per-namespace vector index is a pure read-through cache. After every successful `putEmbedding` — whether from the extraction worker on a fresh record or the [backfill worker](/architecture/collector#backfill-worker) catching up on pre-existing records — the query layer's `invalidateNamespace(ns)` is called. The next search in that namespace reloads the index from storage. Invalidation is explicit rather than event-driven so the storage layer stays free of cache concerns.
 
+<Note>
+  Retrieval reads `memory_records` unchanged from today. When the [Reconciliation Stage](/architecture/ingestion#reconciliation-stage) commits a merge, the merged originals are deleted from `memory_records` in the same transaction — see [`deleteMemoryRecord` cascade semantics](/architecture/database#merge-deletion-is-destructive) for details. There is no "merged" flag to filter on; merged rows are simply not in the table, so FTS5, the vector cache, and the fused hybrid ranking all exclude them by construction.
+</Note>
+
 ## Latency budget
 
 Retrieval runs on the shim's critical path. Every millisecond spent searching is a millisecond the developer spends staring at a blank prompt. So the assembler enforces a hard budget — default 500 ms — on the search step.
