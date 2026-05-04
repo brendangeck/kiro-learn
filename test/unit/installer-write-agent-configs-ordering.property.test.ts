@@ -40,11 +40,14 @@
  * ordering, not strict adherence to a simplified summary.
  *
  * Shape of `writeAgentConfigs` execution (after Task 7.1):
- *   1. writeKiroLearnAgent(globalDir)                    — global scope
- *   2. writeKiroLearnAgent(projectDir) if projectRoot    — project scope
+ *   1. writeKiroLearnAgent(globalDir)                      — global scope
+ *   2. writeKiroLearnAgent(projectDir) if projectRoot      — project scope
  *   3. writeFileSync(globalDir/kiro-learn-compressor.json) — compressor
- * The compressor write is tagged with `scope: 'compressor'` and is the
- * only op in the compressor segment of the trace.
+ *   4. writeFileSync(globalDir/kiro-learn-compactor.json)  — compactor
+ *   5. writeFileSync(globalDir/kiro-learn-reconciler.json) — reconciler
+ * Each hand-authored agent write is tagged with its own scope tag
+ * (`'compressor'`, `'compactor'`, `'reconciler'`) and is the only op
+ * in that segment of the trace.
  *
  * **Validates: Requirements 6.4, 9.3, 12.1, 12.2**
  *
@@ -110,11 +113,13 @@ interface TraceEntry {
    * Which scope this op belongs to. `'global'` for ops touching
    * `<tmpHome>/.kiro/agents/kiro-learn.json`, `'project'` for ops
    * touching `<projectDir>/.kiro/agents/kiro-learn.json`,
-   * `'compressor'` for the final `<tmpHome>/.kiro/agents/kiro-learn-compressor.json`
+   * `'compressor'` for the `<tmpHome>/.kiro/agents/kiro-learn-compressor.json`
    * write, `'compactor'` for the `<tmpHome>/.kiro/agents/kiro-learn-compactor.json`
-   * write, `undefined` for anything else (should not happen in this test).
+   * write, `'reconciler'` for the final
+   * `<tmpHome>/.kiro/agents/kiro-learn-reconciler.json` write,
+   * `undefined` for anything else (should not happen in this test).
    */
-  scope?: 'global' | 'project' | 'compressor' | 'compactor';
+  scope?: 'global' | 'project' | 'compressor' | 'compactor' | 'reconciler';
 }
 
 // ── tmpHome setup (before mocks so paths are available to taggers) ─────
@@ -134,6 +139,10 @@ const globalCompactorPath: string = join(
   globalAgentsDir,
   'kiro-learn-compactor.json',
 );
+const globalReconcilerPath: string = join(
+  globalAgentsDir,
+  'kiro-learn-reconciler.json',
+);
 
 // Parent dir for per-test project directories.
 const projectParent: string = realpathSync(
@@ -150,6 +159,7 @@ function tagFor(
     return 'project';
   if (p === globalCompressorPath) return 'compressor';
   if (p === globalCompactorPath) return 'compactor';
+  if (p === globalReconcilerPath) return 'reconciler';
   return undefined;
 }
 
@@ -491,6 +501,15 @@ const compactorTrace: readonly TraceEntry[] = [
   },
 ];
 
+/** The reconciler trace — a single `writeFileSync` entry, always present. */
+const reconcilerTrace: readonly TraceEntry[] = [
+  {
+    op: 'writeFileSync',
+    path: globalReconcilerPath,
+    scope: 'reconciler',
+  },
+];
+
 // ── Property 6 ────────────────────────────────────────────────────────
 
 /**
@@ -554,6 +573,7 @@ describe('Installer — property: per-scope ordering holds and scopes do not int
           : []),
         ...compressorTrace,
         ...compactorTrace,
+        ...reconcilerTrace,
       ];
 
       // (a) Exact trace match — ordering AND per-entry shape.

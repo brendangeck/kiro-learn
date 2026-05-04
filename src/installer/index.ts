@@ -1238,6 +1238,9 @@ export function writeAgentConfigs(scope: InstallScope): void {
 
   // ── Agent 3: kiro-learn-compactor.json (buffer compaction agent) ──
   writeCompactorAgent(globalAgentsDir);
+
+  // ── Agent 4: kiro-learn-reconciler.json (memory reconciliation judge) ──
+  writeReconcilerAgent(globalAgentsDir);
 }
 
 /**
@@ -1378,6 +1381,83 @@ export function writeCompactorAgent(agentsDir: string): void {
   writeFileSync(
     path.join(agentsDir, 'kiro-learn-compactor.json'),
     JSON.stringify(compactorConfig, null, 2) + '\n',
+  );
+}
+
+/**
+ * Write the kiro-learn-reconciler agent config (the memory
+ * reconciliation judge) into the given agents directory.
+ *
+ * The reconciler is hand-authored — like the compressor and
+ * compactor, it is out of scope for the seed-then-merge flow because
+ * it ships with zero tools and a fixed XML-in / XML-out prompt. The
+ * Reconciliation Stage invokes this agent over ACP (one session per
+ * judge call) to decide whether a Candidate Cluster plus its Neighbor
+ * Pool describes the same underlying thing. The agent responds with
+ * either a `<merge>…</merge>` block listing the record ids to collapse
+ * together with the fields of the new Summary Record, or a single
+ * `<keep_separate/>` tag.
+ *
+ * Global scope only — no project-scoped reconciler is ever written.
+ *
+ * The request and response grammars referenced by the prompt are the
+ * exact shapes produced and consumed by
+ * `src/collector/ingestion/judge-xml.ts` — changes to either side
+ * must stay in sync.
+ *
+ * @param agentsDir The absolute path of the `.kiro/agents/` directory
+ *                  to write into. The directory must already exist.
+ *
+ * @see Requirements 6.1, 6.8 — reconciliation-engine spec
+ * @see src/collector/ingestion/judge-xml.ts — canonical grammar
+ */
+export function writeReconcilerAgent(agentsDir: string): void {
+  const reconcilerPrompt =
+    'You are a memory reconciliation judge for kiro-learn. Your ONLY job is to decide whether a cluster of candidate memories AND existing graph neighbors describe the same underlying thing.\n' +
+    '\n' +
+    'You will receive a <reconciliation_request> block containing:\n' +
+    '- <candidate_cluster> with one or more <candidate> elements, each with a record_id attribute and <title>, <summary>, <facts>, <concepts>, <files>, <observation_type> children.\n' +
+    '- <neighbor_pool> with zero or more <neighbor> elements, each with a record_id and similarity attribute and <title>, <summary>, <facts> children.\n' +
+    '\n' +
+    'Your response must be ONE of these XML shapes:\n' +
+    '\n' +
+    '1. If any subset of the candidates and neighbors describe the same underlying thing, emit a <merge> block:\n' +
+    '\n' +
+    '<merge>\n' +
+    '  <merged_record_id>mr_...</merged_record_id>\n' +
+    '  <merged_record_id>mr_...</merged_record_id>\n' +
+    '  <title>Merged title</title>\n' +
+    '  <summary>Merged summary</summary>\n' +
+    '  <facts><fact>...</fact>...</facts>\n' +
+    '  <concepts><concept>...</concept>...</concepts>\n' +
+    '  <files><file>...</file>...</files>\n' +
+    '  <observation_type>decision</observation_type>\n' +
+    '</merge>\n' +
+    '\n' +
+    'Include EVERY record_id that refers to the same thing. The title, summary, facts, concepts, files, and observation_type describe the merged entity.\n' +
+    '\n' +
+    '2. If the candidates and neighbors describe DIFFERENT underlying things, emit a single:\n' +
+    '\n' +
+    '<keep_separate/>\n' +
+    '\n' +
+    'CRITICAL RULES:\n' +
+    '- Return XML ONLY. No conversational text. No explanations. No markdown fences.\n' +
+    '- Do NOT emit a <merge> with zero <merged_record_id> children.\n' +
+    '- Do NOT make up record_ids — cite only ids that appear in the <reconciliation_request>.\n' +
+    '- observation_type must be one of: tool_use, decision, error, discovery, pattern, session_summary. Omit the tag if unsure.';
+
+  const reconcilerConfig = {
+    name: 'kiro-learn-reconciler',
+    description:
+      'Memory reconciliation judge for kiro-learn — decides whether candidate memories and existing graph neighbors describe the same underlying thing.',
+    prompt: reconcilerPrompt,
+    tools: [] as string[],
+    allowedTools: [] as string[],
+  };
+
+  writeFileSync(
+    path.join(agentsDir, 'kiro-learn-reconciler.json'),
+    JSON.stringify(reconcilerConfig, null, 2) + '\n',
   );
 }
 
@@ -1857,7 +1937,12 @@ export function cmdUninstall(opts: UninstallOptions): number {
 
     // Remove global agent configs
     const globalAgentsDir = path.join(homedir(), '.kiro', 'agents');
-    for (const name of ['kiro-learn.json', 'kiro-learn-compressor.json', 'kiro-learn-compactor.json']) {
+    for (const name of [
+      'kiro-learn.json',
+      'kiro-learn-compressor.json',
+      'kiro-learn-compactor.json',
+      'kiro-learn-reconciler.json',
+    ]) {
       const agentPath = path.join(globalAgentsDir, name);
       if (existsSync(agentPath)) {
         unlinkSync(agentPath);

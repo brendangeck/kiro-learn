@@ -750,6 +750,75 @@ export interface Statements {
    * @see Requirements 14.4
    */
   selectEmbeddingStatsScoped: Statement<[namespace: string], EmbeddingStatsRow>;
+
+  // -----------------------------------------------------------------------
+  // Reconciliation delete statements (reconciliation-engine task 2.2)
+  //
+  // Summary: deletion of a memory record is a three-step cascade in
+  // the SQLite schema because:
+  //
+  // - `memory_records_fts` is a plain (non-content-linked) FTS5 virtual
+  //   table populated by explicit INSERT, so its rows must also be
+  //   removed explicitly. Migration 0001 declares no triggers.
+  // - `embedding` is a NULLABLE BLOB column on `memory_records` itself
+  //   (migration 0005), NOT a separate `embeddings` table. Nulling the
+  //   column is equivalent to "deleting the embedding" — the column
+  //   disappears with the row when the final DELETE lands, but we null
+  //   it explicitly first so the state is observable inside the
+  //   transaction (and so the contract transfers unchanged to future
+  //   backends that may separate the two tables).
+  // - The primary `memory_records` row is deleted last so the cascade
+  //   mirrors the invariant "child rows deleted before parent" —
+  //   consistent regardless of whether future migrations introduce
+  //   foreign keys.
+  //
+  // Per-statement, DELETE on a non-existent row is a zero-row no-op
+  // (SQLite semantics), so idempotency on unknown ids is built in.
+  // -----------------------------------------------------------------------
+
+  /**
+   * Delete the primary row of a memory record by id.
+   *
+   * A no-op when `record_id` does not exist — `RunResult.changes === 0`.
+   * Callers (the SQLite `deleteMemoryRecord` implementation) treat that
+   * as the idempotency primitive required by Requirement 9.5.
+   *
+   * @see Requirements 9.1, 9.4, 9.5
+   */
+  deleteMemoryRecordById: Statement<[recordId: string]>;
+
+  /**
+   * Delete the FTS5 companion row for a memory record by id. Paired
+   * with {@link deleteMemoryRecordById} inside the reconciliation
+   * cascade. `memory_records_fts` is a plain FTS5 virtual table with
+   * no triggers, so the companion row must be removed explicitly to
+   * keep the indexed blob in sync with the canonical table.
+   *
+   * A no-op when the id has no FTS5 row.
+   *
+   * @see Requirements 9.1, 9.3
+   */
+  deleteMemoryRecordFtsById: Statement<[recordId: string]>;
+
+  /**
+   * Clear the embedding for a memory record by id.
+   *
+   * The `embedding` column is a nullable BLOB on `memory_records`
+   * (migration 0005) — there is no separate `embeddings` table in the
+   * v1 schema. Setting it to NULL is the semantic equivalent of
+   * deleting the embedding: readers treat NULL as "not embedded" and
+   * the vector-index cache ignores the row.
+   *
+   * Run inside the reconciliation cascade BEFORE the row-level DELETE
+   * so the NULL transition is observable within the transaction, and
+   * so the order matches the "child rows before parent" invariant if
+   * future migrations move the embedding into a separate table.
+   *
+   * A no-op when the id does not exist.
+   *
+   * @see Requirements 9.1, 9.2
+   */
+  deleteEmbeddingByRecordId: Statement<[recordId: string]>;
 }
 
 /**
@@ -1226,6 +1295,47 @@ export function prepareStatements(db: Database): Statements {
      WHERE namespace = ?`,
   );
 
+  // -----------------------------------------------------------------------
+  // Reconciliation delete statements (reconciliation-engine task 2.2)
+  //
+  // Three-step cascade driven by the SQLite `deleteMemoryRecord`
+  // implementation. Order at the call site: FTS5 row first, embedding
+  // column next, primary row last. Each step is a no-op when the id is
+  // unknown, so the cascade as a whole is idempotent (Requirement 9.5).
+  // -----------------------------------------------------------------------
+
+  // Primary-row delete. A PK miss surfaces as `RunResult.changes === 0`
+  // rather than an error — the cascade needs that silent-miss behaviour
+  // so retries of a partially-applied merge do not raise.
+  //
+  // @see Requirements 9.1, 9.4, 9.5
+  const deleteMemoryRecordById = db.prepare<[recordId: string]>(
+    `DELETE FROM memory_records WHERE record_id = ?`,
+  );
+
+  // FTS5 companion-row delete. `memory_records_fts` is populated by
+  // explicit INSERTs (see `insertMemoryRecordFts`); the same contract
+  // applies here — deletes must be explicit because the virtual table
+  // has no triggers.
+  //
+  // @see Requirements 9.1, 9.3
+  const deleteMemoryRecordFtsById = db.prepare<[recordId: string]>(
+    `DELETE FROM memory_records_fts WHERE record_id = ?`,
+  );
+
+  // Clear the embedding on the primary `memory_records` row. The column
+  // is a nullable BLOB (migration 0005); setting it to NULL is the
+  // semantic equivalent of deleting the embedding since there is no
+  // separate embeddings table in the v1 schema. Run before
+  // `deleteMemoryRecordById` so the NULL transition is observable
+  // inside the transaction and so the order mirrors the "child rows
+  // before parent" invariant for any future schema split.
+  //
+  // @see Requirements 9.1, 9.2
+  const deleteEmbeddingByRecordId = db.prepare<[recordId: string]>(
+    `UPDATE memory_records SET embedding = NULL WHERE record_id = ?`,
+  );
+
   return {
     insertEvent,
     selectEventById,
@@ -1259,5 +1369,8 @@ export function prepareStatements(db: Database): Statements {
     selectMemoryRecordsFtsMatchRanked,
     selectEmbeddingStatsGlobal,
     selectEmbeddingStatsScoped,
+    deleteMemoryRecordById,
+    deleteMemoryRecordFtsById,
+    deleteEmbeddingByRecordId,
   };
 }

@@ -58,28 +58,30 @@ Per-project isolation means:
 
 See [Projects](/concepts/projects) for how project IDs are derived and how project detection works.
 
-## What triggers extraction
+## What triggers the ingestion pipeline
 
-The buffer watcher monitors each project's buffer and fires an [extraction](/architecture/extraction) trigger when either condition is met:
+The buffer watcher monitors each project's buffer and fires an [extraction trigger](/architecture/extraction) when either condition is met:
 
-| Trigger | Default threshold | Why |
-|---|---|---|
-| **Size threshold** | 256 KiB | Enough events have accumulated to make a batch worthwhile. |
-| **Idle timer** | 5 seconds | No new events have arrived — extract what's there rather than waiting indefinitely. |
+| Trigger | Default threshold | Configurable range | Why |
+|---|---|---|---|
+| **Size threshold** | 256 KiB | — | Enough events have accumulated to make a batch worthwhile. |
+| **Idle timer** | 30 seconds | 5–300 seconds | No new events have arrived — ingest what's there rather than waiting indefinitely. |
 
 ```mermaid
 flowchart TD
     A[Event appended to buffer] --> B{Buffer ≥ 256 KiB?}
-    B -->|Yes| C[Fire extraction]
-    B -->|No| D[Reset idle timer to 5s]
+    B -->|Yes| C[Fire ingestion]
+    B -->|No| D[Reset idle timer to 30s]
     D --> E{Timer expires?}
     E -->|Yes| C
     E -->|No| F[Wait for next event]
 ```
 
-The idle timer ensures that even a single event gets extracted eventually — you don't need to fill the buffer to trigger processing. The size threshold ensures that bursts of activity are batched efficiently rather than extracted one-by-one.
+The idle timer ensures that even a single event gets ingested eventually — you don't need to fill the buffer to trigger processing. The size threshold ensures that bursts of activity are batched efficiently rather than handled one-by-one.
 
-If extraction is already in-flight for a project, additional triggers are suppressed until the current extraction completes.
+The 30-second default sits in the middle of the configurable range. Shorter intervals make memory feel more responsive but give the [extraction worker](/architecture/extraction) fewer candidates to dedupe against each other. Longer intervals let more context accumulate per batch, which helps the dedupe pass find duplicates, at the cost of more latency between "something interesting happened" and "it's searchable". Tune via `bufferIdleMs` on `CollectorConfig` — values outside `[5_000, 300_000]` milliseconds are rejected at daemon startup.
+
+If ingestion is already in-flight for a project, additional triggers are suppressed until the current run completes.
 
 ## What triggers compaction
 

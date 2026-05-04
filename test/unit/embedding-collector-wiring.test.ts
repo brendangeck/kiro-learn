@@ -58,6 +58,10 @@ import type {
 } from '../../src/collector/backfill/index.js';
 import type { QueryLayerDeps } from '../../src/collector/query/index.js';
 import type { ExtractionWorkerDeps } from '../../src/collector/buffer/extraction.js';
+import type {
+  IngestionPipeline,
+  IngestionPipelineDeps,
+} from '../../src/collector/ingestion/index.js';
 
 // ── Mock `@huggingface/transformers` ────────────────────────────────────
 //
@@ -118,6 +122,17 @@ const mockStorage: StorageBackend = {
   listEmbeddings: vi.fn(async () => []),
   listRecordsWithoutEmbedding: vi.fn(async () => []),
   searchMemoryRecordsLexical: vi.fn(async () => []),
+  // Reconciliation surface — the pipeline mock below never exercises
+  // these, but the StorageBackend interface requires them.
+  deleteMemoryRecord: vi.fn(async () => undefined),
+  withTransaction: vi.fn(async <T>(fn: (tx: unknown) => T | Promise<T>) => {
+    const tx = {
+      putMemoryRecord: vi.fn(async () => undefined),
+      putEmbedding: vi.fn(async () => undefined),
+      deleteMemoryRecord: vi.fn(async () => undefined),
+    };
+    return Promise.resolve(fn(tx));
+  }),
 };
 
 vi.mock('../../src/collector/storage/sqlite/index.js', () => ({
@@ -194,15 +209,17 @@ vi.mock('../../src/collector/buffer/watcher.js', () => ({
 
 // ── Mock ExtractionWorker ───────────────────────────────────────────────
 //
-// We wrap the mock so tests can read the last-captured `embedder`
-// argument via `capturedExtractionDeps.embedder`.
+// Post-Task 13 the worker is a thin shim over `IngestionPipeline` and
+// its deps surface is `{ pipeline, watcher }` only — the embedder now
+// lives on the ingestion pipeline deps (captured below). The shim
+// mock itself is intentionally minimal: the embedder-identity
+// assertions reach through the pipeline deps rather than the shim
+// deps.
 
-let capturedExtractionDeps: ExtractionWorkerDeps | null = null;
 const mockExtractionDrain = vi.fn(async () => undefined);
 
 vi.mock('../../src/collector/buffer/extraction.js', () => ({
-  createExtractionWorker: vi.fn((deps: ExtractionWorkerDeps) => {
-    capturedExtractionDeps = deps;
+  createExtractionWorker: vi.fn((_deps: ExtractionWorkerDeps) => {
     return {
       extract: vi.fn(async () => ({
         projectId: 'test',
@@ -216,6 +233,59 @@ vi.mock('../../src/collector/buffer/extraction.js', () => ({
       },
     } satisfies ExtractionWorker;
   }),
+}));
+
+// ── Mock IngestionPipeline ──────────────────────────────────────────────
+//
+// The pipeline receives the embedder now — capturing its deps lets the
+// identity-check tests assert the singleton invariant across
+// IngestionPipeline, QueryLayer, and BackfillWorker.
+
+let capturedIngestionDeps: IngestionPipelineDeps | null = null;
+const mockIngestionDrain = vi.fn(async () => undefined);
+
+vi.mock('../../src/collector/ingestion/index.js', () => ({
+  createIngestionPipeline: vi.fn((deps: IngestionPipelineDeps) => {
+    capturedIngestionDeps = deps;
+    return {
+      run: vi.fn(async () => ({
+        projectId: 'test',
+        eventsProcessed: 0,
+        candidatesProduced: 0,
+        clustersFormed: 0,
+        judgeInvocations: 0,
+        mergeDecisions: 0,
+        keepSeparateDecisions: 0,
+        summaryRecordsCommitted: 0,
+        keepSeparateCommitted: 0,
+        recordsDeleted: 0,
+        directCommittedRecords: 0,
+        durationMs: 0,
+        phaseLatencyMs: {
+          extraction: 0,
+          clustering: 0,
+          neighborLookup: 0,
+          judge: 0,
+          commit: 0,
+        },
+      })),
+      drain: mockIngestionDrain,
+      get active() {
+        return 0;
+      },
+    } satisfies IngestionPipeline;
+  }),
+}));
+
+// ── Mock ReconciliationCircuitBreaker ──────────────────────────────────
+
+vi.mock('../../src/collector/ingestion/circuit-breaker.js', () => ({
+  createReconciliationCircuitBreaker: vi.fn(() => ({
+    isOpen: vi.fn(() => false),
+    record: vi.fn(),
+    onRunComplete: vi.fn(),
+    _state: vi.fn(() => ({ consecutiveFailures: 0, open: false })),
+  })),
 }));
 
 // ── Mock CompactionWorker (not exercised here, but guard mocks keep
@@ -254,6 +324,8 @@ vi.mock('../../src/collector/query/index.js', () => ({
     return {
       search: vi.fn(async () => []),
       invalidateNamespace: mockInvalidateNamespace,
+      getVectorIndex: vi.fn(async () => ({ entries: [] })),
+      lookupNeighbors: vi.fn(async () => []),
     } satisfies QueryLayer;
   }),
 }));
@@ -295,7 +367,7 @@ let tmpDir: string;
 beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kiro-emb-wiring-'));
   vi.clearAllMocks();
-  capturedExtractionDeps = null;
+  capturedIngestionDeps = null;
   capturedQueryDeps = null;
   capturedBackfillDeps = null;
   pipelineBehaviour = { kind: 'ok' };
@@ -334,27 +406,29 @@ describe('Collector embedding wiring', () => {
     });
 
     // All three factories must have been called once.
-    expect(capturedExtractionDeps).not.toBeNull();
+    expect(capturedIngestionDeps).not.toBeNull();
     expect(capturedQueryDeps).not.toBeNull();
     expect(capturedBackfillDeps).not.toBeNull();
     expect(createBackfillWorker).toHaveBeenCalledOnce();
 
     // The `Embedder` reference must be identical across all three —
-    // literally the same object, per Req 2.4.
-    const extractionEmbedder = capturedExtractionDeps!.embedder;
+    // literally the same object, per Req 2.4. Post-Task-13 the
+    // embedder is a dep of the `IngestionPipeline`, not of the thin-
+    // shim `ExtractionWorker`.
+    const ingestionEmbedder = capturedIngestionDeps!.embedder;
     const queryEmbedder = capturedQueryDeps!.embedder;
     const backfillEmbedder = capturedBackfillDeps!.embedder;
 
-    expect(extractionEmbedder).not.toBeNull();
+    expect(ingestionEmbedder).not.toBeNull();
     expect(queryEmbedder).not.toBeNull();
     expect(backfillEmbedder).not.toBeNull();
 
     // Identity — same reference, not just structural equality.
-    expect(queryEmbedder).toBe(extractionEmbedder);
-    expect(backfillEmbedder).toBe(extractionEmbedder);
+    expect(queryEmbedder).toBe(ingestionEmbedder);
+    expect(backfillEmbedder).toBe(ingestionEmbedder);
 
     // And the embedder must be ready (the ONNX load stub resolved).
-    expect((extractionEmbedder as Embedder).isReady()).toBe(true);
+    expect((ingestionEmbedder as Embedder).isReady()).toBe(true);
 
     // BackfillWorker was started (embedder is ready).
     expect(mockBackfillStart).toHaveBeenCalledOnce();
@@ -392,10 +466,12 @@ describe('Collector embedding wiring', () => {
     // No HF pipeline load ever happened.
     expect(pipeline).not.toHaveBeenCalled();
 
-    // Extraction and query both saw `null`.
-    expect(capturedExtractionDeps).not.toBeNull();
+    // Ingestion and query both saw `null`. The thin-shim extraction
+    // worker forwards to the pipeline, so the pipeline deps carry
+    // the (null) embedder.
+    expect(capturedIngestionDeps).not.toBeNull();
     expect(capturedQueryDeps).not.toBeNull();
-    expect(capturedExtractionDeps!.embedder).toBeNull();
+    expect(capturedIngestionDeps!.embedder).toBeNull();
     expect(capturedQueryDeps!.embedder).toBeNull();
 
     // Backfill worker was never started (it only exists when the
@@ -457,19 +533,19 @@ describe('Collector embedding wiring', () => {
     expect(stderrOutput).toMatch(/embedder failed to load/);
     expect(stderrOutput).toMatch(/degraded/);
 
-    // Extraction + Query saw the same (non-null) handle.
-    expect(capturedExtractionDeps).not.toBeNull();
+    // Ingestion + Query saw the same (non-null) handle.
+    expect(capturedIngestionDeps).not.toBeNull();
     expect(capturedQueryDeps).not.toBeNull();
 
-    const extractionEmbedder = capturedExtractionDeps!.embedder;
+    const ingestionEmbedder = capturedIngestionDeps!.embedder;
     const queryEmbedder = capturedQueryDeps!.embedder;
 
-    expect(extractionEmbedder).not.toBeNull();
+    expect(ingestionEmbedder).not.toBeNull();
     expect(queryEmbedder).not.toBeNull();
-    expect(queryEmbedder).toBe(extractionEmbedder);
+    expect(queryEmbedder).toBe(ingestionEmbedder);
 
     // Both see `isReady() === false` — the permanent degraded state.
-    expect((extractionEmbedder as Embedder).isReady()).toBe(false);
+    expect((ingestionEmbedder as Embedder).isReady()).toBe(false);
     expect((queryEmbedder as Embedder).isReady()).toBe(false);
 
     // No BackfillWorker was instantiated because the embedder is not

@@ -21,7 +21,6 @@ export type { BufferWatcher, BufferWatcherConfig, ProjectBufferState } from './w
 export type {
   ExtractionWorker,
   ExtractionResult,
-  ExtractionWorkerConfig,
   ExtractionWorkerDeps,
 } from './extraction.js';
 

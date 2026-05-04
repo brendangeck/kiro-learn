@@ -156,6 +156,85 @@ export const MemoryRecordSchema = z.object({
 });
 
 /**
+ * `CandidateMemory` schema — the in-memory output of the Extraction Stage
+ * of the Ingestion Pipeline. Mirrors every field of {@link MemoryRecordSchema}
+ * EXCEPT `created_at`, which is stamped by `toMemoryRecord(...)` at commit
+ * time inside the Reconciliation Stage. A Candidate Memory is never written
+ * directly to storage — it is either merged into a Summary Record by the
+ * Judge Model, or converted to a `MemoryRecord` and committed as-is.
+ *
+ * The companion TypeScript type {@link CandidateMemory} additionally carries
+ * a transient `embedding: Float32Array | null` field. That field is NOT
+ * part of the Zod schema — it is a runtime-only carrier for the pre-computed
+ * embedding that flows between the Extraction and Reconciliation stages and
+ * must not appear in any on-wire representation.
+ *
+ * @see Requirements 3.2, 3.5
+ * @see .kiro/specs/reconciliation-engine/design.md § Data Models — Wire schema additions
+ */
+export const CandidateMemorySchema = z.object({
+  record_id: z.string().regex(RECORD_ID_RE),
+  namespace: z.string().regex(NAMESPACE_RE),
+  strategy: z.string().min(1),
+  title: z.string().min(1).max(200),
+  summary: z.string().min(1).max(4000),
+  facts: z.array(z.string().min(1).max(500)),
+  source_event_ids: z.array(z.string().regex(ULID_RE)).min(1),
+  concepts: z.array(z.string().min(1).max(100)),
+  files_touched: z.array(z.string().min(1).max(500)),
+  observation_type: z.enum(OBSERVATION_TYPES),
+});
+
+/**
+ * Judge Model merge decision schema. When the `kiro-learn-reconciler`
+ * judge decides that a Candidate Cluster and some subset of its Neighbor
+ * Pool describe the same underlying thing, it returns a `merge` response
+ * carrying the set of record ids to collapse and the merged-record fields
+ * for the resulting Summary Record.
+ *
+ * `observation_type` is optional: when the judge omits it, the reconciler
+ * falls back to the `observation_type` of the highest-similarity merged
+ * member (Requirement 7.6).
+ *
+ * @see Requirements 6.3, 6.4
+ * @see .kiro/specs/reconciliation-engine/design.md § Data Models — Wire schema additions
+ */
+export const JudgeMergeResponseSchema = z.object({
+  kind: z.literal('merge'),
+  merged_record_ids: z.array(z.string().regex(RECORD_ID_RE)).min(1),
+  title: z.string().min(1).max(200),
+  summary: z.string().min(1).max(4000),
+  facts: z.array(z.string().min(1).max(500)),
+  concepts: z.array(z.string().min(1).max(100)),
+  files_touched: z.array(z.string().min(1).max(500)),
+  observation_type: z.enum(OBSERVATION_TYPES).optional(),
+});
+
+/**
+ * Judge Model keep-separate decision schema. A bare signal telling the
+ * reconciler to commit each Candidate Cluster member as a new
+ * `memory_record` without merging any Neighbor Pool member.
+ *
+ * @see Requirements 6.3, 6.5
+ */
+export const JudgeKeepSeparateResponseSchema = z.object({
+  kind: z.literal('keep_separate'),
+});
+
+/**
+ * Judge Model response — a discriminated union on `kind`. The reconciler
+ * treats unparseable / non-matching responses as judge failures and feeds
+ * them into the per-project retry + circuit-breaker logic; this schema is
+ * the accept surface for well-formed responses only.
+ *
+ * @see Requirements 6.3, 6.4, 6.5
+ */
+export const JudgeResponseSchema = z.discriminatedUnion('kind', [
+  JudgeMergeResponseSchema,
+  JudgeKeepSeparateResponseSchema,
+]);
+
+/**
  * Compile-time type derived from {@link EventSchema}.
  *
  * @see Requirements 1.1
@@ -168,6 +247,47 @@ export type KiroMemEvent = z.infer<typeof EventSchema>;
  * @see Requirements 3.1
  */
 export type MemoryRecord = z.infer<typeof MemoryRecordSchema>;
+
+/**
+ * Compile-time type for a Candidate Memory — the in-memory output of the
+ * Extraction Stage. Intersects {@link CandidateMemorySchema}'s inferred
+ * type with a transient `embedding` carrier. The `embedding` field is NOT
+ * part of the Zod schema: validators pass it through as an extra key (Zod
+ * objects ignore unknown keys by default) and it must NEVER appear in any
+ * on-wire or on-disk representation. It is stripped by `toMemoryRecord(...)`
+ * before commit.
+ *
+ * `null` embedding is a legitimate state — it happens when the Embedder is
+ * not ready or fails for a given candidate (Requirement 3.4). The
+ * Reconciliation Stage treats null-embedding candidates as singleton
+ * clusters with no neighbor lookup.
+ *
+ * @see Requirements 3.2, 3.4, 3.5
+ */
+export type CandidateMemory = z.infer<typeof CandidateMemorySchema> & {
+  embedding: Float32Array | null;
+};
+
+/**
+ * Compile-time type for a judge merge decision.
+ *
+ * @see Requirements 6.3, 6.4
+ */
+export type JudgeMergeResponse = z.infer<typeof JudgeMergeResponseSchema>;
+
+/**
+ * Compile-time type for a judge keep-separate decision.
+ *
+ * @see Requirements 6.3, 6.5
+ */
+export type JudgeKeepSeparateResponse = z.infer<typeof JudgeKeepSeparateResponseSchema>;
+
+/**
+ * Compile-time type for a judge response — discriminated on `kind`.
+ *
+ * @see Requirements 6.3, 6.4, 6.5
+ */
+export type JudgeResponse = z.infer<typeof JudgeResponseSchema>;
 
 /**
  * The observation type classification for a memory record.

@@ -20,6 +20,10 @@ export {
   EventSchema,
   EventSourceSchema,
   MemoryRecordSchema,
+  CandidateMemorySchema,
+  JudgeMergeResponseSchema,
+  JudgeKeepSeparateResponseSchema,
+  JudgeResponseSchema,
   OBSERVATION_TYPES,
   ULID_RE,
   RECORD_ID_RE,
@@ -29,7 +33,15 @@ export {
   parseMemoryRecord,
 } from './schemas.js';
 
-export type { KiroMemEvent, MemoryRecord, ObservationType } from './schemas.js';
+export type {
+  KiroMemEvent,
+  MemoryRecord,
+  ObservationType,
+  CandidateMemory,
+  JudgeResponse,
+  JudgeMergeResponse,
+  JudgeKeepSeparateResponse,
+} from './schemas.js';
 
 /**
  * The discrete kinds of events a client may emit.
@@ -300,4 +312,104 @@ export interface StorageBackend {
   searchMemoryRecordsLexical(
     params: SearchParams,
   ): Promise<Array<{ record: MemoryRecord; rank: number }>>;
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Reconciliation surface — added by the reconciliation-engine spec.
+  //
+  // The Reconciliation Stage emits either a Summary Record (with its
+  // merged originals deleted) or the candidates as-is. Both commit paths
+  // touch multiple rows — memory record, embedding (nullable column on
+  // the same row), and the FTS5 companion — and must land atomically
+  // per Requirement 8.1. `deleteMemoryRecord` covers the unit-of-work
+  // expressed as a single-method call; `withTransaction` covers the
+  // merge path that mixes puts and deletes in one BEGIN/COMMIT.
+  //
+  // Both methods are additive and do not alter the existing read or
+  // write surface.
+  //
+  // @see .kiro/specs/reconciliation-engine/design.md § StorageBackend
+  //       interface extensions
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Delete one or more memory records by id. A single call is treated
+   * as a single logical unit of work: every listed id is removed from
+   * `memory_records`, its embedding column is nulled, and its FTS5
+   * companion row is removed — all inside one transaction so the three
+   * deletes land atomically.
+   *
+   * Idempotent: ids that do not exist in `memory_records` are a silent
+   * no-op (no throw, no writes). Callers can retry a partially-applied
+   * merge without having to track which ids already went through
+   * (Requirement 9.5).
+   *
+   * The caller-supplied list is treated as a set; duplicate ids are
+   * processed once per occurrence but the net effect is idempotent.
+   *
+   * @see Requirements 9.1, 9.2, 9.3, 9.4, 9.5
+   */
+  deleteMemoryRecord(recordIds: readonly string[]): Promise<void>;
+
+  /**
+   * Run `fn` inside a single SQLite transaction. The callback receives
+   * a {@link StorageTransaction} handle exposing the subset of write
+   * operations the reconciler needs (put a memory record, put an
+   * embedding, delete memory records). All three handle methods are
+   * **synchronous** because `better-sqlite3` transactions are
+   * synchronous: awaiting inside the transaction body would lose the
+   * BEGIN/COMMIT boundary and defeat the atomicity contract.
+   *
+   * `fn` itself may be sync or async in shape, but its body MUST NOT
+   * return a Promise — every operation performed through the
+   * {@link StorageTransaction} handle must complete before `fn`
+   * returns. Implementations MAY reject with a clear error when `fn`
+   * returns a Promise (the SQLite backend does so).
+   *
+   * On throw from `fn`, the transaction is rolled back in full: no
+   * partial writes remain visible. On clean return, the transaction
+   * commits and `withTransaction` resolves with `fn`'s return value.
+   *
+   * @see Requirements 8.1, 9.1, 9.2, 9.3
+   */
+  withTransaction<T>(fn: (tx: StorageTransaction) => Promise<T> | T): Promise<T>;
+}
+
+/**
+ * Synchronous write handle surfaced inside a
+ * {@link StorageBackend.withTransaction} callback.
+ *
+ * The three methods mirror their async counterparts on {@link
+ * StorageBackend} but return `void` — callers must not `await` them.
+ * `better-sqlite3` transactions run synchronously, so the callback body
+ * must complete without yielding to the microtask queue; otherwise the
+ * BEGIN/COMMIT boundary is broken and atomicity is lost.
+ *
+ * There is intentionally no `close` method and no nested
+ * `withTransaction`: the handle is bound to the enclosing transaction
+ * and is not valid outside that scope.
+ *
+ * @see Requirements 8.1, 9.1, 9.2, 9.3, 9.4
+ */
+export interface StorageTransaction {
+  /**
+   * Insert a memory record inside the enclosing transaction. Same
+   * schema-level contract as {@link StorageBackend.putMemoryRecord} —
+   * a `record_id` collision raises and rolls the transaction back.
+   */
+  putMemoryRecord(record: MemoryRecord): void;
+
+  /**
+   * Write (or overwrite) the embedding for an existing memory record
+   * inside the enclosing transaction. Same contract as
+   * {@link StorageBackend.putEmbedding}: no-op when `recordId` does
+   * not exist.
+   */
+  putEmbedding(recordId: string, embedding: Float32Array): void;
+
+  /**
+   * Delete memory records by id inside the enclosing transaction.
+   * Same contract as {@link StorageBackend.deleteMemoryRecord},
+   * including idempotency on unknown ids.
+   */
+  deleteMemoryRecord(recordIds: readonly string[]): void;
 }

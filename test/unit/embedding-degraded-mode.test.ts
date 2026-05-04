@@ -45,7 +45,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createOnnxEmbedder } from '../../src/collector/embedding/onnx-embedder.js';
 import { createQueryLayer } from '../../src/collector/query/index.js';
-import { createExtractionWorker } from '../../src/collector/buffer/extraction.js';
+import { createIngestionPipeline } from '../../src/collector/ingestion/index.js';
+import { createReconciliationCircuitBreaker } from '../../src/collector/ingestion/circuit-breaker.js';
 import { createBufferStore } from '../../src/collector/buffer/store.js';
 import { createBufferWatcher } from '../../src/collector/buffer/watcher.js';
 import { openSqliteStorage } from '../../src/collector/storage/sqlite/index.js';
@@ -219,19 +220,38 @@ describe('End-to-end degraded mode', () => {
     // `putEmbedding` slipped through in degraded mode.
     const putEmbeddingSpy = vi.spyOn(storage, 'putEmbedding');
 
-    const worker = createExtractionWorker({
+    const queryLayer = createQueryLayer({ storage, embedder });
+    const circuitBreaker = createReconciliationCircuitBreaker();
+    const pipelineHandle = createIngestionPipeline({
       bufferStore,
       watcher,
       storage,
       embedder,
-      config: { concurrency: 1, timeoutMs: 60_000, maxRetries: 3 },
+      query: queryLayer,
+      circuitBreaker,
+      config: {
+        // Flag off so the pipeline takes the direct-commit path
+        // and exercises the exact same observable behaviour the
+        // legacy worker had (Property 4 pins byte-for-byte
+        // equivalence). The degraded-mode write warning comes
+        // from `extractCandidates` and is asserted below.
+        reconciliationEnabled: false,
+        intraBatchSimilarityThreshold: 0.85,
+        neighborSimilarityThreshold: 0.8,
+        neighborPoolMaxSize: 10,
+        judgeModelTimeoutMs: 30_000,
+        extractionConcurrency: 1,
+        extractionTimeoutMs: 60_000,
+        extractionMaxRetries: 3,
+        debug: false,
+      },
     });
 
     // Seed one buffer entry and run extraction.
     await bufferStore.append(PROJECT_ID, makeBufferEntry());
-    const result = await worker.extract(PROJECT_ID);
+    const result = await pipelineHandle.run(PROJECT_ID);
 
-    expect(result.memoriesCreated).toBe(1);
+    expect(result.directCommittedRecords).toBe(1);
 
     // Record is in storage, lexical path sees it. No embedding.
     const { items } = await storage.listMemoryRecords({

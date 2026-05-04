@@ -22,6 +22,9 @@ import { createBufferStore, createBufferWatcher, createExtractionWorker, createC
 import type { BufferStore, BufferWatcher, ExtractionWorker, CompactionWorker } from './buffer/index.js';
 import { createOnnxEmbedder } from './embedding/index.js';
 import type { Embedder } from './embedding/index.js';
+import { createReconciliationCircuitBreaker } from './ingestion/circuit-breaker.js';
+import { createIngestionPipeline } from './ingestion/index.js';
+import type { IngestionPipeline } from './ingestion/index.js';
 import { openSqliteStorage } from './storage/sqlite/index.js';
 import { createPipeline } from './pipeline/index.js';
 import { createQueryLayer } from './query/index.js';
@@ -73,7 +76,7 @@ export interface CollectorConfig {
 
   /** Whether buffer mode is enabled. When `true`, events are appended to project buffers for batch extraction instead of per-event extraction. Default `true`. @see Requirements 18.1 */
   bufferEnabled?: boolean;
-  /** Idle period (ms) before extraction fires for a project buffer. Default `5_000`. @see Requirements 18.2 */
+  /** Idle period (ms) before extraction fires for a project buffer. Default `30_000`. @see Requirements 2.2, 10.2, 18.2 */
   bufferIdleMs?: number;
   /** Buffer byte-size threshold that triggers extraction. Default `262_144` (256 KiB). @see Requirements 18.2 */
   bufferExtractionThreshold?: number;
@@ -150,6 +153,69 @@ export interface CollectorConfig {
    * of its idle-priority loop. Default `32`. @see Requirements 8.5, 12.4
    */
   backfillBatchSize?: number;
+
+  // ── Reconciliation configuration ──────────────────────────────────────
+
+  /**
+   * Whether the Reconciliation Stage is enabled. When `false`, every
+   * ingestion-pipeline run takes the direct-commit fallback — the same
+   * write sequence the legacy `ExtractionWorker` produced byte-for-byte
+   * — and no judge ACP sessions are ever opened. Also used as the
+   * runtime escape valve if the judge agent misbehaves in production.
+   *
+   * Default `true`. @see Requirements 1.6, 10.1
+   */
+  reconciliationEnabled?: boolean;
+
+  /**
+   * Cosine-similarity floor above which two Candidate Memories are
+   * clustered together inside a single ingestion batch. Higher values
+   * cluster more aggressively only when candidates are nearly
+   * identical; lower values permit looser intra-batch merges.
+   *
+   * Default `0.85`. Validated range `[0, 1]`. @see Requirement 10.3
+   */
+  intraBatchSimilarityThreshold?: number;
+
+  /**
+   * Cosine-similarity floor above which an existing `memory_record` is
+   * added to a Candidate Cluster's Neighbor Pool for judge review.
+   * Typically set slightly below `intraBatchSimilarityThreshold` so the
+   * judge sees a broader neighborhood than the intra-batch pass would.
+   *
+   * Default `0.80`. Validated range `[0, 1]`. @see Requirement 10.4
+   */
+  neighborSimilarityThreshold?: number;
+
+  /**
+   * Maximum number of existing records admitted to a single Candidate
+   * Cluster's Neighbor Pool. When more records exceed the similarity
+   * threshold, the top-scoring `neighborPoolMaxSize` are kept.
+   *
+   * Default `10`. Validated range `[1, 100]`. @see Requirement 10.5
+   */
+  neighborPoolMaxSize?: number;
+
+  /**
+   * Per-judge-call timeout (milliseconds) for the `kiro-learn-reconciler`
+   * ACP session. A timeout kills the session, records a failure against
+   * the per-project reconciliation circuit breaker, and falls back to
+   * keep-separate for that cluster.
+   *
+   * Default `30_000`. Validated range `[5_000, 300_000]`. @see Requirement 10.6
+   */
+  judgeModelTimeoutMs?: number;
+
+  /**
+   * When `true`, the Reconciliation Stage emits one structured
+   * `ingestion-cluster-debug` stderr line per cluster containing the
+   * cluster members, neighbor pool with similarity scores, and the raw
+   * judge XML response. Intended for threshold calibration and judge-
+   * model regression triage, not production use.
+   *
+   * Default `false`. @see Requirement 11.4
+   */
+  reconciliationDebug?: boolean;
 }
 
 /**
@@ -171,7 +237,7 @@ export const DEFAULT_COLLECTOR_CONFIG: CollectorConfig = {
 
   // Buffer defaults
   bufferEnabled: true,
-  bufferIdleMs: 5_000,
+  bufferIdleMs: 30_000,
   bufferExtractionThreshold: 262_144,
   bufferMaxBytes: 4_194_304,
   bufferMaxConsecutiveFailures: 3,
@@ -195,7 +261,80 @@ export const DEFAULT_COLLECTOR_CONFIG: CollectorConfig = {
   rrfK: 60,
   hybridFetchDepthMultiplier: 4,
   backfillBatchSize: 32,
+
+  // Reconciliation defaults
+  reconciliationEnabled: true,
+  intraBatchSimilarityThreshold: 0.85,
+  neighborSimilarityThreshold: 0.8,
+  neighborPoolMaxSize: 10,
+  judgeModelTimeoutMs: 30_000,
+  reconciliationDebug: false,
 };
+
+// ── Config validation ───────────────────────────────────────────────────
+
+/**
+ * Numeric-range check used by {@link validateCollectorConfig}. Emits a
+ * descriptive error message that names the offending field AND the
+ * observed value so operators can diagnose a bad config from stderr
+ * alone (the CLI writes the thrown message verbatim before exiting).
+ *
+ * Range is inclusive on both ends, matching the ranges documented in
+ * Requirements 10.1–10.6.
+ */
+function assertInRange(
+  field: string,
+  value: number | undefined,
+  min: number,
+  max: number,
+): void {
+  if (value === undefined) return;
+  if (!Number.isFinite(value) || value < min || value > max) {
+    throw new Error(
+      `reconciliation config: ${field} must be in [${String(min)}, ${String(max)}], got ${String(value)}`,
+    );
+  }
+}
+
+/**
+ * Validate the numeric fields introduced by the reconciliation engine
+ * plus `bufferIdleMs`. Scope is intentionally narrow — pre-existing
+ * config knobs (ports, retrieval budgets, the pre-reconciliation
+ * extraction concurrency, etc.) are NOT validated here so that
+ * existing deployments relying on the no-validation behaviour keep
+ * working.
+ *
+ * A failure throws an `Error` whose message includes both the
+ * offending field name and the observed value. `startCollector` calls
+ * this first thing, before opening storage, so an invalid config
+ * fails fast and doesn't leave a DB handle dangling.
+ *
+ * @see Requirement 10.7
+ */
+export function validateCollectorConfig(cfg: CollectorConfig): void {
+  // `bufferIdleMs` is the only pre-existing knob whose range is
+  // validated — Requirement 10.2 pins its bounds to 5s–300s.
+  assertInRange('bufferIdleMs', cfg.bufferIdleMs, 5_000, 300_000);
+  assertInRange(
+    'intraBatchSimilarityThreshold',
+    cfg.intraBatchSimilarityThreshold,
+    0,
+    1,
+  );
+  assertInRange(
+    'neighborSimilarityThreshold',
+    cfg.neighborSimilarityThreshold,
+    0,
+    1,
+  );
+  assertInRange('neighborPoolMaxSize', cfg.neighborPoolMaxSize, 1, 100);
+  assertInRange(
+    'judgeModelTimeoutMs',
+    cfg.judgeModelTimeoutMs,
+    5_000,
+    300_000,
+  );
+}
 
 // ── Handle ──────────────────────────────────────────────────────────────
 
@@ -242,6 +381,12 @@ export async function startCollector(
 ): Promise<CollectorHandle> {
   const cfg: CollectorConfig = { ...DEFAULT_COLLECTOR_CONFIG, ...config };
 
+  // Validate the reconciliation config fields + `bufferIdleMs`
+  // before we open storage so an invalid config fails fast and
+  // doesn't leave a DB handle dangling.
+  // @see Requirement 10.7
+  validateCollectorConfig(cfg);
+
   // 1. Open storage (this is the ONLY place that knows the concrete backend)
   const dbPath = expandTilde(cfg.storagePath);
   const storage = openSqliteStorage({ dbPath });
@@ -254,6 +399,7 @@ export async function startCollector(
     let bufferStore: BufferStore | undefined;
     let bufferWatcher: BufferWatcher | undefined;
     let extractionWorker: ExtractionWorker | undefined;
+    let ingestionPipeline: IngestionPipeline | undefined;
     let compactionWorker: CompactionWorker | undefined;
     let backfillWorker: BackfillWorker | null = null;
 
@@ -315,29 +461,53 @@ export async function startCollector(
       bufferStore = createBufferStore(bufferDir);
 
       bufferWatcher = createBufferWatcher({
-        idleMs: cfg.bufferIdleMs ?? 5_000,
+        idleMs: cfg.bufferIdleMs ?? 30_000,
         extractionSizeThreshold: cfg.bufferExtractionThreshold ?? 262_144,
         bufferMaxBytes: cfg.bufferMaxBytes ?? 4_194_304,
         maxConsecutiveFailures: cfg.bufferMaxConsecutiveFailures ?? 3,
         compactionSizeThreshold: cfg.compactionSizeThreshold ?? 1_048_576,
       });
 
-      extractionWorker = createExtractionWorker({
+      // Per-project reconciliation circuit breaker. Independent of
+      // the buffer watcher's extraction circuit breaker — this one
+      // trips on consecutive judge-model failures and degrades
+      // the next run to the direct-commit fallback (Req 12.1–12.3).
+      const circuitBreaker = createReconciliationCircuitBreaker();
+
+      // The Ingestion Pipeline owns the full buffer → memory-record
+      // flow: extraction stage → reconciliation stage (or direct
+      // commit when the feature flag is off / the breaker is open).
+      // The legacy ExtractionWorker is a thin shim over this.
+      // @see Requirements 1.1, 1.5, 1.6, 10.1
+      ingestionPipeline = createIngestionPipeline({
         bufferStore,
         watcher: bufferWatcher,
         storage,
         embedder,
-        onNamespaceChanged: (ns: string) => {
-          queryLayer.invalidateNamespace(ns);
-        },
+        query: queryLayer,
+        circuitBreaker,
         config: {
-          concurrency: cfg.bufferExtractionConcurrency ?? 2,
-          timeoutMs: cfg.bufferExtractionTimeoutMs ?? 60_000,
-          maxRetries: 3,
+          reconciliationEnabled: cfg.reconciliationEnabled ?? true,
+          intraBatchSimilarityThreshold: cfg.intraBatchSimilarityThreshold ?? 0.85,
+          neighborSimilarityThreshold: cfg.neighborSimilarityThreshold ?? 0.8,
+          neighborPoolMaxSize: cfg.neighborPoolMaxSize ?? 10,
+          judgeModelTimeoutMs: cfg.judgeModelTimeoutMs ?? 30_000,
+          extractionConcurrency: cfg.bufferExtractionConcurrency ?? 2,
+          extractionTimeoutMs: cfg.bufferExtractionTimeoutMs ?? 60_000,
+          extractionMaxRetries: 3,
+          debug: cfg.reconciliationDebug ?? false,
         },
       });
 
-      // Wire: watcher extraction trigger → extraction worker
+      extractionWorker = createExtractionWorker({
+        pipeline: ingestionPipeline,
+        watcher: bufferWatcher,
+      });
+
+      // Wire: watcher extraction trigger → extraction worker (which
+      // forwards to the ingestion pipeline). Preserved verbatim
+      // from the legacy wiring so the watcher-side contract is
+      // unchanged.
       bufferWatcher.onExtraction((projectId) => {
         extractionWorker!.extract(projectId).catch((err: unknown) => {
           const message = err instanceof Error ? err.message : String(err);

@@ -197,6 +197,8 @@ interface StorageBackend {
   putEvent(event: KiroMemEvent): Promise<void>;
   getEventById(eventId: string): Promise<KiroMemEvent | null>;
   putMemoryRecord(record: MemoryRecord): Promise<void>;
+  deleteMemoryRecord(recordIds: readonly string[]): Promise<void>;
+  withTransaction<T>(fn: (tx: StorageTransaction) => Promise<T> | T): Promise<T>;
   searchMemoryRecords(params: SearchParams): Promise<MemoryRecord[]>;
   close(): Promise<void>;
 
@@ -205,6 +207,12 @@ interface StorageBackend {
   listProjects(): Promise<ProjectInfo[]>;
   listMemoryRecords(params: { namespace?; limit; offset }): Promise<{ items; total }>;
   listEvents(params: { namespace?; limit }): Promise<{ items; total }>;
+}
+
+interface StorageTransaction {
+  putMemoryRecord(record: MemoryRecord): Promise<void>;
+  putEmbedding(recordId: string, embedding: Float32Array): Promise<void>;
+  deleteMemoryRecord(recordIds: readonly string[]): Promise<void>;
 }
 ```
 
@@ -218,6 +226,8 @@ The interface is small because the contracts are strict. A few worth calling out
 
 - **`putEvent` is idempotent.** The insert uses `INSERT OR IGNORE` on the event ID primary key, so a retry from a confused shim is a silent no-op. The original `transaction_time` is preserved on collision — a second insert does not overwrite it.
 - **`putMemoryRecord` rejects collisions.** Memory record IDs are generated fresh on every extraction. A collision is an upstream bug, so the database surfaces it as an error instead of silently dropping the write.
+- **`deleteMemoryRecord` cascades and is idempotent.** See [Merge deletion is destructive](#merge-deletion-is-destructive) for the full cascade semantics — in short, one call drops the row from `memory_records`, its embedding from `embeddings`, and its FTS5 entry from `memory_records_fts`, all atomically. Unknown `record_id`s are silent no-ops so retries after a partial crash do not raise.
+- **`withTransaction` runs one atomic unit of work.** The callback receives a restricted `StorageTransaction` handle exposing only `putMemoryRecord`, `putEmbedding`, and `deleteMemoryRecord`. All three calls commit together or roll back together. Nested transactions are not supported. This is the seam the [extraction worker's push phase](/architecture/extraction#push) uses to commit a summary record and delete its merged originals in one go.
 - **`getEventById` returns `null` for misses.** Not an exception. The caller decides whether a missing event is a problem.
 - **`searchMemoryRecords` is availability-biased.** When FTS5 rejects a query, it falls back to LIKE instead of failing. The cost is worse ranking on the fallback path; the benefit is that retrieval never errors out on a weird prompt.
 - **`close` is idempotent.** A second close is a silent no-op, not an error.
@@ -229,6 +239,40 @@ Every method is `async` even though [`better-sqlite3`](https://github.com/WiseLi
 Every SQL statement is prepared once when the backend opens and reused for the life of the handle. Every user-controlled value — event body, FTS5 query string, namespace prefix — is bound positionally with `?` placeholders. SQL and data are never concatenated.
 
 This is the primary defense against SQL injection. It also happens to be faster: preparing a statement once and binding values on every call avoids re-parsing and re-planning the query on each insert or search.
+
+## Merge deletion is destructive
+
+The [extraction worker](/architecture/extraction) is the only caller that deletes memory records. When the judge model rules that a cluster of candidates and some subset of existing neighbors describe the same thing, the worker commits a new summary record **and deletes the merged originals** in the same transaction. There is no soft delete, no tombstone, no `deleted_at` column. The merged rows are gone.
+
+The cascade is explicit. `deleteMemoryRecord(recordIds)` touches three things for every id, all inside one `db.transaction(...)` block:
+
+```text
+for each record_id in recordIds:
+  DELETE FROM memory_records_fts WHERE record_id = ?
+  UPDATE memory_records SET embedding = NULL WHERE record_id = ?
+  DELETE FROM memory_records WHERE record_id = ?
+```
+
+The embedding is a `BLOB` column on `memory_records` itself (no separate `embeddings` table in the v1 schema), so "deleting the embedding" is an `UPDATE` that nulls the column before the row itself is dropped. Ordering it this way keeps the semantics "child state before parent" — the NULL transition is observable inside the transaction, and if a future schema splits embeddings into a separate table the same ordering still holds.
+
+All three statements are explicit prepared statements. SQLite's FTS5 here is a plain virtual table (no content-linked `INSERT … INTO … (content)` rowid coupling), and there are no `ON DELETE` triggers in any migration — the FTS5 companion row is managed in application code the same way it is written in `putMemoryRecord`. A missing cascade statement would leak a ghost FTS row; the property tests catch that by asserting the FTS index is empty for every deleted id.
+
+Because `DELETE` (and `UPDATE`) on a nonexistent row affects zero rows and does not raise, `deleteMemoryRecord` is idempotent. An id that was deleted in an earlier attempt is a silent no-op on retry, which is what lets a partially-crashed reconciliation run safely retry the same merge on the next ingestion trigger.
+
+<Warning>
+  **Merge commits have no undo.** A `<merge>` decision deletes the original rows outright. Nothing in the database remembers that `record_id mr_abc123` used to exist, and nothing in the retrieval path can surface a merged-away record. The [extraction worker](/architecture/extraction#dedupe) tunes its intra-batch and neighbor similarity thresholds conservatively by default — a more lenient configuration paired with a lenient judge can silently collapse rows that should have stayed distinct, and the only recovery path is to re-learn from fresh events.
+</Warning>
+
+### Reconciliation has no schema footprint
+
+Reconciliation has no schema footprint — no columns, no indexes, no tables, no triggers. It operates on the `memory_records` schema as it stands.
+
+The storage surface exposes two methods that reconciliation relies on:
+
+- `deleteMemoryRecord(recordIds)` on the `StorageBackend` interface (and its SQLite implementation).
+- `withTransaction(fn)` — the restricted handle the reconciler uses to commit a summary-plus-deletes atomically.
+
+Reconciliation only touches a row when it comes up as a neighbor of a new candidate cluster and the judge decides to merge it away — no proactive rewrites or migrations of historical data.
 
 ## Key design decisions
 
@@ -250,7 +294,7 @@ This is the primary defense against SQL injection. It also happens to be faster:
 
 - `src/collector/storage/index.ts` — the `StorageBackend` interface and method contracts
 - `src/collector/storage/sqlite/index.ts` — the SQLite backend implementation
-- `src/collector/storage/sqlite/statements.ts` — every prepared SQL statement in one file
+- `src/collector/storage/sqlite/statements.ts` — every prepared SQL statement in one file, including the three `DELETE` statements that implement the merge cascade
 - `src/collector/storage/sqlite/fts5.ts` — FTS5 query sanitization and LIKE escaping
 - `src/collector/storage/sqlite/migrations/runner.ts` — migration runner with drift detection
 - `src/collector/storage/sqlite/migrations/0001_init.ts` — initial schema
@@ -270,7 +314,7 @@ This is the primary defense against SQL injection. It also happens to be faster:
     How memory records are searched via hybrid FTS5 + vector
   </Card>
   <Card title="Extraction" href="/architecture/extraction">
-    How memory records are produced and inserted
+    The worker that drives `putMemoryRecord` and `deleteMemoryRecord`
   </Card>
   <Card title="Compaction" href="/architecture/compaction">
     What happens when buffers grow faster than extraction drains them

@@ -66,13 +66,16 @@
 
 import type { MemoryRecord, StorageBackend } from '../../types/index.js';
 import type { Embedder, Ranked } from '../embedding/index.js';
-import { rrfFuse, topKByCosine } from '../embedding/index.js';
+import { cosine, rrfFuse, topKByCosine } from '../embedding/index.js';
 
 import { tokenizeForQuery } from './tokenize.js';
 import {
   createNamespaceVectorCache,
   type NamespaceVectorCache,
+  type NamespaceVectorIndex,
 } from './vector-cache.js';
+
+export type { NamespaceVectorIndex } from './vector-cache.js';
 
 /**
  * Tunable knobs for the hybrid-search implementation. Every field is
@@ -159,6 +162,64 @@ export interface QueryLayer {
    * @see Requirements 5.7
    */
   invalidateNamespace(namespace: string): void;
+
+  /**
+   * Return the per-namespace vector index for `namespace`, loading
+   * from storage on a cache miss. This is a reconciler-only read
+   * helper — the hybrid-search `search` path does NOT call this;
+   * it uses the same underlying cache via `topKByCosine` inside
+   * its fused pipeline.
+   *
+   * The returned index is the exact shape produced by
+   * `NamespaceVectorCache` (see `./vector-cache.js`): a read-only
+   * list of `{ record_id, record, vec_normalised }` entries. The
+   * reconciler uses it to compute cosine similarity against a
+   * cluster centroid when deciding whether to invoke the Judge
+   * Model for a given Candidate Cluster.
+   *
+   * Never throws for an unknown or empty namespace — an empty
+   * result set becomes an index with `entries.length === 0`.
+   *
+   * @see .kiro/specs/reconciliation-engine/design.md § Components and Interfaces — `src/collector/query/index.ts` — tiny extension
+   * @see Requirements 5.1, 5.2, 5.3, 5.4, 5.5 (reconciliation-engine)
+   */
+  getVectorIndex(namespace: string): Promise<NamespaceVectorIndex>;
+
+  /**
+   * Reconciler-only centroid neighbor lookup. Walks the
+   * per-namespace vector index, scores each entry's
+   * `vec_normalised` against `centroid` via `cosine(...)`, filters
+   * to entries with `similarity >= threshold`, sorts by similarity
+   * descending, and truncates to at most `cap` results.
+   *
+   * This is used by the Reconciliation Stage to build the Neighbor
+   * Pool for a Candidate Cluster — NOT by the hybrid-search read
+   * path (which has its own fused ranking via RRF). Two distinct
+   * callers, two distinct ranking strategies; both read the same
+   * underlying cache.
+   *
+   * Behaviour contract:
+   *
+   * - When `cap <= 0`, returns `[]` without probing the cache.
+   * - Records in namespaces other than `namespace` are never
+   *   returned (scoping is enforced by the cache load, which only
+   *   ever loads one namespace at a time).
+   * - When the namespace has no embeddings (empty namespace, or
+   *   every record has `embedding IS NULL`), returns `[]`.
+   * - Output is sorted by `similarity` in descending order. Ties
+   *   fall back to the cache's insertion order — the reconciler
+   *   does not need a stable tie-break because the Judge Model
+   *   handles semantic ordering itself.
+   *
+   * @see .kiro/specs/reconciliation-engine/design.md § Components and Interfaces — `src/collector/query/index.ts` — tiny extension
+   * @see Requirements 5.1, 5.2, 5.3, 5.4 (reconciliation-engine)
+   */
+  lookupNeighbors(
+    namespace: string,
+    centroid: Float32Array,
+    threshold: number,
+    cap: number,
+  ): Promise<Array<{ record: MemoryRecord; similarity: number }>>;
 }
 
 /**
@@ -378,6 +439,51 @@ export function createQueryLayer(deps: QueryLayerDeps): QueryLayer {
 
     invalidateNamespace(namespace: string): void {
       cache.invalidate(namespace);
+    },
+
+    async getVectorIndex(namespace: string): Promise<NamespaceVectorIndex> {
+      // Thin passthrough to the per-namespace vector cache. The
+      // cache owns the load-on-miss + race-safe invalidation
+      // protocol; the query layer only provides a typed seam so
+      // the reconciler does not have to know the cache exists.
+      return cache.getOrLoad(namespace);
+    },
+
+    async lookupNeighbors(
+      namespace: string,
+      centroid: Float32Array,
+      threshold: number,
+      cap: number,
+    ): Promise<Array<{ record: MemoryRecord; similarity: number }>> {
+      // Non-positive cap has no sensible meaning for a top-k
+      // lookup. Bail before probing the cache so we do not pay a
+      // namespace load for a result that is definitionally empty.
+      if (cap <= 0) return [];
+
+      const index = await cache.getOrLoad(namespace);
+
+      // Score every entry against the centroid. We do not skip
+      // zero-vector entries here the way `topKByCosine` does —
+      // the reconciler's `threshold` (default 0.80) would reject
+      // them on its own, and spending the extra compare beats
+      // duplicating the zero-vector guard.
+      const scored: Array<{ record: MemoryRecord; similarity: number }> = [];
+      for (const entry of index.entries) {
+        const similarity = cosine(centroid, entry.vec_normalised);
+        if (similarity >= threshold) {
+          scored.push({ record: entry.record, similarity });
+        }
+      }
+
+      // Sort descending by similarity; ties fall through to the
+      // cache's entry order. The reconciler feeds this list into
+      // the Judge Model prompt, which performs its own semantic
+      // ordering, so a stable-but-unspecified tie order here is
+      // acceptable.
+      scored.sort((a, b) => b.similarity - a.similarity);
+
+      if (scored.length <= cap) return scored;
+      return scored.slice(0, cap);
     },
   };
 }
