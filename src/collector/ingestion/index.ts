@@ -174,6 +174,20 @@ export interface IngestionPipeline {
   readonly active: number;
 }
 
+/**
+ * Reason for an unsuccessful {@link IngestionPipeline.run}, surfaced
+ * on the structured log line as `failure_reason`. Absent on success.
+ *
+ * - `'extraction'` — the Extraction Stage (compressor call + parse)
+ *   threw before any candidates could be produced. The buffer is
+ *   retained for retry; the reconciliation circuit breaker is not
+ *   touched.
+ * - `'reconciliation'` — every Candidate Cluster's commit failed.
+ *   The buffer is retained; per-cluster errors are already logged
+ *   in stderr.
+ */
+export type IngestionFailureReason = 'extraction' | 'reconciliation';
+
 // ── Internal helpers ────────────────────────────────────────────────────
 
 /**
@@ -211,8 +225,9 @@ function buildLogLine(args: {
   namespace: string;
   circuitBreakerOpen: boolean;
   reconciliationEnabled: boolean;
+  failureReason: IngestionFailureReason | null;
 }): string {
-  const payload = {
+  const payload: Record<string, unknown> = {
     event: 'ingestion-pipeline-run',
     project_id: args.result.projectId,
     namespace: args.namespace,
@@ -236,6 +251,12 @@ function buildLogLine(args: {
       commit: args.result.phaseLatencyMs.commit,
     },
   };
+  // `failure_reason` is present only on failure paths so success
+  // runs stay byte-identical to what they were before this field
+  // existed — downstream aggregators can treat absence as success.
+  if (args.failureReason !== null) {
+    payload['failure_reason'] = args.failureReason;
+  }
   return JSON.stringify(payload) + '\n';
 }
 
@@ -315,11 +336,11 @@ export function createIngestionPipeline(deps: IngestionPipelineDeps): IngestionP
 
     /**
      * Emit the structured log line. Idempotent — repeated calls in
-     * a single run are a no-op. Extraction-failure paths skip the
-     * log entirely per the design note (Task 14.1 owns that line;
-     * here we emit only the "ran to completion" cases).
+     * a single run are a no-op. Pass `failureReason` to mark an
+     * extraction- or reconciliation-stage failure; absent means a
+     * successful terminal run.
      */
-    const emitLog = (): void => {
+    const emitLog = (failureReason: IngestionFailureReason | null = null): void => {
       if (emittedLog) return;
       emittedLog = true;
       const wallTime = Date.now() - startTime;
@@ -344,6 +365,7 @@ export function createIngestionPipeline(deps: IngestionPipelineDeps): IngestionP
             namespace,
             circuitBreakerOpen: circuitBreakerOpenAtStart,
             reconciliationEnabled: reconciliationEnabledForRun,
+            failureReason,
           }),
         );
       } catch {
@@ -419,14 +441,15 @@ export function createIngestionPipeline(deps: IngestionPipelineDeps): IngestionP
         // judge-failure state the breaker might hold from a
         // previous partial run.
         //
-        // Match today's legacy `ExtractionWorker.extract`
-        // contract: a failed run returns zeroed-out counters so
-        // downstream aggregators (e.g. the thin-shim wrapper that
-        // maps `IngestionResult → ExtractionResult`) don't
-        // double-count events that never made it through.
+        // Zero the counters so callers that map
+        // `IngestionResult → ExtractionResult` don't double-count
+        // events that never made it through, then emit the
+        // structured log with a `failure_reason` so downstream
+        // aggregators can distinguish an extraction failure from a
+        // legitimate zero-work run.
         result.eventsProcessed = 0;
         result.candidatesProduced = 0;
-        emitLog();
+        emitLog('extraction');
         return result;
       }
       phaseLatencyMs.extraction = Date.now() - extractStart;
@@ -535,7 +558,7 @@ export function createIngestionPipeline(deps: IngestionPipelineDeps): IngestionP
         // extraction circuit breaker can observe the failure.
         watcher.notifyExtractionResult(projectId, false);
         circuitBreaker.onRunComplete(projectId, outcome.anyJudgeFailure);
-        emitLog();
+        emitLog('reconciliation');
         return result;
       }
 

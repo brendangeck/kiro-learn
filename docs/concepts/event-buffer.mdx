@@ -60,7 +60,7 @@ See [Projects](/concepts/projects) for how project IDs are derived and how proje
 
 ## What triggers the ingestion pipeline
 
-The buffer watcher monitors each project's buffer and fires an [ingestion trigger](/architecture/ingestion) when either condition is met:
+The buffer watcher monitors each project's buffer and fires an [extraction trigger](/architecture/extraction) when either condition is met:
 
 | Trigger | Default threshold | Configurable range | Why |
 |---|---|---|---|
@@ -79,7 +79,7 @@ flowchart TD
 
 The idle timer ensures that even a single event gets ingested eventually — you don't need to fill the buffer to trigger processing. The size threshold ensures that bursts of activity are batched efficiently rather than handled one-by-one.
 
-The 30-second default sits in the middle of the configurable range. Shorter intervals make memory feel more responsive but give the two-stage [Ingestion Pipeline](/architecture/ingestion) fewer candidates to cluster against each other. Longer intervals let more context accumulate per batch, which helps reconciliation find duplicates, at the cost of more latency between "something interesting happened" and "it's searchable". Tune via `bufferIdleMs` on `CollectorConfig` — values outside `[5_000, 300_000]` milliseconds are rejected at daemon startup.
+The 30-second default sits in the middle of the configurable range. Shorter intervals make memory feel more responsive but give the [extraction worker](/architecture/extraction) fewer candidates to dedupe against each other. Longer intervals let more context accumulate per batch, which helps the dedupe pass find duplicates, at the cost of more latency between "something interesting happened" and "it's searchable". Tune via `bufferIdleMs` on `CollectorConfig` — values outside `[5_000, 300_000]` milliseconds are rejected at daemon startup.
 
 If ingestion is already in-flight for a project, additional triggers are suppressed until the current run completes.
 

@@ -474,33 +474,60 @@ function resolveMergedMembers(
   const neighborIdsToDelete: string[] = [];
   const seenIds = new Set<string>();
 
-  // Walk the judge's ids in order, so the first cluster member cited
-  // becomes the fallback observation-type source. Cluster members
-  // come first when the judge lists them first; when the judge
-  // reorders we still respect its ordering — the fallback is
-  // "highest similarity", and a cited cluster member has similarity
-  // 1.0 against its own centroid, so citation order ≈ similarity
-  // order from the judge's perspective.
+  // Collect members with their role + similarity so we can sort for
+  // `composeSummaryRecord`'s observation-type fallback, which reads
+  // `mergedMembers[0].observation_type`. The sort precedence is:
+  //   1. Cluster members beat neighbors. Cluster members defined
+  //      the centroid, so they are the natural "most representative"
+  //      source — and using a hard precedence avoids FP wobble
+  //      around cosine-of-self-against-centroid ≈ 1.0.
+  //   2. Within each bucket, similarity descending. A judge that
+  //      rolls multiple neighbors into a merge gets the highest-
+  //      similarity one's observation_type as the fallback.
+  //   3. Citation order as a stable tie-breaker so byte-identical
+  //      similarities don't shuffle between runs.
+  interface IndexedMember {
+    member: MergedMember;
+    isClusterMember: boolean;
+    similarity: number;
+    seenOrder: number;
+    neighborRecordId: string | null;
+  }
+  const indexed: IndexedMember[] = [];
+
   for (const id of decision.merged_record_ids) {
     if (seenIds.has(id)) continue;
     seenIds.add(id);
     const candidate = memberById.get(id);
     if (candidate !== undefined) {
-      members.push({
-        record_id: candidate.record_id,
-        source_event_ids: candidate.source_event_ids,
-        observation_type: candidate.observation_type,
+      indexed.push({
+        member: {
+          record_id: candidate.record_id,
+          source_event_ids: candidate.source_event_ids,
+          observation_type: candidate.observation_type,
+        },
+        isClusterMember: true,
+        // Cluster members are equivalent for ordering purposes;
+        // the bucket flag above separates them from neighbors.
+        similarity: 1.0,
+        seenOrder: indexed.length,
+        neighborRecordId: null,
       });
       continue;
     }
     const neighbor = neighborById.get(id);
     if (neighbor !== undefined) {
-      members.push({
-        record_id: neighbor.record.record_id,
-        source_event_ids: neighbor.record.source_event_ids,
-        observation_type: neighbor.record.observation_type,
+      indexed.push({
+        member: {
+          record_id: neighbor.record.record_id,
+          source_event_ids: neighbor.record.source_event_ids,
+          observation_type: neighbor.record.observation_type,
+        },
+        isClusterMember: false,
+        similarity: neighbor.similarity,
+        seenOrder: indexed.length,
+        neighborRecordId: neighbor.record.record_id,
       });
-      neighborIdsToDelete.push(neighbor.record.record_id);
       continue;
     }
     // Unknown id — log and continue. The caller decides whether
@@ -508,6 +535,21 @@ function resolveMergedMembers(
     process.stderr.write(
       `[kiro-learn] reconciler: judge cited unknown record_id ${id}, ignoring\n`,
     );
+  }
+
+  indexed.sort((a, b) => {
+    if (a.isClusterMember !== b.isClusterMember) {
+      return a.isClusterMember ? -1 : 1;
+    }
+    if (a.similarity !== b.similarity) return b.similarity - a.similarity;
+    return a.seenOrder - b.seenOrder;
+  });
+
+  for (const entry of indexed) {
+    members.push(entry.member);
+    if (entry.neighborRecordId !== null) {
+      neighborIdsToDelete.push(entry.neighborRecordId);
+    }
   }
 
   return { members, neighborIdsToDelete };

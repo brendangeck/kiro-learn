@@ -1058,7 +1058,7 @@ The existing daemon doesn't have a metrics surface beyond the viewer's `/v1/stat
 | Viewer UI                                 | Unchanged | Calls the read API which reads `memory_records` unchanged. Merged-away rows are deleted rather than hidden.                 |
 | Retrieval context assembly                | Unchanged | `formatContext` gets the same shape of `MemoryRecord[]`.                                                                    |
 | Existing integration tests                | Pass unchanged | Pre-reconciliation candidate paths are unchanged; reconciliation-on tests are new.                                    |
-| Pre-reconciliation rows in storage        | Untouched unless explicitly merged away by a Judge Model merge decision. Merge is destructive: the row, its embedding, and its FTS5 entry are deleted in one transaction. |
+| Pre-reconciliation rows in storage        | Untouched unless explicitly merged away by a Judge Model merge decision. | Merge is destructive: the row, its embedding, and its FTS5 entry are deleted in one transaction. |
 
 If a user disables `reconciliationEnabled` in their `~/.kiro-learn/config.json` after rolling forward, the direct-commit path writes records byte-for-byte identically to today (Requirement 1.6). This is protected by a dedicated property-based test, P4.
 

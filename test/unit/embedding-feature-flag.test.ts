@@ -220,12 +220,14 @@ describe('End-to-end feature-flag-off', () => {
     });
 
     await bufferStore.append(PROJECT_ID, makeBufferEntry());
-    await pipelineHandle.run(PROJECT_ID);
-    await queryLayer.search(NAMESPACE, 'typescript', 10);
+    try {
+      await pipelineHandle.run(PROJECT_ID);
+      await queryLayer.search(NAMESPACE, 'typescript', 10);
 
-    expect(pipeline).not.toHaveBeenCalled();
-
-    watcher.close();
+      expect(pipeline).not.toHaveBeenCalled();
+    } finally {
+      watcher.close();
+    }
   });
 
   it('IngestionPipeline stores records with NULL embedding and emits no embed-related warnings', async () => {
@@ -274,33 +276,35 @@ describe('End-to-end feature-flag-off', () => {
     });
 
     await bufferStore.append(PROJECT_ID, makeBufferEntry());
-    const result = await pipelineHandle.run(PROJECT_ID);
+    try {
+      const result = await pipelineHandle.run(PROJECT_ID);
 
-    expect(result.directCommittedRecords).toBe(1);
+      expect(result.directCommittedRecords).toBe(1);
 
-    // Record stored, no embedding.
-    const { items } = await storage.listMemoryRecords({
-      namespace: NAMESPACE,
-      limit: 10,
-      offset: 0,
-    });
-    expect(items.length).toBe(1);
-    expect(await storage.getEmbedding(items[0]!.record_id)).toBeNull();
+      // Record stored, no embedding.
+      const { items } = await storage.listMemoryRecords({
+        namespace: NAMESPACE,
+        limit: 10,
+        offset: 0,
+      });
+      expect(items.length).toBe(1);
+      expect(await storage.getEmbedding(items[0]!.record_id)).toBeNull();
 
-    const stats = await storage.getStats(NAMESPACE);
-    expect(stats.embeddings_present).toBe(0);
-    expect(stats.embeddings_missing).toBe(1);
+      const stats = await storage.getStats(NAMESPACE);
+      expect(stats.embeddings_present).toBe(0);
+      expect(stats.embeddings_missing).toBe(1);
 
-    // Nobody called `putEmbedding`.
-    expect(putEmbeddingSpy).not.toHaveBeenCalled();
+      // Nobody called `putEmbedding`.
+      expect(putEmbeddingSpy).not.toHaveBeenCalled();
 
-    // No embed-related log lines at all.
-    const stderrOut = capturedStderr.join('');
-    expect(stderrOut).not.toMatch(/degraded mode/);
-    expect(stderrOut).not.toMatch(/embedding failed/);
-    expect(stderrOut).not.toMatch(/hybrid search falling back/);
-
-    watcher.close();
+      // No embed-related log lines at all.
+      const stderrOut = capturedStderr.join('');
+      expect(stderrOut).not.toMatch(/degraded mode/);
+      expect(stderrOut).not.toMatch(/embedding failed/);
+      expect(stderrOut).not.toMatch(/hybrid search falling back/);
+    } finally {
+      watcher.close();
+    }
   });
 
   it('QueryLayer.search returns the lexical-only ordering identical to pre-spec behaviour', async () => {

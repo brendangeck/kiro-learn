@@ -113,6 +113,7 @@ function createSpyStorage(): StorageBackend & {
   putMemoryRecord: ReturnType<typeof vi.fn>;
   putEmbedding: ReturnType<typeof vi.fn>;
   deleteMemoryRecord: ReturnType<typeof vi.fn>;
+  withTransaction: ReturnType<typeof vi.fn>;
 } {
   return {
     putEvent: vi.fn().mockResolvedValue(undefined),
@@ -249,6 +250,11 @@ describe('Candidate construction — Property 3: extraction never writes', () =>
           expect(storage.putMemoryRecord).not.toHaveBeenCalled();
           expect(storage.putEmbedding).not.toHaveBeenCalled();
           expect(storage.deleteMemoryRecord).not.toHaveBeenCalled();
+          // Also prove extraction doesn't sneak writes in through a
+          // transaction handle — a future regression that opened
+          // one via `storage.withTransaction((tx) => tx.putMemoryRecord(...))`
+          // would slip past the three assertions above.
+          expect(storage.withTransaction).not.toHaveBeenCalled();
         },
       ),
       { numRuns: 100 },
