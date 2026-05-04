@@ -260,7 +260,7 @@ All three statements are explicit prepared statements. SQLite's FTS5 here is a p
 Because `DELETE` (and `UPDATE`) on a nonexistent row affects zero rows and does not raise, `deleteMemoryRecord` is idempotent. An id that was deleted in an earlier attempt is a silent no-op on retry, which is what lets a partially-crashed reconciliation run safely retry the same merge on the next ingestion trigger.
 
 <Warning>
-  **Merge commits have no undo.** A `<merge>` decision deletes the original rows outright. Nothing in the database remembers that `record_id mr_abc123` used to exist, and nothing in the retrieval path can surface a merged-away record. Tune the [extraction worker's thresholds](/architecture/extraction#configuration) conservatively — a low intra-batch or neighbor similarity threshold paired with a lenient judge can silently collapse rows that should have stayed distinct, and the only recovery path is to re-learn from fresh events.
+  **Merge commits have no undo.** A `<merge>` decision deletes the original rows outright. Nothing in the database remembers that `record_id mr_abc123` used to exist, and nothing in the retrieval path can surface a merged-away record. The [extraction worker](/architecture/extraction#dedupe) tunes its intra-batch and neighbor similarity thresholds conservatively by default — a more lenient configuration paired with a lenient judge can silently collapse rows that should have stayed distinct, and the only recovery path is to re-learn from fresh events.
 </Warning>
 
 ### Reconciliation has no schema footprint

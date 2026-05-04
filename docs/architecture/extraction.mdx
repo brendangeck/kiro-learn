@@ -5,7 +5,7 @@ description: "How the extraction worker turns buffered events into memory record
 
 The extraction worker is a background [worker](/architecture/overview#workers) that drains the [event buffer](/concepts/event-buffer) into `memory_records`. It fires when the [buffer watcher](/architecture/collector#buffer-watcher) crosses a size or idle threshold, reads a buffer snapshot, and runs it through three phases:
 
-1. **Extract.** Frame the batch as XML, send it to the `kiro-learn-compressor` LLM via ACP, parse the response into in-memory candidate memories, and compute an embedding for each.
+1. **Extract.** Frame the batch for the `kiro-learn-compressor` LLM, parse its response into in-memory candidate memories, and compute an embedding for each.
 2. **Dedupe.** Cluster candidates that describe the same thing, look up semantically-similar existing records in the namespace, and ask the `kiro-learn-reconciler` judge model whether the cluster plus its neighbors should merge.
 3. **Push.** Commit each cluster in one transaction — either a single merged summary record (deleting the merged originals in the same transaction) or the candidate members as-is.
 
@@ -31,7 +31,7 @@ flowchart LR
     DB[("Database")]
 
     Buffer -->|"trigger"| Worker
-    Extract -->|"batch XML"| Compressor
+    Extract -->|"batch"| Compressor
     Compressor -->|"memory records"| Extract
     Dedupe -->|"cluster + neighbors"| Judge
     Judge -->|"merge / keep-separate"| Dedupe
@@ -45,95 +45,11 @@ The worker holds one slot per project from a shared semaphore (default concurren
 
 The first phase turns raw buffered events into structured candidate memories.
 
-### XML framing
+Every buffered entry — whatever its [kind and body shape](/concepts/event-types) — is normalised into a structured prompt fragment and sent to the `kiro-learn-compressor` LLM as a batch. The compressor is a purpose-built agent (no tools, no user interaction) that reads the batch and returns zero or more memory-record fragments describing what happened. Each fragment carries a title, a summary, an observation type, and optional facts, concepts, and files touched.
 
-Each buffered entry is framed as a `<tool_observation>` element:
+Every fragment becomes a `CandidateMemory` — a `MemoryRecord`-shaped value that lives in memory until the push phase writes it. Candidates carry every field a final record has (`record_id`, `namespace`, `strategy`, `source_event_ids`, `title`, `summary`, `facts`, `concepts`, `files_touched`, `observation_type`) plus a transient `embedding` computed by the local ONNX embedder. The `record_id` is allocated at extract time (`mr_` + ULID) so the dedupe phase can refer to cluster members by id; `created_at` is not on the candidate — it is stamped at push time.
 
-```xml
-<tool_observation>
-  <tool_name>readFile</tool_name>
-  <timestamp>2026-04-23T10:30:00-08:00</timestamp>
-  <input>{"path": "src/index.ts"}</input>
-  <output>{"content": "export function main() { ... }"}</output>
-</tool_observation>
-```
-
-The framer handles the three body shapes events use:
-
-| Body type | How it's framed |
-|-----------|-----------------|
-| `json` | Extracts `tool_name`, `tool_input`, and `tool_response` from the data object |
-| `text` | Uses the text content as `<input>` |
-| `message` | Concatenates turns as `role: content` lines in `<input>` |
-
-All text content is XML-escaped (the five special characters: `&`, `<`, `>`, `"`, `'`). A batch produces a concatenated string of `<tool_observation>` elements separated by newlines.
-
-### ACP session
-
-The extract phase manages a `kiro-cli acp` child process through an ACP client:
-
-- **Spawn** — `kiro-cli acp --agent kiro-learn-compressor`
-- **Handshake** — the `initialize` → `newSession` protocol negotiation from the [`@agentclientprotocol/sdk`](https://www.npmjs.com/package/@agentclientprotocol/sdk)
-- **Prompt** — send the batch XML, collect the streamed response
-- **Cleanup** — kill the child process when done (SIGTERM, then SIGKILL after 2 seconds)
-
-Sessions are single-use — one prompt per session, destroyed in a `finally` block. No state leaks between extractions.
-
-The compressor agent (`kiro-learn-compressor`) is purpose-built: no tools, an XML-in/XML-out prompt, no user interaction. It runs through `kiro-cli`, which routes to [Amazon Bedrock](https://docs.aws.amazon.com/bedrock/latest/userguide/what-is-bedrock.html) for inference.
-
-### XML parsing
-
-The compressor responds with zero or more `<memory_record>` blocks:
-
-```xml
-<memory_record type="discovery">
-  <title>Project uses ESM with explicit .js extensions</title>
-  <summary>The codebase is ESM-only with verbatimModuleSyntax enabled.
-  All imports use explicit .js extensions for Node.js resolution.</summary>
-  <concept>ESM modules</concept>
-  <concept>TypeScript configuration</concept>
-  <file>tsconfig.json</file>
-  <file>src/index.ts</file>
-  <fact>verbatimModuleSyntax is true in tsconfig</fact>
-</memory_record>
-```
-
-The parser extracts:
-
-| Field | Source | Constraints |
-|-------|--------|-------------|
-| `type` | `type` attribute | One of `tool_use`, `decision`, `error`, `discovery`, `pattern`, `session_summary` |
-| `title` | `<title>` element | Required, truncated to 200 chars |
-| `summary` | `<summary>` element | Required, truncated to 4000 chars |
-| `concepts` | `<concept>` elements | Zero or more |
-| `files` | `<file>` elements | Zero or more |
-| `facts` | `<fact>` elements | Zero or more |
-
-Records with invalid types, missing titles, or missing summaries are silently skipped. All extracted text is XML-unescaped.
-
-The compressor can decline to produce memory records by responding with `<skip/>` or an empty response. Both mean the batch contained nothing worth remembering — not an error.
-
-### Candidate memories
-
-Each parsed record becomes a `CandidateMemory` — a `MemoryRecord`-shaped value that lives in memory until the push phase writes it. Candidates carry every field a final record has — `record_id`, `namespace`, `strategy`, `source_event_ids`, `title`, `summary`, `facts`, `concepts`, `files_touched`, `observation_type` — plus a transient `embedding: Float32Array | null` computed by the local ONNX embedder.
-
-| Field | Source |
-|-------|--------|
-| `record_id` | Generated (`mr_` prefix + ULID) |
-| `namespace` | Copied from the source events |
-| `strategy` | `'llm-summary'` |
-| `source_event_ids` | Every event id in the batch |
-| `title` | Compressor `<title>` |
-| `summary` | Compressor `<summary>` |
-| `concepts` | Compressor `<concept>` elements |
-| `files_touched` | Compressor `<file>` elements |
-| `observation_type` | Compressor `type` attribute |
-| `embedding` | 384-dim `Float32Array`, or `null` on embed failure |
-
-Two notes on what candidates are and are not:
-
-- **`record_id` is allocated at extract time**, so downstream phases can reference cluster members by id without waiting for a storage write.
-- **`created_at` is not on the candidate.** It is stamped at push time by `toMemoryRecord(candidate)`, which also strips the transient `embedding`. A candidate that sits in memory through a long dedupe phase gets the `created_at` of when it actually became a record.
+The LLM call runs through `kiro-cli`, which routes to [Amazon Bedrock](https://docs.aws.amazon.com/bedrock/latest/userguide/what-is-bedrock.html) for inference. Sessions are single-use: one prompt per session, destroyed in a `finally` block. No state leaks between extractions. When the compressor decides the batch contains nothing worth remembering it returns an empty response, which the worker treats as a successful zero-candidate run.
 
 When the embedder is absent, not ready, or throws for a specific record, the candidate is emitted with `embedding: null`. The dedupe phase treats null-embedding candidates as singletons and commits them on the no-judge path. The [backfill worker](/architecture/collector#backfill-worker) fills in the embedding asynchronously by scanning for `embedding IS NULL` rows.
 
@@ -150,20 +66,15 @@ The compressor often emits two candidates in one batch that describe the same fa
 The algorithm is a pure union-find over the candidate indices:
 
 1. For every pair of candidates whose embeddings are both non-null, compute cosine similarity.
-2. If the similarity meets or exceeds `intraBatchSimilarityThreshold` (default `0.85`), union them.
+2. If the similarity meets or exceeds the intra-batch threshold (0.85 by default), union them.
 3. Null-embedding candidates are never unioned — they land in their own singleton cluster.
-4. Each cluster's **centroid** is `normalize(mean(members.map(m => m.embedding)))` when every member has a non-null embedding; otherwise the centroid is `null`.
+4. Each cluster's **centroid** is the L2-normalised mean of the member embeddings when every member has a non-null embedding; otherwise the centroid is `null`.
 
 The output partitions the input: every candidate belongs to exactly one cluster, and the cluster list is deterministic across runs. Clustering is pure — no I/O, no storage access — so it can be unit-tested directly over arbitrary `Float32Array` inputs.
 
 ### Neighbor lookup
 
-For each cluster with a non-null centroid, the worker asks the [query layer](/architecture/retrieval#hybrid-search) for existing `memory_records` whose embedding is cosine-close to the centroid:
-
-1. Scoped to the cluster's namespace. Cross-project neighbor lookup is impossible by construction.
-2. Filtered by `neighborSimilarityThreshold` (default `0.80`). Records below the floor are excluded.
-3. Capped at `neighborPoolMaxSize` (default `10`). The top-scoring records by cosine similarity win.
-4. Sorted descending by similarity.
+For each cluster with a non-null centroid, the worker asks the [query layer](/architecture/retrieval#hybrid-search) for existing `memory_records` whose embedding is cosine-close to the centroid. The lookup is namespace-scoped, filtered by the neighbor-similarity threshold (0.80 by default), capped at 10 neighbors per cluster, and sorted descending by similarity.
 
 The neighbor pool comes from the same per-namespace vector cache that [hybrid search](/architecture/retrieval#writes-keep-the-cache-in-sync) reads from. Rows deleted during a merge are gone from `memory_records`, so the cache's `listEmbeddings` feed naturally excludes them on the next rebuild.
 
@@ -171,58 +82,17 @@ When the centroid is null or the neighbor pool is empty, the cluster skips the j
 
 ### Judge invocation
 
-When a cluster has at least one neighbor, the worker asks the **judge model** whether the cluster and some subset of its neighbors describe the same underlying thing. The judge is the `kiro-learn-reconciler` agent, installed alongside the compressor and compactor.
-
-The prompt framing is XML, parallel to the `<tool_observation>` / `<memory_record>` convention used elsewhere:
-
-```xml
-<reconciliation_request>
-  <candidate_cluster>
-    <candidate record_id="mr_...">
-      <title>...</title>
-      <summary>...</summary>
-      <facts><fact>...</fact>...</facts>
-      <concepts><concept>...</concept>...</concepts>
-      <files><file>...</file>...</files>
-      <observation_type>decision</observation_type>
-    </candidate>
-  </candidate_cluster>
-  <neighbor_pool>
-    <neighbor record_id="mr_..." similarity="0.87">
-      <title>...</title>
-      <summary>...</summary>
-      <facts>...</facts>
-    </neighbor>
-  </neighbor_pool>
-</reconciliation_request>
-```
-
-The judge responds with either a `<merge>` block listing the `record_id`s that describe the same thing (plus new `title`, `summary`, `facts`, `concepts`, `files`, `observation_type`):
-
-```xml
-<merge>
-  <merged_record_id>mr_...</merged_record_id>
-  <merged_record_id>mr_...</merged_record_id>
-  <title>Merged title</title>
-  <summary>...</summary>
-  <facts><fact>...</fact>...</facts>
-  <concepts><concept>...</concept>...</concepts>
-  <files><file>...</file>...</files>
-  <observation_type>decision</observation_type>
-</merge>
-```
-
-…or a single `<keep_separate/>` tag.
+When a cluster has at least one neighbor, the worker asks the **judge model** whether the cluster and some subset of its neighbors describe the same underlying thing. The judge is the `kiro-learn-reconciler` agent, installed alongside the compressor and compactor. The judge sees the cluster members, the neighbor pool with similarity scores, and returns either a merge decision (listing the record ids to fuse, plus a new title, summary, facts, concepts, files, and observation type) or a keep-separate decision.
 
 Every judge call creates a fresh ACP session, sends one prompt, and destroys the session in a `finally` block — the same single-use pattern the compressor uses. No state leaks between judge invocations.
 
-Each judge call has a per-call timeout of `judgeModelTimeoutMs` (default `30_000`). Timeouts are terminal — retrying would double the already-burned budget. Non-XML responses retry once with a fresh session, for a maximum of 2 attempts per cluster. On final failure the worker falls back to keep-separate for that cluster and records a failure on the [circuit breaker](#circuit-breaker-and-direct-commit-fallback).
+Each judge call is bounded by a 30-second timeout. Timeouts are terminal — retrying would double the already-burned budget. Non-XML or unparseable responses retry once with a fresh session, for a maximum of two attempts per cluster. On final failure the worker falls back to keep-separate for that cluster and records a failure on the [circuit breaker](#circuit-breaker-and-direct-commit-fallback).
 
 ## Push
 
 Every cluster commits inside a single `StorageBackend` transaction. What the transaction writes depends on the dedupe outcome:
 
-- **Merge.** One `putMemoryRecord(summary)` + one `deleteMemoryRecord(mergedIds)` + one `putEmbedding(summary.record_id, summaryEmbedding)` in one atomic transaction. The summary's embedding is computed before the transaction opens so the transaction body stays synchronous. The `deleteMemoryRecord` call cascades to both the embedding row and the FTS5 entry — see the [database docs](/architecture/database#merge-deletion-is-destructive) for the exact cascade semantics.
+- **Merge.** One `putMemoryRecord(summary)` + one `deleteMemoryRecord(mergedIds)` + one `putEmbedding(summary.record_id, summaryEmbedding)` in one atomic transaction. The summary's embedding is computed before the transaction opens so the transaction body stays synchronous. The `deleteMemoryRecord` call cascades to both the embedding column and the FTS5 entry — see the [database docs](/architecture/database#merge-deletion-is-destructive) for the exact cascade semantics.
 - **Keep-separate** (judge ruled keep-separate, or no neighbors, or null centroid). One `putMemoryRecord(member)` + one `putEmbedding(member.record_id, member.embedding)` per cluster member, all in one transaction. No deletes.
 
 After the transaction commits, the worker calls `query.invalidateNamespace(namespace)` so the next search sees the new summary and no longer sees any deleted rows.
@@ -238,64 +108,38 @@ Summary records are stamped with:
 **Per-cluster failure isolation.** A failure inside one cluster's transaction (storage error, embed failure, judge parse failure that exhausted the retry budget) is caught and logged with the cluster's member `record_id`s. The outer loop continues with the next cluster. A run where every cluster failed is reported to the buffer watcher as unsuccessful, so the buffer is retained and a retry happens on the next trigger.
 
 <Warning>
-  Merge commits are destructive. A `<merge>` decision deletes the merged rows outright — there is no soft delete, no tombstone, no history. Tune `intraBatchSimilarityThreshold` and `neighborSimilarityThreshold` conservatively: a low threshold paired with a lenient judge can silently collapse rows that should have stayed separate.
+  Merge commits are destructive. A merge decision deletes the merged rows outright — there is no soft delete, no tombstone, no history. The similarity thresholds are tuned conservatively by default so a lenient judge cannot silently collapse rows that should have stayed separate.
 </Warning>
-
-## Configuration
-
-The worker's config lives on `CollectorConfig`. Every field is validated at daemon startup — out-of-range values throw a descriptive error naming the field and the observed value before any storage handle is opened.
-
-| Field | Default | Validated range | Purpose |
-|---|---|---|---|
-| `reconciliationEnabled` | `true` | boolean | Feature flag. When `false`, every run takes the [direct-commit fallback](#circuit-breaker-and-direct-commit-fallback) and skips the dedupe phase. |
-| `bufferIdleMs` | `30_000` | `[5_000, 300_000]` | Idle-flush interval the buffer watcher uses to trigger the worker. See [Event buffer](/concepts/event-buffer#what-triggers-the-ingestion-pipeline). |
-| `intraBatchSimilarityThreshold` | `0.85` | `[0, 1]` | Cosine floor for intra-batch clustering. Higher values cluster only near-identical candidates. |
-| `neighborSimilarityThreshold` | `0.80` | `[0, 1]` | Cosine floor for neighbor lookup. Typically set slightly below the intra-batch threshold so the judge sees a broader neighborhood than the intra-batch pass would. |
-| `neighborPoolMaxSize` | `10` | `[1, 100]` | Maximum neighbors admitted to a single cluster's pool. |
-| `judgeModelTimeoutMs` | `30_000` | `[5_000, 300_000]` | Per-judge-call timeout. A timeout kills the session, records a failure on the circuit breaker, and falls back to keep-separate for that cluster. |
-
-The `reconciliationDebug` flag (default `false`) emits a per-cluster `ingestion-cluster-debug` JSON-Lines record to stderr containing the cluster members, the neighbor pool with similarity scores, the judge request XML hash, and the raw judge response XML. Intended for threshold calibration and judge-model regression triage, not production use.
 
 ## Reliability
 
 ### Extract-level retries
 
-The compressor is an LLM — sometimes it responds conversationally instead of producing XML. The worker detects this and retries the extract phase:
-
-1. **Garbage detection.** If the response is non-empty but contains no `<memory_record>` or `<skip` tags, it is classified as garbage.
-2. **Retry.** The worker creates a new ACP session and tries again, up to 3 attempts.
-3. **Failure.** After 3 consecutive garbage responses, extract fails for that batch. The buffer is retained.
-
-Each retry creates a fresh ACP session (new child process). This avoids state contamination from a confused model.
+The compressor is an LLM — sometimes it responds conversationally instead of producing a well-formed memory-record fragment. The worker detects this and retries the extract phase up to three attempts. Each retry creates a fresh ACP session (new child process) so state from a confused model does not leak across attempts. After three consecutive garbage responses, extract fails for that batch and the buffer is retained.
 
 ### Concurrency limits
 
-The worker uses a semaphore to limit concurrent runs across all projects. Default: 2 concurrent sessions. Additional triggers queue in FIFO order until a slot becomes available.
+The worker uses a semaphore to limit concurrent runs across all projects. The default limit is two concurrent sessions. Additional triggers queue in FIFO order until a slot becomes available.
 
 This prevents resource exhaustion — each ACP session spawns a child process and holds a Bedrock connection. Unbounded concurrency would overwhelm both the local machine and the upstream service.
 
 ### Timeouts
 
-Every compressor call has a 60-second timeout. Every judge call has a 30-second timeout (configurable via `judgeModelTimeoutMs`). If either model does not complete within its window, the child process is killed and the call is recorded as a failure.
+Every compressor call has a 60-second timeout. Every judge call has a 30-second timeout. If either model does not complete within its window, the child process is killed and the call is recorded as a failure.
 
 The timeout is raced against both the prompt completion and a "child failed" sentinel — if the `kiro-cli acp` process crashes mid-turn, the error surfaces immediately instead of waiting for the timeout to expire.
 
 ### Circuit breaker and direct-commit fallback
 
-A buggy judge model should degrade gracefully, not stall extraction. The worker runs a **per-project reconciliation circuit breaker** that flips to a safe fallback path after enough consecutive judge failures.
+A buggy judge model should degrade gracefully, not stall extraction. The worker runs a **per-project reconciliation circuit breaker** that flips to a safe fallback path after three consecutive judge failures on the same project.
 
-The breaker carries an independent `{ consecutiveFailures, open }` pair per project id:
+The breaker carries an independent state pair per project id: starts closed, opens on the third consecutive judge failure (timeout or non-XML after the retry budget), and re-closes after a run completes with zero judge failures — including the direct-commit case where the judge was never invoked.
 
-- Starts closed for every project.
-- Each judge failure (timeout or non-XML after the retry budget) increments `consecutiveFailures`.
-- When the counter reaches `3`, the breaker opens. The next run for that project takes the direct-commit path.
-- A run that completes with zero judge failures — including the direct-commit case where the judge was never invoked — resets `consecutiveFailures` to `0` and closes the breaker.
-
-The **direct-commit fallback** is the escape valve. When `reconciliationEnabled === false` OR the circuit breaker is open at the start of a run, the worker skips the dedupe phase entirely: every candidate goes straight to `putMemoryRecord` + `putEmbedding` + `invalidateNamespace`, with no clustering, no neighbor lookup, no judge. A property test pins the invariant that this path produces a deterministic write sequence for any given buffer snapshot and ULID seed.
+The **direct-commit fallback** is the escape valve. When reconciliation is disabled or the circuit breaker is open at the start of a run, the worker skips the dedupe phase entirely: every candidate goes straight to `putMemoryRecord` + `putEmbedding` + `invalidateNamespace`. A property test pins the invariant that this path produces a deterministic write sequence for any given buffer snapshot and ULID seed.
 
 Because the direct-commit path bypasses the judge entirely, it counts as "no judge failure" and closes a tripped breaker on its own. A project whose judge is sick uses direct-commit for exactly one run, then re-attempts the full pipeline on the next trigger.
 
-The reconciliation circuit breaker is separate from the [buffer watcher's extraction circuit breaker](/architecture/collector#circuit-breaker), which governs extract-level failures and disables the worker entirely for a project after 3 consecutive failures. A broken judge does not disable event ingestion.
+The reconciliation circuit breaker is separate from the [buffer watcher's extraction circuit breaker](/architecture/collector#circuit-breaker), which governs extract-level failures and disables the worker entirely for a project after three consecutive failures. A broken judge does not disable event ingestion.
 
 ### Buffer-clear discipline
 
@@ -317,23 +161,24 @@ A cluster "commits" when it writes either a summary record (merge path) or at le
 
 **Dedupe runs at ingestion time, not at write time.** The compressor only sees the current batch, so it cannot know that a fact it is writing now was already captured by a different batch last week. Running a second pass at ingestion time, with the full graph available, catches the duplicates the compressor cannot.
 
-**Merges are destructive.** There is no soft delete, no `deleted_at` column, no tombstone row. Merged originals are gone at push time — from `memory_records`, from `embeddings`, and from `memory_records_fts`, all in one transaction. The [retrieval](/architecture/retrieval) layer does not need to filter merged rows; they are simply not there. The tradeoff is that tuning thresholds aggressively can silently collapse rows that should have been distinct, so the defaults lean conservative.
+**Merges are destructive.** There is no soft delete, no `deleted_at` column, no tombstone row. Merged originals are gone at push time — from `memory_records`, from the embedding column, and from `memory_records_fts`, all in one transaction. The [retrieval](/architecture/retrieval) layer does not need to filter merged rows; they are simply not there. The tradeoff is that tuning thresholds aggressively can silently collapse rows that should have been distinct, so the defaults lean conservative.
 
 **Batch over per-event.** Events are extracted in batches rather than individually. This gives the LLM more context to identify patterns across related events and produces higher-quality memory records. It also reduces the number of Bedrock invocations.
 
 **Single-use sessions.** Each compressor and judge call creates and destroys its own ACP session. Cleanup is deterministic — if something goes wrong, kill the process and start fresh.
 
-**XML over JSON.** The compressor and judge use XML as their input/output format because LLMs handle structured XML extraction reliably. Fixed schemas (`<tool_observation>` in / `<memory_record>` out for the compressor; `<reconciliation_request>` in / `<merge>` or `<keep_separate/>` out for the judge) constrain the model's output space and make parsing straightforward.
-
 **Async after ingest.** The worker runs after the collector has already responded to the shim. A slow or failed run never delays event ingestion. The worst case is a missing memory record — the raw event is always safe in the database.
 
-**Per-cluster failure isolation.** A storage error or a malformed judge response on one cluster must not prevent sibling clusters from committing. The worker wraps each cluster's work in a try/catch and continues past any per-cluster failure, logging the member `record_id`s so an operator can correlate the failure to the original candidates.
+**Per-cluster failure isolation.** A storage error or a malformed judge response on one cluster must not prevent sibling clusters from committing. The worker wraps each cluster's work in a try/catch and continues past any per-cluster failure.
 
 **No direct Bedrock dependency.** The worker talks to `kiro-cli acp`, not to [Amazon Bedrock](https://docs.aws.amazon.com/bedrock/latest/userguide/what-is-bedrock.html) directly. This keeps credentials, model selection, and API versioning as `kiro-cli`'s responsibility. kiro-learn does not need AWS SDK dependencies.
 
 ## Related pages
 
 <CardGroup cols={2}>
+  <Card title="Event types" href="/concepts/event-types">
+    The event kinds and body shapes that feed extraction
+  </Card>
   <Card title="Compaction" href="/architecture/compaction">
     What happens when buffers grow too large
   </Card>
