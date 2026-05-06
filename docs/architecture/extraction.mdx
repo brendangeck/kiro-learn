@@ -171,7 +171,9 @@ A cluster "commits" when it writes either a summary record (merge path) or at le
 
 **Per-cluster failure isolation.** A storage error or a malformed judge response on one cluster must not prevent sibling clusters from committing. The worker wraps each cluster's work in a try/catch and continues past any per-cluster failure.
 
-**No direct Bedrock dependency.** The worker talks to `kiro-cli acp`, not to [Amazon Bedrock](https://docs.aws.amazon.com/bedrock/latest/userguide/what-is-bedrock.html) directly. This keeps credentials, model selection, and API versioning as `kiro-cli`'s responsibility. kiro-learn does not need AWS SDK dependencies.
+**No direct Bedrock dependency.** The worker talks to `kiro-cli acp`, not to [Amazon Bedrock](https://docs.aws.amazon.com/bedrock/latest/userguide/what-is-bedrock.html) directly. This keeps credentials, authentication, and API versioning as `kiro-cli`'s responsibility. kiro-learn does not need AWS SDK dependencies.
+
+**Model selection is pinned, not inherited.** The compressor and reconciler agents both set `model: "claude-haiku-4.5"` explicitly. These agents are pure XML-in / XML-out transformers with zero tools — cost and latency dominate quality concerns at this workload, so letting `kiro-cli`'s `"auto"` default pick a pricier model would be a silent regression on every extraction and every judge call.
 
 ## Related pages
 

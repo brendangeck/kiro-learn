@@ -175,6 +175,10 @@ Deterministic eviction produces a worse result than LLM summarization — the ol
 
 Every model call has a 2-minute timeout by default. If the compactor does not complete within that window, the child process is killed and the call is recorded as a failure. Timeout failures feed into the retry and circuit breaker logic.
 
+### Model selection
+
+The compactor agent pins `model: "claude-haiku-4.5"`. Summarizing buffer entries is a bounded XML-in / XML-out job with zero tools — letting `kiro-cli`'s `"auto"` default pick a pricier model would make background compaction needlessly expensive.
+
 ### Disabled by default
 
 Compaction is off by default and must be enabled via configuration. The compactor model is expensive to run, and not every deployment needs LLM-driven summarization. When disabled, the watcher still tracks buffer size and the hard ceiling still prevents unbounded growth; the compaction trigger is ignored.

@@ -131,6 +131,7 @@ describe('writeReconcilerAgent', () => {
       prompt: unknown;
       tools: unknown;
       allowedTools: unknown;
+      model: unknown;
     };
 
     expect(parsed.name).toBe('kiro-learn-reconciler');
@@ -140,6 +141,10 @@ describe('writeReconcilerAgent', () => {
     expect(String(parsed.prompt).length).toBeGreaterThan(0);
     expect(parsed.tools).toEqual([]);
     expect(parsed.allowedTools).toEqual([]);
+    // Pinned to the cheapest Claude tier. The judge is a bounded
+    // XML-in / XML-out decision with zero tools — running it on
+    // `"auto"` would let kiro-cli pick a pricier model by default.
+    expect(parsed.model).toBe('claude-haiku-4.5');
   });
 
   it('prompt body references the request and response grammar verbatim', () => {
