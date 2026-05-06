@@ -1,3 +1,9 @@
+## [0.19.1](https://github.com/brendangeck/kiro-learn/compare/v0.19.0...v0.19.1) (2026-05-06)
+
+### Bug Fixes
+
+* **installer:** pin compressor, compactor, and reconciler to claude-haiku-4.5 ([#35](https://github.com/brendangeck/kiro-learn/issues/35)) ([d5b4b2f](https://github.com/brendangeck/kiro-learn/commit/d5b4b2fb3a8ab5694d39157cb1950f3fa8011eab))
+
 ## [0.19.0](https://github.com/brendangeck/kiro-learn/compare/v0.18.0...v0.19.0) (2026-05-04)
 
 ### Features
