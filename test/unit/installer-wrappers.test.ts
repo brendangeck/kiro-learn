@@ -184,6 +184,12 @@ describe('writeAgentConfigs', () => {
   it('kiro-learn-compressor.json has extraction prompt and empty tools', () => {
     /**
      * Validates: Requirements 6.8, 6.9
+     *
+     * Also asserts the compressor is pinned to the cheapest Claude
+     * tier (`claude-haiku-4.5`). The compressor is pure XML-in /
+     * XML-out with zero tools, so cost and latency dominate quality
+     * concerns — letting kiro-cli's `"auto"` default pick a pricier
+     * model would be a silent regression.
      */
     writeAgentConfigs({
       global: true,
@@ -201,11 +207,48 @@ describe('writeAgentConfigs', () => {
       prompt: string;
       tools: string[];
       allowedTools: string[];
+      model: string;
     };
 
     expect(config.prompt).toContain('memory extraction agent');
     expect(config.tools).toEqual([]);
     expect(config.allowedTools).toEqual([]);
+    expect(config.model).toBe('claude-haiku-4.5');
+  });
+
+  it('kiro-learn-compactor.json is pinned to claude-haiku-4.5 with empty tools', () => {
+    /**
+     * Guards the cost pin on the buffer-compaction agent. Like the
+     * compressor, the compactor is pure XML-in / XML-out with zero
+     * tools — pinning to the cheapest Claude tier keeps background
+     * summarization cost predictable and prevents kiro-cli's
+     * `"auto"` default from silently upgrading to a pricier model.
+     */
+    writeAgentConfigs({
+      global: true,
+      projectRoot: undefined,
+      detectedMarker: undefined,
+    });
+
+    const configPath = join(
+      tmpHome,
+      '.kiro',
+      'agents',
+      'kiro-learn-compactor.json',
+    );
+    const config = JSON.parse(readFileSync(configPath, 'utf8')) as {
+      name: string;
+      prompt: string;
+      tools: string[];
+      allowedTools: string[];
+      model: string;
+    };
+
+    expect(config.name).toBe('kiro-learn-compactor');
+    expect(config.prompt).toContain('buffer compaction agent');
+    expect(config.tools).toEqual([]);
+    expect(config.allowedTools).toEqual([]);
+    expect(config.model).toBe('claude-haiku-4.5');
   });
 
   it('postToolUse hook has matcher: "*"', () => {

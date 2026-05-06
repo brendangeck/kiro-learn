@@ -1308,6 +1308,10 @@ export function writeCompressorAgent(agentsDir: string): void {
     description:
       'Memory record extraction agent for kiro-learn. Distills events into structured memory records.',
     prompt: compressorPrompt,
+    // Pinned to the cheapest Claude tier. The compressor is a pure
+    // XML-in / XML-out transformer with zero tools — latency and cost
+    // dominate quality concerns at this workload.
+    model: 'claude-haiku-4.5',
     tools: [] as string[],
     allowedTools: [] as string[],
   };
@@ -1374,6 +1378,9 @@ export function writeCompactorAgent(agentsDir: string): void {
     description:
       'Buffer compaction agent for kiro-learn. Summarizes buffer entries into fewer, denser entries.',
     prompt: compactorPrompt,
+    // Pinned to the cheapest Claude tier. Compaction is summarization
+    // with zero tools — haiku is the right cost/quality tradeoff.
+    model: 'claude-haiku-4.5',
     tools: [] as string[],
     allowedTools: [] as string[],
   };
@@ -1451,6 +1458,9 @@ export function writeReconcilerAgent(agentsDir: string): void {
     description:
       'Memory reconciliation judge for kiro-learn — decides whether candidate memories and existing graph neighbors describe the same underlying thing.',
     prompt: reconcilerPrompt,
+    // Pinned to the cheapest Claude tier. The judge is a bounded
+    // XML-in / XML-out decision with zero tools.
+    model: 'claude-haiku-4.5',
     tools: [] as string[],
     allowedTools: [] as string[],
   };
